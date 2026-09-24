@@ -1,0 +1,129 @@
+---
+title: L1 · 能力底座：Skills Runtime 与 MCP Hub
+layer: L1
+priority: P0
+depends_on: [01-平台共享契约, 02-L0-本地优先基座]
+consumed_by: [04-L2-记忆图谱, 05-L3-对话主入口, 06-L4-多视角推理, 07-L5-主动触达, 09-生态与分享]
+stories: [PRD Story 2 — Skills Runtime, Story 6 — Skill Studio, Story 8 — MCP Hub]
+---
+
+# 03 · L1 能力底座：Skills Runtime 与 MCP Hub
+
+承载 [Story 2](../PRD-v2-Agent/story-02-skills-runtime.md)、[Story 6](../PRD-v2-Agent/story-06-skill-studio.md)、[Story 8](../PRD-v2-Agent/story-08-mcp-hub.md)。L1 由四个子系统组成：**Skill Runtime**（注册/调度/执行）、**官方 Skill Pack**、**Skill Studio**（可视化编排）、**MCP Hub**（外部能力挂载）。共享类型（SkillDescriptor、ResultEnvelope、权限模型）见 [01-平台共享契约](01-平台共享契约.md)。
+
+## 1. Skill Runtime
+
+### 1.1 职责
+
+注册与发现、调度执行、依赖解析、参数校验、版本管理、执行留痕、输出复用。Skill 本身**无状态**——用户状态只存于 L2 记忆与配置注册表（这是可分享性的前提，见 [09-生态](09-生态与分享.md)）。
+
+### 1.2 执行流水线
+
+一次 Skill 调用 `skill_run_id` 的标准流水线：
+
+1. **解析**：意图来源（L3 对话 / Studio / Deliberation / 工作流 / 定时调度）→ 匹配 SkillDescriptor
+2. **参数确认**：参数超出合理范围 → `validation_failed`（拦截 + 说明理由，不允许保存）；经对话触发时展示参数确认卡（用户可调或用默认值）
+3. **依赖解析**：递归解析 `dependencies`；**DAG 约束**——检测到循环依赖即拒绝（保存工作流与运行时双重检测）；上游失败 → 下游 `dependency_failed`，禁止用错误数据继续
+4. **权限检查**：按 01 §10 权限模型核对本次执行所需权限
+5. **执行与留痕**：输出包装 ResultEnvelope；记录 SkillRun（输入快照、输出、耗时、错误、依赖链）并挂到 `trace_id`
+6. **输出登记**：成功输出登记为可引用结果（见 §1.3）
+
+### 1.3 输出复用（数据协同）
+
+- 每个 SkillRun 输出可被后续 Skill / 视角 / 报告通过 `skill_run_id` 引用，避免重复计算
+- 复用时必须校验 `as_of`（01 §8）：引用过期快照时上层自行决定是否重算；运行时提供「freshness 查询」接口——其数据来源为 L0 数据缓存的同步状态表（见 [数据库设计 §05](../数据库设计-BaoStock数据层/05-同步策略与新鲜度契约.md)，逐表水位与陈旧判据），不另建第二套口径
+
+### 1.4 版本管理
+
+- 官方 Pack 更新遵循 01 §9：展示变更日志 + 影响范围；用户逐 Skill 选择更新 / 跳过 / 锁定（`version_policy`）
+- 契约变化（主版本变更）时，引用方（工作流、视角）自动标「待检查」，用户手动确认后升级——禁止自动破坏下游
+
+### 1.5 执行沙箱
+
+- Skill 执行在受限环境内进行：文件访问限于声明的 `local_read` 范围、网络限于声明的 `net_access` 模式、命令执行需 `exec_command` 审批
+- 运行时行为越界 → 拦截 + `BehaviorViolation` 事件（01 §11）+ 警示「这个 Skill 行为异常」+ 提供禁用选项
+- 沙箱是 [09-生态](09-生态与分享.md) 导入第三方 Skill 的恶意行为拦截基础
+
+## 2. 官方 Skill Pack
+
+首次安装即内置，无需下载。两 Bundle（名称沿用 PRD，Skill 清单为产品承诺的最小集，可增不可缺）：
+
+### 2.1 公共认知 Bundle
+
+| Skill | 职责 | 关键输出 |
+| --- | --- | --- |
+| `st-list-sync` | 同步交易所 ST/*ST 名单，识别新增/移除 | 名单变更 diff |
+| `delisting-risk-scan` | 识别退市高危信号 | 可解释的触发原因（证据引用） |
+| `unhat-eligibility-check` | 动态评估摘帽条件满足情况 | 条件清单 + 满足度 |
+| `sector-heatmap` | 行业属性标记 + 板块热力图 + 风险评级 | 热力图数据 + 评级 |
+| `sentiment-flow-analysis` | 情绪与资金流向分析（中性化，承接 v1 A3） | 高换手/高热度预警 |
+| `fundamental-screening` | 基本面筛选与安全边际评估（承接 v1 A4） | 机构优选池 |
+
+### 2.2 主动服务 Bundle
+
+| Skill | 职责 |
+| --- | --- |
+| `stock-watch` | 多标的盯盘：关键词/财报日/异动/换手率触发条件可配 |
+| `data-aggregate` | 数据聚合：表格卡/趋势图/简报输出 |
+| `risk-alert` | 风险预警：退市倒计时/流动性枯竭等维度可扩展 |
+| `opportunity-mine` | 机会挖掘：风格 + 板块偏好过滤，复用公共认知输出 |
+| `portfolio-stress-test` | 组合压力测试：规则化情景推演 |
+| `strategy-design` | 策略设计与回测：选股→信号→策略→回测四步链路 |
+
+`strategy-design` 的特殊契约：**信号校验器**必须实现「未来函数」检测——用户设计的信号若依赖未来数据，校验即报错并指出问题；回测口径由用户设定，输出用户口径的回测报告。
+
+## 3. 工作流模型（Skill Studio 的数据基础）
+
+### 3.1 WorkflowDAG schema
+
+| 字段 | 说明 |
+| --- | --- |
+| `flow_id` / `name` / `description` | 标识（名称过中性化校验） |
+| `nodes[]` | 每节点：引用 skill_id、参数绑定（含常量与上游输出引用） |
+| `edges[]` | 数据流连线，携带类型契约（连线时校验输入输出 schema 匹配，不匹配提示「这里需要一个 XX 类型的输入」） |
+| `groups[]` | 子流程分组（可整体作为复合 Skill 导出） |
+| `schedule` | 触发方式：定时 / 事件 / 手动 |
+| `version` | 版本历史（多版本共存、diff、一键回滚） |
+
+### 3.2 复合 Skill
+
+用户可将工作流保存为复合 Skill（「命名的工作流」）：对外暴露统一输入输出契约 + 参数，进入 Skill 库；导出为 `.stflow`/`.stskill`（见 [09-生态](09-生态与分享.md)）。复合 Skill 依赖的原 Skill 缺失时，导入方走依赖提示流程。
+
+## 4. Skill Studio 子系统
+
+承载 [Story 6](../PRD-v2-Agent/story-06-skill-studio.md)：
+
+- **双通道**：可视化画布编辑 + 对话式生成。对话生成接口接收 L3 的「工作流草稿对象」（见 [05-L3 §5](05-L3-对话主入口.md)），落到画布后可视化微调
+- **调试协议**：任何工作流可试跑——单步执行、输入注入、逐步输出快照、暂停/继续/中止；每次试跑留存历史可对比
+- **校验**：保存时执行成环检测（DAG 约束）+ 契约匹配校验 + 中性化命名校验（01 §6）
+- **模板库**：官方预置工作流模板（每日 ST 简报 / 退市风险扫描 / 策略回测流水线等），可 fork 后修改
+- **空状态**：无自建工作流时展示模板库 + 「用一句话描述你想要的工作流」入口
+
+## 5. MCP Hub 子系统
+
+承载 [Story 8](../PRD-v2-Agent/story-08-mcp-hub.md)。产品内置 MCP Client，允许用户挂载任意 MCP Server：
+
+### 5.1 传输与注册
+
+- 支持 stdio（本地进程）与 HTTP/SSE（远程）两种传输；**默认只允许本地 stdio**，远程 Server 需显式开启并确认「数据会离开本机」警示
+- Server 注册表：添加/删除/启用/禁用；添加时连接测试 + 权限申请展示（「这个 Server 想做什么」）+ 逐项批准
+
+### 5.2 tool → Skill 自动映射
+
+- MCP Server 的每个 tool 自动注册为 Skill（`source: mcp-mapped`），SkillDescriptor 元数据从 MCP schema 派生
+- Server 禁用 → 其全部 Skill 立即从可用列表移除，进行中调用中止
+- tool 契约变化 → 提示用户重新映射（映射关系版本化，遵循 01 §9）
+
+### 5.3 状态机与降级
+
+Server 生命周期状态：`connected` / `disconnected` / `reconnecting` / `permission_pending` / `disabled`。崩溃 → 明确提示 + 自动重连（次数可配）+ 可降级到官方数据源 Skill 兜底。Server 的全部网络请求经 L0 网关登记（[02-L0 §6](02-L0-本地优先基座.md)），在网络活动面板可见。
+
+### 5.4 权限模型
+
+沿用 01 §10 统一权限模型：MCP Server 按能力粒度声明（读文件/网络/执行命令），首次调用前逐项批准；远程 Server 额外标注数据外发风险。
+
+## 6. 定时调度
+
+- `stock-watch`、`data-aggregate`、`sector-heatmap`、每日报告（[07-L5](07-L5-主动触达.md)）、每周反思（[08-L6](08-L6-反思演进.md)）等均依赖调度器
+- 调度器属 L1 基础设施：按 WorkflowDAG 的 `schedule` 与各 Skill 的频率参数触发；调度触发产生的执行同样走 §1.2 完整流水线（留痕、Trace、ResultEnvelope）
+- 断网期间到期的调度任务：离线可执行者照常执行（用最后快照并标注），不可执行者在网络恢复后按用户配置补跑或跳过

@@ -1,0 +1,47 @@
+# ─── 本地用户数据（铁律：永不入库） ───
+data/
+*.db
+*.sqlite
+*.sqlite3
+*.duckdb
+.env
+.env.*
+!.env.example
+credentials/
+keys/
+secrets/
+*.pem
+*.key
+token_cache/
+
+# ─── Python 运行时 ───
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# ─── IDE / OS 垃圾 ───
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ─── 临时脚手架与测试产物 ───
+*.tmp
+tmp/
+temp/
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# ─── 日志输出（非项目管理三本日志） ───
+logs/
+*.log
