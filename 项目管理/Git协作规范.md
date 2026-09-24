@@ -326,7 +326,6 @@ git config user.email "<你的邮箱>"
 git config core.editor vim
 git config pull.rebase true          # 分支 pull 默认 rebase，避免无意义 merge commit
 git config rebase.autostash true     # rebase 时自动暂存未提交改动
-git config commit.cleanup verbose    # commit 编辑器显示 diff 帮助写 message
 git config log.date iso8601          # git log 显示带时区的 ISO 时间
 ```
 
