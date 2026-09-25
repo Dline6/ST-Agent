@@ -31,10 +31,19 @@ from st_agent.contracts.result_envelope import (
     EvidenceRef,
     ResultEnvelope,
 )
+from st_agent.contracts.trace import (
+    STEP_TYPES,
+    ConclusionRef,
+    Trace,
+    TraceError,
+    TraceStep,
+    digest_of,
+)
 
 __all__ = [
     "AnnouncementId",
     "ChangeId",
+    "ConclusionRef",
     "ContractViolation",
     "DatasetSnapshotId",
     "DeliveryId",
@@ -48,9 +57,14 @@ __all__ = [
     "MemoryNodeId",
     "PlatformId",
     "ResultEnvelope",
+    "STEP_TYPES",
     "SignalId",
     "SkillId",
     "SkillRunId",
     "StockId",
+    "Trace",
+    "TraceError",
     "TraceId",
+    "TraceStep",
+    "digest_of",
 ]
