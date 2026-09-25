@@ -246,6 +246,13 @@ class Store:
         validate_partition_name(partition)
         return tuple(sorted(self._manifest(partition).paths()))
 
+    def sealed_mtime(self, partition: PartitionName, name: str) -> float:
+        """分区内文件的落盘密文 mtime（epoch 秒；T-L0-006 留存年龄口径）。"""
+        validate_partition_name(partition)
+        if self._manifest(partition).entry_for(name) is None:
+            raise KeyError(f"分区 {partition} 无文件 {name!r}")
+        return (self._root / partition / name).stat().st_mtime
+
     # ───────────────────────── 分区级操作（§2.1 独立导出/清空） ─────────────────────────
 
     def export_partition(self, partition: PartitionName) -> dict[str, bytes]:

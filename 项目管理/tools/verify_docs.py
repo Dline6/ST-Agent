@@ -2,11 +2,12 @@
 # -*- coding: utf-8 -*-
 """verify_docs.py — ST Agent 文档一致性一键自检（stdlib only）
 
-复用 render_ledger 的解析逻辑，跑四项检查并给出 PASS/FAIL：
+复用 render_ledger 的解析逻辑，跑五项检查并给出 PASS/FAIL：
   1. 断链      全项目 .md 相对链接（先剔除围栏代码块与行内代码，避免示例路径误报）
   2. 依赖图    从 tasks/*.md 反构：悬空依赖 / 环 / 就绪集（队首）
   3. 账本同步  当前 任务账本.md 与 build_ledger() 生成结果比对（忽略时间戳行）
   4. 过期措辞  运营文档里是否残留重构前的旧关键词（警告，不判失败）
+  5. 假设完整  doing/blocked/done 叶子任务是否有 `## 假设与前提` 实填节（警告；--strict 下判失败）
 
 用法：
   python tools/verify_docs.py            # 只读校验
@@ -108,6 +109,34 @@ def check_stale():
                 hits.append((os.path.relpath(p, ROOT), rx.pattern, why))
     return hits
 
+# 检查 5：假设完整（doing/blocked/done 叶子任务须有实填的 `## 假设与前提` 节）
+# 2026-09-25 机制落地前已 done 的历史任务免检（不追补），之后新增的 done 一律必检。
+GRANDFATHERED_NO_ASSUME = {
+    "T-SC-001", "T-SC-001.1", "T-SC-001.2", "T-SC-001.3", "T-SC-001.4", "T-SC-001.5",
+    "T-L0-001", "T-L0-002", "T-L0-003", "T-L0-004", "T-L0-005", "T-L0-005.1",
+}
+ASSUME_HEAD = re.compile(r"^##\s*假设与前提", re.M)
+ASSUME_PLACEHOLDER = re.compile(r"暂无|待.{0,6}对齐|待补|（④ 对齐时补")
+
+def check_assumptions():
+    tasks = rl.scan(rl.TASKS)   # 只查活跃区；已归档 tasks/done/ 不查
+    parents = {t["parent"] for t in tasks if t["parent"]}
+    missing = []
+    for t in tasks:
+        if t["status"] not in ("doing", "blocked", "done"): continue
+        if t["id"] in parents or t["id"] in GRANDFATHERED_NO_ASSUME: continue
+        _, body = rl.read_fm(t["path"])
+        m = ASSUME_HEAD.search(body or "")
+        if not m:
+            missing.append((t["id"], "缺 `## 假设与前提` 节")); continue
+        sect = (body or "")[m.end():]
+        nxt = re.search(r"^##\s+", sect, re.M)
+        sect = sect[:nxt.start()] if nxt else sect
+        text = re.sub(r"[`\s]", "", strip_code(sect))
+        if not text or ASSUME_PLACEHOLDER.search(sect):
+            missing.append((t["id"], "假设节仍为占位，未实填"))
+    return missing
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8")   # 兼容 Windows GBK 控制台，避免 emoji/中文崩溃
@@ -136,6 +165,10 @@ def main():
     hits = check_stale()
     print(f"[4] 过期措辞  : {len(hits)} 处")
     for f, p, why in hits: print(f"      ⚠ {f} 命中「{p}」— {why}"); warn += 1
+
+    missing = check_assumptions()
+    print(f"[5] 假设完整  : {len(missing)} 缺失")
+    for tid, why in missing: print(f"      ⚠ {tid} {why}"); warn += 1
 
     fail = hard_fail + (warn if a.strict else 0)
     print("\n结果：", "PASS ✅" if fail == 0 else f"FAIL ❌（硬失败 {hard_fail}，警告 {warn}{'' if not a.strict else '·strict'}）")
