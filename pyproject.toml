@@ -9,6 +9,7 @@ description = "面向个性化投资决策的可配置主动服务 Agent（本�
 requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.0",
+    "cryptography>=42.0",
 ]
 
 [tool.setuptools.packages.find]
