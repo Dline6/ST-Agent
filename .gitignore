@@ -9,7 +9,7 @@ data/
 !.env.example
 credentials/
 keys/
-secrets/
+/secrets/
 *.pem
 *.key
 token_cache/
