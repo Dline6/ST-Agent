@@ -22,6 +22,7 @@ from st_agent.l0.market.errors import (
     MarketValidationError,
 )
 from st_agent.l0.market.fetch import Fetcher, FetchResult
+from st_agent.l0.market.live import BaoStockFetcher
 from st_agent.l0.market.sync import DOMAIN_TASKS, BaoStockSync
 from st_agent.l0.market.tasks import (
     SYNC_TASKS,
@@ -39,6 +40,7 @@ __all__ = [
     "TASK_COUNT",
     "TASK_KEYS",
     "BaoStockSync",
+    "BaoStockFetcher",
     "FetchError",
     "FetchResult",
     "FetchUnavailableError",

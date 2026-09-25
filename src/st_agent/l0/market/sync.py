@@ -169,7 +169,10 @@ class BaoStockSync:
         :param codes: 逐码任务的证券范围（缺省库内全量主档）
         :param watchlist: 分钟线关注池（必传，否则 ``MarketValidationError``）
         """
-        spec = get_task(task_key)
+        try:
+            spec = get_task(task_key)
+        except MarketValidationError as exc:
+            return ResultEnvelope.validation_failed(str(exc))
         on = self._is_enabled(task_key, enabled)
         if not on:
             return self._disabled_envelope(task_key)
