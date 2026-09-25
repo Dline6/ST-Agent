@@ -26,5 +26,14 @@ Skill Runtime 执行流水线 + 沙箱 + 输出复用 + 版本管理（开工 �
 ## 参考
 - Story（What）：[runtime](../../docs/PRD-v2-Agent/story-02-skills-runtime.md) / [studio](../../docs/PRD-v2-Agent/story-06-skill-studio.md) / [mcp](../../docs/PRD-v2-Agent/story-08-mcp-hub.md)
 
+## 拆分记录（③ 已执行）
+命中拆分触发（GWT 9 条 > 5、涉及 §1.1–§1.5 多个契约小节），已拆为叶子子任务：
+- `T-L1-001.1` 注册发现 + 参数校验 + 版本管理（含 `skill_id` 版本后缀拼接规则，兑现 T-SC-001 遗留①）
+- `T-L1-001.2` 执行流水线 + 依赖 DAG + 权限 + SkillRun 留痕（依赖 .1）
+- `T-L1-001.3` 执行沙箱越界拦截（依赖 .1）
+- `T-L1-001.4` 输出复用 + 新鲜度查询（依赖 .2 + T-L0-005）
+
+父任务 `T-L1-001` 的 `status` 由 children 派生，不再手填。
+
 ## 备注
 实现细节不写此处，留给代码 / commit / 执行日志。
