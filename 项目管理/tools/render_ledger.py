@@ -167,8 +167,10 @@ def compute_status(tasks):
     for pid in list(children):
         if pid in byid: derive(pid)
     done_ids = {t["id"] for t in tasks if t["status"] == "done"}
+    parents = {t["parent"] for t in tasks if t["parent"]}
     active = [t for t in tasks if not t["rel"].startswith("tasks/done/")]
-    ready = [t for t in active if t["status"] == "todo" and all(d in done_ids for d in t["depends_on"])]
+    ready = [t for t in active if t["status"] == "todo" and t["id"] not in parents
+             and all(d in done_ids for d in t["depends_on"])]
     return ready
 
 # ---------- render ----------
