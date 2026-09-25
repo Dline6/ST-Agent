@@ -134,6 +134,7 @@ def bootstrap(force=False):
         body = (f"# {tid} · {title}\n\n{MARK}\n\n"
                 f"## 目标\n{title}（开工 ④ 意图对齐时据 Story 补全）\n\n"
                 f"## 验收标准（Given-When-Then，从 Story 抄）\n- 待 ④ 对齐时从对应 Story 验收段逐条补全\n\n"
+                f"## 假设与前提\n- 暂无（④ 对齐时补：A<n> 编号，每条含前提内容 / 若错的影响 / 验证方式；确认无假设写 `无（<原因>）`）\n\n"
                 f"## 涉及契约\n{arch_file}\n\n"
                 f"## 参考\n- Story（What）：{rel_to_file(story_links)}\n\n"
                 f"## 备注\n实现细节不写此处，留给代码 / commit / 执行日志。\n")

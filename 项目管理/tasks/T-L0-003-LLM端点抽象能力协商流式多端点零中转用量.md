@@ -27,6 +27,15 @@ verify: pytest 205/205（contracts 107 + l0 存储 37 + 凭据 28 + LLM 33）· 
 - GWT-4 零中转与用量：Given 云端端点配置 Key（存 `secrets` 分区、经 `CredentialVault` 取用），When 调用，Then 请求直发提供方、prompt/response 不落盘不留存，每次调用 token 用量本地可查且不外发。
 - GWT-5 失败语义：Given 端点不可用，When 调用失败，Then 返回 `ResultEnvelope` 错误载体，上层可按离线分级降级（网关本体在 T-L0-004，此处只声明 `offline_level`）。
 
+## 假设与前提
+
+- A1 端点配置归 `config` 分区（02 §2.1 配置注册表职责） / 若错：改 `registry.py` 存储落点 / 验证：本任务 GWT-1 分区归属测试已证实成立
+- A2 用量明细归 `execution_log` 分区（只记计数、不记内容） / 若错：改 `client.py` 用量落点 / 验证：本任务 GWT-4 分区归属 + 无内容字段测试已证实成立
+- A3 流式以同步迭代器协议起步 / 若错：L1 需要时加异步形态，`StreamEvent` 三态口径不变 / 验证：本任务 GWT-3 chunk/done/error 测试已证实成立
+- A4 token 估算取每 4 字符 1 token 的本地展示口径（提供方账单以其实测为准） / 若错：换分词器口径，只改 `estimate_tokens` / 验证：本任务用量计数自洽测试已证实成立
+- A5 传输层以 callable 注入，T-L0-004 出网网关接入时替换（当前无传输即 `unavailable`） / 若错：改 `client.py` 传输接入方式 / 验证：待 T-L0-004 接入时复核（当前成立：注入传输全绿 + 无传输降级测试通过）
+- A6 能力档位（上下文规模 + 结构化输出）口径满足 L1/L4 上层消费 / 若错：T-L1-001（Skill 调用）/ T-L4-002（多视角编排）回收时扩展档位字段 / 验证：待首个消费方回收反馈（当前成立：`negotiate`/`pick` 口径测试全绿）
+
 ## 涉及契约
 [02 §4](../../docs/技术架构-v2/02-L0-本地优先基座.md)
 
