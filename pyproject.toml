@@ -10,6 +10,7 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.0",
     "cryptography>=42.0",
+    "baostock>=0.9.4",  # T-L0-005.1 真实抓取器（联网依赖；缺失时走 unavailable 显式分支）
 ]
 
 [tool.setuptools.packages.find]

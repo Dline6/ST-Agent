@@ -588,3 +588,41 @@ class TestGwt5SwitchAndIntegrity:
         env = sync.run_task("bs_fin_quarter", codes=["sh.600000"])
         assert env.status == "unavailable"
         assert "季度末" in (env.reason or "")
+
+
+# ───────────────────────── T-L0-005.1 真实抓取器（离线可跑） ─────────────────────────
+
+
+class TestLiveFetcherOffline:
+    """真实抓取器的失败语义（不碰真网：缺包/不可达/未知任务走显式分支）。"""
+
+    def test_unknown_task_is_validation_failed(self, rig):
+        _, _, sync, _ = rig
+        env = sync.run_task("bs_nope")
+        assert env.status == "validation_failed"
+        assert "未知同步任务" in (env.reason or "")
+
+    def test_missing_package_is_unavailable(self):
+        import builtins
+        real_import = builtins.__import__
+
+        def fake_import(name, *args, **kwargs):
+            if name == "baostock":
+                raise ImportError("No module named 'baostock'")
+            return real_import(name, *args, **kwargs)
+
+        builtins.__import__ = fake_import
+        try:
+            from st_agent.l0.market.live import BaoStockFetcher
+            with pytest.raises(FetchUnavailableError, match="baostock 包未安装"):
+                BaoStockFetcher()
+        finally:
+            builtins.__import__ = real_import
+
+    def test_fetcher_methods_match_protocol(self):
+        from st_agent.l0.market.fetch import Fetcher
+        from st_agent.l0.market.live import BaoStockFetcher
+        proto = set(Fetcher.__protocol_attrs__ if hasattr(Fetcher, "__protocol_attrs__")
+                    else [m for m in dir(Fetcher) if not m.startswith("_")])
+        missing = [m for m in proto if not hasattr(BaoStockFetcher, m)]
+        assert missing == [], f"真实抓取器缺协议方法: {missing}"
