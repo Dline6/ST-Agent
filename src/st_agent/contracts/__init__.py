@@ -31,11 +31,28 @@ from st_agent.contracts.result_envelope import (
     EvidenceRef,
     ResultEnvelope,
 )
+from st_agent.contracts.capability_types import (
+    LensOpinion,
+    ParameterSpec,
+    Provenance,
+    SkillDescriptor,
+)
 from st_agent.contracts.neutrality import (
     NeutralityFinding,
     NeutralityGuard,
     NeutralityVerdict,
     default_rulepack,
+)
+from st_agent.contracts.registry_types import (
+    ChangePolicy,
+    ChangeRecord,
+    ConfigEntry,
+    PanelField,
+    PermissionAction,
+    SemVer,
+    VersionBump,
+    parse_permission,
+    validate_permissions,
 )
 from st_agent.contracts.trace import (
     STEP_TYPES,
@@ -49,7 +66,10 @@ from st_agent.contracts.trace import (
 __all__ = [
     "AnnouncementId",
     "ChangeId",
+    "ChangePolicy",
+    "ChangeRecord",
     "ConclusionRef",
+    "ConfigEntry",
     "ContractViolation",
     "DatasetSnapshotId",
     "DeliveryId",
@@ -60,14 +80,21 @@ __all__ = [
     "ID_KINDS",
     "ID_REGISTRY",
     "LensId",
+    "LensOpinion",
     "MemoryNodeId",
     "NeutralityFinding",
     "NeutralityGuard",
     "NeutralityVerdict",
+    "PanelField",
+    "ParameterSpec",
+    "PermissionAction",
     "PlatformId",
+    "Provenance",
     "ResultEnvelope",
     "STEP_TYPES",
+    "SemVer",
     "SignalId",
+    "SkillDescriptor",
     "SkillId",
     "SkillRunId",
     "StockId",
@@ -75,6 +102,9 @@ __all__ = [
     "TraceError",
     "TraceId",
     "TraceStep",
+    "VersionBump",
     "default_rulepack",
     "digest_of",
+    "parse_permission",
+    "validate_permissions",
 ]
