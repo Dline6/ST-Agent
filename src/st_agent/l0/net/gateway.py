@@ -134,12 +134,16 @@ class EgressGateway:
         timeout_ms: int = 60_000,
         trace_id: str | None = None,
         cancel: threading.Event | None = None,
+        sender: Sender | None = None,
     ) -> ResultEnvelope:
         """经网关执行一次出网请求，返回 ``ResultEnvelope``。
 
         成功 ``ok``（data 为 ``{"bytes_in": n}`` 计数）；目标不可达/离线拦截/
         无发包实现 → ``unavailable``；超时/取消/发送失败 → ``failed``（带
         ``log_ref`` 指向审计记录）。审计事件无论成败必记一条。
+
+        :param sender: 按次发包实现（缺省用构造时 ``sender``；T-L0-005 数据源
+            同步经此注入按操作分发的抓取闭包——网关仍是唯一出口与唯一审计点）
         """
         started = time.monotonic()
         elapsed_ms = lambda: int((time.monotonic() - started) * 1000)
@@ -161,7 +165,8 @@ class EgressGateway:
                 "离线模式：请求未发出（pending_reconnect）",
                 last_updated_at=_now(), as_of=_now(),
             )
-        if self._sender is None:
+        active_sender = sender if sender is not None else self._sender
+        if active_sender is None:
             relpath = self._log(req_kind, target_host, initiator, purpose,
                                 bytes_out, 0, "unavailable",
                                 f"{target_host} 无可用发包实现")
@@ -171,7 +176,7 @@ class EgressGateway:
                 f"{target_host} 无可用发包实现", last_updated_at=now, as_of=now,
             )
         try:
-            sent_out, got_in, _ = self._sender(req_kind, target_host, timeout_ms)
+            sent_out, got_in, _ = active_sender(req_kind, target_host, timeout_ms)
         except EgressUnavailableError as exc:
             relpath = self._log(req_kind, target_host, initiator, purpose,
                                 bytes_out, 0, "unavailable", str(exc) or "目标不可达")
