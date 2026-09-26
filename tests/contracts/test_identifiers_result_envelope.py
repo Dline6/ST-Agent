@@ -96,8 +96,8 @@ class TestSection1Identifiers:
             FlowId.generate()
 
     def test_registry_covers_contract_table(self):
-        """ID_REGISTRY 是 §1 表的完整机器可读副本（13 类）。"""
-        assert len(ID_KINDS) == 13
+        """ID_REGISTRY 是 §1 表的完整机器可读副本（14 类）。"""
+        assert len(ID_KINDS) == 14
         assert set(ID_KINDS) == set(ID_REGISTRY) == set(ID_ALIASES)
 
 
