@@ -13,15 +13,15 @@ read_order: 1
 | 文件 | 作用 | 何时读写 |
 |---|---|---|
 | [工程宪法.md](工程宪法.md) | 11 条不可违背铁律 | 每次开工**必读**；违背即任务失败 |
-| [工作流.md](工作流.md) | 七步执行流程 + 拆分/派生/调度/归档规则 | 开工前、收工前查 |
+| [工作流.md](工作流.md) | 七步执行流程 + 拆分/派生/调度/归档规则 + 集成关卡（每里程碑一个 `T-INT-*`） | 开工前、收工前查 |
 | [Git协作规范.md](Git协作规范.md) | 仓库布局 / .gitignore 数据主权红线 / 分支模型 / 提交格式（关联任务号）/ 卡点 / 标签 | 建分支、commit、push、打 tag 前查 |
 | [任务账本.md](任务账本.md) | **派生视图（勿手改）**：依赖图 + 里程碑 + 就绪集 | 改任务后跑 `render` 刷新 |
 | [执行日志.md](执行日志.md) | 每次做了什么（append-only） | 每个任务收工**必写一条** |
 | [决策日志.md](决策日志.md) | 为什么这么做（精简 ADR） | 涉及选型时追加 |
 | [阻塞与未决.md](阻塞与未决.md) | 别猜的问题清单 | 遇 open 立即登记 + blocked |
-| [tasks/](tasks/) | **唯一真相源**：一任务一文件（frontmatter 载状态/依赖），叶子=开工单位；done 满里程碑归档到 `tasks/done/` | 建/改任务文件 |
-| [tools/render_ledger.py](tools/render_ledger.py) | 账本生成器 `render` / `status` / `archive` | 改任务状态后跑 `render` |
-| [tools/verify_docs.py](tools/verify_docs.py) | 文档一键自检：断链 / 依赖图 / 账本同步 / 过期措辞 | 提交或收工前跑，`--strict` 更严、`--fix` 顺带刷新账本 |
+| [tasks/](tasks/) | **唯一真相源**：一任务一文件（frontmatter 载状态/依赖，正文载目标/GWT/接口面/假设），叶子=开工单位；done 满里程碑归档到 `tasks/done/` | 建/改任务文件 |
+| [tools/render_ledger.py](tools/render_ledger.py) | 账本生成器 `render` / `status` / `archive`（回写任务文件时保字段不丢） | 改任务状态后跑 `render` |
+| [tools/verify_docs.py](tools/verify_docs.py) | 文档一键自检：断链 / 依赖图 / 账本同步 / 过期措辞 / 假设完整 / 接口面 / 集成关卡 | 提交或收工前跑，`--strict` 更严、`--fix` 顺带刷新账本 |
 
 ## Agent 冷启动（每个新会话按序读，再动手）
 

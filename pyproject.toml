@@ -10,16 +10,25 @@ requires-python = ">=3.12"
 dependencies = [
     "pydantic>=2.0",
     "cryptography>=42.0",
-    "baostock>=0.9.4",  # T-L0-005.1 真实抓取器（联网依赖；缺失时走 unavailable 显式分支）
 ]
 
+[project.optional-dependencies]
+# T-L0-005.1 真实抓取器：联网可选依赖，缺失时走 unavailable 显式分支（见 03 §1.2 / T-L0-005.1）。
+# 安装：pip install -e ".[market]"
+market = ["baostock>=0.9.4"]
+
 [tool.setuptools.packages.find]
-include = ["src*"]
+# src 布局：包根在 src/，否则 wheel 里会打成 src/st_agent/...（import st_agent 失败）
+where = ["src"]
+include = ["st_agent*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
-addopts = "-q"
+pythonpath = ["src", "项目管理/tools"]
+addopts = "-q -m 'not live'"
+markers = [
+    "live: 真实网络/长跑集成用例（默认排除；用 pytest -m live 单跑，不进 CI）",
+]
 
 [tool.ruff]
 line-length = 100

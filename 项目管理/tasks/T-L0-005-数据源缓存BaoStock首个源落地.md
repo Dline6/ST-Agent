@@ -29,6 +29,16 @@ verify: pytest 277/277（既有 238 + 市场 39）· 断链 0 · commits 待收�
 - GWT-4 新鲜度自检与降级：Given 上层读取数据，When 执行新鲜度自检，Then 以 05 文档自检 SQL + 陈旧判据为准：异常 → 走 `ResultEnvelope.unavailable` 并标注最后更新时间（`as_of` 按域取实际截止）；`dataset_snapshot_id` 锚定读取时的水位组合，不另立快照登记表（02 §5 三要点）。
 - GWT-5 开关与完整性：Given 数据源开关状态由调用方传入（配置注册表职责，不落库），When 某源/任务被禁用，Then 该维度结果走 `unavailable` 并标注最后更新时间；每次同步后跑 05 文档 5 项完整性校验，失败记 `sync_state.last_status='partial'` + `last_error`，不回滚已写数据。
 
+## 接口面
+> 追补于 2026-09-26：本任务完成早于接口面机制落地，据已合入代码与执行日志回溯填写（非 ④ 对齐时填写）。
+- 输入（消费的前置接口）：T-L0-001 `Store`（`data_cache` 分区）；T-L0-004 网关（`execute` + 按次 sender 注入）；数据库设计族 `schema.sql` 与 06 API 映射契约
+- 输出（本任务交付的公共 API / 落盘位置）：
+  - `MarketDb`：`.exists` / `.init_db` / `.tables` / `.views` / `.last_updated_at` / `.query`（只读白名单）/ `.freshness` / `.as_of` / `.snapshot_id` / `.connect` / `.transact` / `.check_readonly_sql`
+  - `BaoStockSync`：`.setup` / `.run_task` / `.run_all` / `.freshness_verdict` / `.dataset_snapshot`；`Fetcher` 协议 + 18 个 `map_*` 映射函数；`TaskSpec` / `get_task` / `window_for` / `quarter_end` / `last_n_quarters` / `last_monday` / `next_day`
+  - 清洗：`clean_str` / `clean_num` / `clean_int` / `normalize_date` / `normalize_minute_ts`；错误：`MarketValidationError` / `FetchError` / `FetchUnavailableError`
+  - 落盘：`data_cache/market.db`（加密 blob，工作拷贝 + 提交后写回）
+  - 消费方：T-L1-001.4（新鲜度查询）、T-L1-004 官方 Pack 行情面、T-L0-005.1 真实抓取器
+
 ## 涉及契约
 [02 §5](../../docs/技术架构-v2/02-L0-本地优先基座.md) · [DB 族](../../docs/数据库设计-BaoStock数据层/README.md)
 

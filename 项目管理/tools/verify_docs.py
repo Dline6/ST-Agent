@@ -8,6 +8,9 @@
   3. 账本同步  当前 任务账本.md 与 build_ledger() 生成结果比对（忽略时间戳行）
   4. 过期措辞  运营文档里是否残留重构前的旧关键词（警告，不判失败）
   5. 假设完整  doing/blocked/done 叶子任务是否有 `## 假设与前提` 实填节（警告；--strict 下判失败）
+  6. 接口面    doing/blocked/done 叶子任务是否有 `## 接口面` 实填节（警告；--strict 下判失败）
+  7. 集成关卡  每个里程碑是否有 T-INT-* 关卡任务、且其 depends_on 覆盖本里程碑全部叶子任务
+               （警告；--strict 下判失败）
 
 用法：
   python tools/verify_docs.py            # 只读校验
@@ -83,7 +86,7 @@ def check_ledger(fix):
     if cur.strip() == newn.strip():
         return "SYNC", f"活跃{na}/归档{nr}/就绪{nready}"
     if fix:
-        open(rl.LEDGER, 'w', encoding='utf-8').write(new)
+        rl.write_file(rl.LEDGER, new)      # 强制 LF（见 render_ledger.write_file）
         return "FIXED", "账本已刷新"
     return "STALE", "账本落后于 tasks/ 真相源，请跑 render"
 
@@ -118,24 +121,74 @@ GRANDFATHERED_NO_ASSUME = {
 ASSUME_HEAD = re.compile(r"^##\s*假设与前提", re.M)
 ASSUME_PLACEHOLDER = re.compile(r"暂无|待.{0,6}对齐|待补|（④ 对齐时补")
 
-def check_assumptions():
+def _check_task_section(head_rx, placeholder_rx, label, exempt):
+    """doing/blocked/done 叶子任务的 `## <label>` 节是否实填（父任务与豁免清单跳过）。"""
     tasks = rl.scan(rl.TASKS)   # 只查活跃区；已归档 tasks/done/ 不查
     parents = {t["parent"] for t in tasks if t["parent"]}
     missing = []
     for t in tasks:
         if t["status"] not in ("doing", "blocked", "done"): continue
-        if t["id"] in parents or t["id"] in GRANDFATHERED_NO_ASSUME: continue
+        if t["id"] in parents or t["id"] in exempt: continue
         _, body = rl.read_fm(t["path"])
-        m = ASSUME_HEAD.search(body or "")
+        m = head_rx.search(body or "")
         if not m:
-            missing.append((t["id"], "缺 `## 假设与前提` 节")); continue
+            missing.append((t["id"], f"缺 `## {label}` 节")); continue
         sect = (body or "")[m.end():]
         nxt = re.search(r"^##\s+", sect, re.M)
         sect = sect[:nxt.start()] if nxt else sect
         text = re.sub(r"[`\s]", "", strip_code(sect))
-        if not text or ASSUME_PLACEHOLDER.search(sect):
-            missing.append((t["id"], "假设节仍为占位，未实填"))
+        if not text or placeholder_rx.search(sect):
+            missing.append((t["id"], f"{label}节仍为占位，未实填"))
     return missing
+
+def check_assumptions():
+    return _check_task_section(ASSUME_HEAD, ASSUME_PLACEHOLDER, "假设与前提",
+                               GRANDFATHERED_NO_ASSUME)
+
+# 检查 6：接口面完整（2026-09-26 与检查 5 同批落地）
+# 豁免清单同日清空：机制落地前已 done 的 15 个叶子任务已全部追补接口面
+# （T-SC-001 为父任务本就跳过；假设节的历史豁免见 GRANDFATHERED_NO_ASSUME，那批未追补）。
+IFACE_HEAD = re.compile(r"^##\s*接口面", re.M)
+IFACE_PLACEHOLDER = re.compile(r"暂无|待.{0,6}对齐|待补|（④ 对齐时补")
+GRANDFATHERED_NO_IFACE: set[str] = set()
+
+def check_interfaces():
+    return _check_task_section(IFACE_HEAD, IFACE_PLACEHOLDER, "接口面",
+                               GRANDFATHERED_NO_IFACE)
+
+# 检查 7：集成关卡（每里程碑必有 T-INT-* 且依赖覆盖本里程碑全部叶子任务）
+INT_RE = re.compile(r"^T-INT-\d{3}")
+
+def _gate_skipped(t):
+    """`gate: skip` 的任务不计入里程碑收口的依赖覆盖（长跑/运营类，理由须写进备注）。"""
+    fm, _ = rl.read_fm(t["path"])
+    return (fm.get("gate", "") or "").strip().lower() == "skip"
+
+def check_integration_gates():
+    """里程碑集成关卡完整性（2026-09-26 机制）。
+
+    ① 该里程碑有活跃任务 → 必须有同里程碑的 T-INT-* 关卡任务；
+    ② 关卡任务的 depends_on 必须覆盖该里程碑全部非 INT 叶子任务的 id
+       （标 `gate: skip` 的长跑/运营任务除外）。
+    该里程碑已归档（无活跃任务）时跳过。
+    """
+    tasks = rl.scan(rl.TASKS)
+    parents = {t["parent"] for t in tasks if t["parent"]}
+    leaves = [t for t in tasks if t["id"] not in parents]
+    issues = []
+    for mid, _name, _goal in rl.MILESTONES:
+        ms = [t for t in leaves if t["milestone"] == mid and not INT_RE.match(t["id"])
+              and not _gate_skipped(t)]
+        if not ms: continue
+        gates = [t for t in tasks if INT_RE.match(t["id"]) and t["milestone"] == mid]
+        if not gates:
+            issues.append((mid, f"缺集成关卡任务（应为 T-INT-*，覆盖 {len(ms)} 个任务）"))
+            continue
+        deps = set(gates[0]["depends_on"])
+        uncovered = [t["id"] for t in ms if t["id"] not in deps]
+        if uncovered:
+            issues.append((gates[0]["id"], "依赖未覆盖本里程碑任务：" + ", ".join(uncovered)))
+    return issues
 
 def main():
     try:
@@ -169,6 +222,14 @@ def main():
     missing = check_assumptions()
     print(f"[5] 假设完整  : {len(missing)} 缺失")
     for tid, why in missing: print(f"      ⚠ {tid} {why}"); warn += 1
+
+    iface = check_interfaces()
+    print(f"[6] 接口面    : {len(iface)} 缺失")
+    for tid, why in iface: print(f"      ⚠ {tid} {why}"); warn += 1
+
+    gates = check_integration_gates()
+    print(f"[7] 集成关卡  : {len(gates)} 处")
+    for tid, why in gates: print(f"      ⚠ {tid} {why}"); warn += 1
 
     fail = hard_fail + (warn if a.strict else 0)
     print("\n结果：", "PASS ✅" if fail == 0 else f"FAIL ❌（硬失败 {hard_fail}，警告 {warn}{'' if not a.strict else '·strict'}）")

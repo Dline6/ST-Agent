@@ -27,6 +27,15 @@ verify: pytest 205/205（contracts 107 + l0 存储 37 + 凭据 28 + LLM 33）· 
 - GWT-4 零中转与用量：Given 云端端点配置 Key（存 `secrets` 分区、经 `CredentialVault` 取用），When 调用，Then 请求直发提供方、prompt/response 不落盘不留存，每次调用 token 用量本地可查且不外发。
 - GWT-5 失败语义：Given 端点不可用，When 调用失败，Then 返回 `ResultEnvelope` 错误载体，上层可按离线分级降级（网关本体在 T-L0-004，此处只声明 `offline_level`）。
 
+## 接口面
+> 追补于 2026-09-26：本任务完成早于接口面机制落地，据已合入代码与执行日志回溯填写（非 ④ 对齐时填写）。
+- 输入（消费的前置接口）：T-L0-001 `Store`（`config` / `execution_log`）；T-L0-002 `CredentialVault.use()`；T-SC-001.4 的 `ConfigEntry` 形态
+- 输出（本任务交付的公共 API / 落盘位置）：
+  - `st_agent.l0.llm`：`EndpointRegistry.register` / `.replace` / `.update_priority` / `.remove` / `.get` / `.list_endpoints` / `.negotiate` / `.pick`、`LlmClient.invoke` / `.query_usage`
+  - 模型：`LlmEndpoint`、`EndpointCapability`、`CapabilityRequirement`、`LlmUsageRecord`、`StreamEvent`、`estimate_tokens`；错误类型 `LlmError` / `NotFound` / `Exists` / `Validation`
+  - 落盘：端点配置 `config/llm-endpoint/<endpoint_id>.json`、用量记录 `execution_log/llm-usage/**`（只记计数，禁内容字段）
+  - 传输层为构造注入 callable（`Transport*` 签名），T-L0-004 经 `llm_transport` 适配器接入
+
 ## 假设与前提
 
 - A1 端点配置归 `config` 分区（02 §2.1 配置注册表职责） / 若错：改 `registry.py` 存储落点 / 验证：本任务 GWT-1 分区归属测试已证实成立

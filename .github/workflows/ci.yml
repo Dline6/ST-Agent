@@ -1,0 +1,27 @@
+name: CI
+
+# 把 Git协作规范 §5.2 的 PR gate 从「人工自觉」变成「机器强制」：
+# 文档一致性（verify_docs --strict）+ 全量测试（默认排除 live 标记）。
+on:
+  push:
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: 安装依赖
+        # 装包本身（顺带验证打包配置可用）；baostock 是联网可选依赖（[market] extra），
+        # 其缺失路径本身有测试覆盖（tests/l0/test_market.py::TestLiveFetcherOffline），故不装。
+        run: |
+          pip install -e .
+          pip install pytest
+      - name: 文档一致性自检
+        run: python 项目管理/tools/verify_docs.py --strict
+      - name: 测试
+        run: python -m pytest
