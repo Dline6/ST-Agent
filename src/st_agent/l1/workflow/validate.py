@@ -28,6 +28,7 @@ __all__ = [
     "WorkflowIssue",
     "WorkflowValidation",
     "dependency_graph",
+    "find_cycle",
     "topological_order",
     "validate_dag",
 ]
@@ -115,6 +116,16 @@ def _find_cycle(adj: dict[str, set[str]]) -> tuple[str, ...] | None:
             if found is not None:
                 return found
     return None
+
+
+def find_cycle(dag: WorkflowDAG) -> tuple[str, ...] | None:
+    """依赖图上的第一个环 → 环上节点序列（含回到起点的一跳）；无环 → ``None``。
+
+    与 ``dependency_graph`` / ``topological_order`` 并列的**公共判定件**：保存期
+    的 ``validate_dag`` 与编辑期「成环即时阻止」（03 §4 编辑面）走同一份实现，
+    不另造第二套成环逻辑（01 §2 唯一口径）。
+    """
+    return _find_cycle(dependency_graph(dag))
 
 
 def topological_order(dag: WorkflowDAG) -> tuple[str, ...]:
@@ -211,7 +222,7 @@ def validate_dag(
                     code="unknown_node", path=path,
                     message=f"连线{label}指向不存在的节点：{ref!r}"))
 
-    cycle = _find_cycle(dependency_graph(dag))
+    cycle = find_cycle(dag)
     if cycle is not None:
         issues.append(WorkflowIssue(
             code="cycle", path="edges",
