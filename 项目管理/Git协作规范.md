@@ -233,12 +233,17 @@ repos:
 
 ### 5.2 PR 合入 gate（solo 也走 PR）
 
-每个 PR 合入 main 前须满足：
+**机器强制部分**（[`.github/workflows/ci.yml`](../.github/workflows/ci.yml)，push 与 PR 均触发；建议在仓库设置里勾选分支保护的「Require status checks to pass」，这样 `main` 始终绿不再依赖自觉）：
 
-1. `python tools/verify_docs.py --strict` 通过（0 断链 / 0 循环依赖 / 账本同步 / 无过期措辞）。
-2. `python tools/render_ledger.py status` 就绪集正确——PR 中涉及的任务文件 `status` 字段与实际进度一致。
-3. Commit message 格式校验（可选：配 commitlint 或简单 grep 正则 `^(feat|fix|docs|refactor|test|chore|ci|style)(\(.+\))?: .+$`）。
-4. 若有代码变更：`pytest` 通过。
+1. `python 项目管理/tools/verify_docs.py --strict` 通过——0 断链 / 0 悬空依赖 / 0 环 / 账本同步 / 无过期措辞 / 假设·接口面·集成关卡完整。
+2. `python -m pytest` 全绿（默认排除 `live` 标记；含里程碑集成关卡用例）。
+
+**人工 / Agent 自查部分**（CI 判不了语义）：
+
+3. `python tools/render_ledger.py status` 就绪集正确——PR 中涉及的任务文件 `status` 字段与实际进度一致。
+4. Commit message 格式校验（可选：配 commitlint 或简单 grep 正则 `^(feat|fix|docs|refactor|test|chore|ci|style)(\(.+\))?: .+$`）。
+
+> CI 只跑离线部分：真实网络 / 长跑用例标 `@pytest.mark.live` 放 `tests/live/`，本地按需 `pytest -m live` 单跑，不进 CI。baostock 是可选依赖（`pip install -e ".[market]"`），CI 不装——其缺失路径本身有测试覆盖。
 
 ### 5.3 收工 checklist（每次准备 commit / push 时过一遍）
 
@@ -340,6 +345,8 @@ git config log.date iso8601          # git log 显示带时区的 ISO 时间
 | 同步 main 最新 | `git fetch origin && git rebase origin/main` |
 | 推分支并建 PR | `git push -u origin <branch>` → 在远端创建 PR → squash merge |
 | 确认账本同步 | `python tools/render_ledger.py render` → `git diff --stat` 看账本有无变化 |
+| 看 CI 结果 | GitHub 仓库 Actions 页 / PR 页的 checks（PR gate 机器部分，见 §5.2） |
+| 跑真实网络用例 | `python -m pytest -m live`（默认被 `addopts` 排除，不进 CI） |
 | 打里程碑 tag | 归档完成 → `git tag -a "M0-foundation" -m "..."` → push |
 | 回溯某任务所有 commit | `git log --all --grep "Task: T-L0-005"` |
 | 找回误删文件 | `git log --diff-filter=D --summary` 找到删除 commit → `git checkout <commit>~1 -- <path>` |
