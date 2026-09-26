@@ -146,13 +146,11 @@ def check_assumptions():
                                GRANDFATHERED_NO_ASSUME)
 
 # 检查 6：接口面完整（2026-09-26 与检查 5 同批落地）
-# 豁免：机制落地（2026-09-26）前已 done 的历史任务不追补——即检查 5 的 12 个，外加
-# 09-25/09-26 之间完成、早于本机制的 T-L0-006 与 T-L1-001.1/.2/.3。
+# 豁免清单同日清空：机制落地前已 done 的 15 个叶子任务已全部追补接口面
+# （T-SC-001 为父任务本就跳过；假设节的历史豁免见 GRANDFATHERED_NO_ASSUME，那批未追补）。
 IFACE_HEAD = re.compile(r"^##\s*接口面", re.M)
 IFACE_PLACEHOLDER = re.compile(r"暂无|待.{0,6}对齐|待补|（④ 对齐时补")
-GRANDFATHERED_NO_IFACE = GRANDFATHERED_NO_ASSUME | {
-    "T-L0-006", "T-L1-001.1", "T-L1-001.2", "T-L1-001.3",
-}
+GRANDFATHERED_NO_IFACE: set[str] = set()
 
 def check_interfaces():
     return _check_task_section(IFACE_HEAD, IFACE_PLACEHOLDER, "接口面",
