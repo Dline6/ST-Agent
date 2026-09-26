@@ -257,6 +257,28 @@ class SkillRegistry:
         """跳过本次更新（锁定旧版：清除标记，老版本文件保留可继续用，GWT-5）。"""
         return self.confirm_update(base)
 
+    def unregister(self, base: str) -> tuple[str, ...]:
+        """反注册一个 base 的**全部版本**（T-L1-007 回收面）。
+
+        删除该 base 的全部描述体与待检查标记，返回被删的 ``skill_id``（升序）。
+
+        - 粒度是 base——单版本删除会让 ``get_latest`` / ``list_versions`` 语义碎裂，
+          故不提供。
+        - 只动 ``config`` 分区；``execution_log`` 是 append-only 审计（02 §6），不注销。
+        - base 无任何已注册版本 → ``SkillNotFoundError``（不静默 no-op）。
+        """
+        marker = self._update_path(base)  # 形态校验（非 sk_ 前缀即拒）
+        versions = self.list_versions(base)
+        if not versions:
+            raise SkillNotFoundError(f"base {base!r} 无已注册版本，无法反注册")
+        removed: list[str] = []
+        for descriptor in versions:
+            self._store.delete("config", self._skill_path(descriptor.skill_id))
+            removed.append(descriptor.skill_id)
+        if marker in self._store.list_files("config"):
+            self._store.delete("config", marker)
+        return tuple(removed)
+
     # ───────────────────────── 读取：单个 / 最新 / 列表 / 待检查 ─────────
 
     def get(self, skill_id: str) -> SkillDescriptor:

@@ -269,6 +269,32 @@ class TestLifecycle:
         with pytest.raises(McpServerNotFoundError):
             registry.remove_server("srv_zzz")
 
+    def test_remove_invokes_hook(self, store: Store):
+        """T-L1-007：注入 `on_server_removed` 时删除即回调（组合根的接线点）。"""
+        seen: list[str] = []
+        registry = McpServerRegistry(
+            store, transport_factory=lambda _r: FakeTransport(),
+            on_server_removed=seen.append,
+        )
+        registry.add_server("srv_a", display_name="A", command=FAKE_COMMAND)
+        registry.remove_server("srv_a")
+        assert seen == ["srv_a"]
+
+    def test_remove_without_hook_is_unchanged(self, registry: McpServerRegistry):
+        """缺省 `None` 时不触发任何回调，行为与既有完全一致。"""
+        registry.remove_server("srv_a")
+        with pytest.raises(McpServerNotFoundError):
+            registry.get_server("srv_a")
+        assert [r.server_id for r in registry.list_servers()] == ["srv_b"]
+
+    def test_failed_remove_does_not_invoke_hook(self, store: Store):
+        """未注册的 id → 抛错且不回调（不误报删除成功）。"""
+        seen: list[str] = []
+        registry = McpServerRegistry(store, on_server_removed=seen.append)
+        with pytest.raises(McpServerNotFoundError):
+            registry.remove_server("srv_zzz")
+        assert seen == []
+
 
 class TestPermissions:
     """GWT-5：01 §10 声明 + 逐项批准。"""

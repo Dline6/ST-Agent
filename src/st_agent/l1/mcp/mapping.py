@@ -51,7 +51,7 @@ from st_agent.l1.mcp.ids import check_server_id
 from st_agent.l1.mcp.models import ToolSpec
 from st_agent.l1.mcp.registry import McpServerRegistry
 from st_agent.l1.skills.errors import SkillValidationError
-from st_agent.l1.skills.ids import parse_skill_id, skill_id_for
+from st_agent.l1.skills.ids import base_of, parse_skill_id, skill_id_for
 from st_agent.l1.skills.registry import SkillRegistry
 
 __all__ = [
@@ -68,8 +68,9 @@ __all__ = [
 MAPPING_PREFIX = "mcp-mapping/"
 """``config`` 分区内映射记录的目录前缀。"""
 
-MappingStatus = Literal["active", "pending-remap"]
-"""映射状态：``active`` 与已注册描述体一致；``pending-remap`` 契约已变、待用户确认。"""
+MappingStatus = Literal["active", "pending-remap", "vanished"]
+"""映射状态：``active`` 与已注册描述体一致；``pending-remap`` 契约已变、待用户确认；
+``vanished`` 该 tool 已不在 Server 的 tool 列表中（记录保留，tool 回归即自愈）。"""
 
 TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 """tool 名形状——同时是映射记录的**落盘路径段**（``check_tool_name``）。"""
@@ -173,8 +174,8 @@ class McpToolMapping(BaseModel):
         check_tool_name(self.tool)
         if self.updated_at.tzinfo is None:
             raise McpValidationError("updated_at 必须带时区语义（01 §8）")
-        if self.status == "pending-remap" and not self.change_note.strip():
-            raise McpValidationError("pending-remap 必须给出变化说明（GWT-3 显式提示）")
+        if self.status in ("pending-remap", "vanished") and not self.change_note.strip():
+            raise McpValidationError(f"{self.status} 必须给出变化说明（GWT-3 显式提示）")
         if self.status == "active" and self.change_note.strip():
             raise McpValidationError("active 映射不得带变化说明")
         return self
@@ -206,15 +207,18 @@ class McpSkillMapper:
         - 新 tool → 注册 Skill（``source="mcp-mapped"``）并落映射记录
         - 指纹未变 → 原样保留（幂等，不重复注册、不报错）
         - 指纹变了 → 只标 ``pending-remap``，**不触碰**已注册描述体
+        - tool 从本次 ``tools/list`` 消失 → 标 ``vanished``（记录保留，回归即自愈）
 
         返回该 Server 同步后的全部映射记录（按 tool 升序）。
         """
         sid = check_server_id(server_id)
         record = self._servers.get_server(sid)
         self._require_approved(sid)
-        for spec in self._fetch_tools(sid):
+        specs = self._fetch_tools(sid)
+        for spec in specs:
             check_tool_name(spec.name)
             self._sync_one(sid, spec, record.permissions)
+        self._mark_vanished(sid, {spec.name for spec in specs})
         return self.mappings(sid)
 
     def _sync_one(
@@ -245,6 +249,20 @@ class McpSkillMapper:
             "change_note": _describe_change(existing, input_fp, output_fp),
             "updated_at": _now(),
         }))
+
+    def _mark_vanished(self, server_id: str, present: set[str]) -> None:
+        """本次 ``tools/list`` 未出现的既有 tool → 标 ``vanished``（不回收，回归即自愈）。"""
+        for mapping in self.mappings(server_id):
+            if mapping.tool in present or mapping.status == "vanished":
+                continue
+            self._save(mapping.model_copy(update={
+                "status": "vanished",
+                "change_note": (
+                    f"tool {mapping.tool!r} 已不在 Server {server_id!r} 的 tool 列表中——"
+                    "映射与描述体保留，tool 回归即自愈"
+                ),
+                "updated_at": _now(),
+            }))
 
     def _register_skill(
         self, server_id: str, spec: ToolSpec, permissions: tuple[str, ...]
@@ -360,6 +378,28 @@ class McpSkillMapper:
         self._save(updated)
         return updated
 
+    # ───────────────────────── 回收 ─────────────────────────
+
+    def recycle_server(self, server_id: str) -> tuple[str, ...]:
+        """回收一台 Server 的全部映射记录与派生 Skill（GWT-3；T-L1-007）。
+
+        适用「Server 已被 ``McpServerRegistry.remove_server`` 显式移除」这类持久性
+        动作：删 ``mcp-mapping/<server_id>/*.json`` 并反注册其派生 Skill（base 的
+        **全部版本**），返回被反注册的 ``skill_id``（升序）。
+
+        不调用 ``get_server``（注册记录此时已不存在）；非 ``mcp-mapped`` 来源的
+        Skill 不受影响。
+        """
+        sid = check_server_id(server_id)
+        mappings = self.mappings(sid)
+        removed: list[str] = []
+        for base in sorted({base_of(m.skill_id) for m in mappings}):
+            if self._skills.get_latest(base) is not None:
+                removed.extend(self._skills.unregister(base))
+        for mapping in mappings:
+            self._store.delete("config", self._path(mapping.server_id, mapping.tool))
+        return tuple(removed)
+
     # ───────────────────────── 查询 ─────────────────────────
 
     def mappings(self, server_id: str) -> tuple[McpToolMapping, ...]:
@@ -397,8 +437,12 @@ class McpSkillMapper:
         return tuple(d for d in self._skills.list_all() if d.skill_id not in hidden)
 
     def _unavailable_skill_ids(self, usable: set[str]) -> set[str]:
-        """由不可用 Server 派生的 Skill 标识（全部版本）。"""
-        return {m.skill_id for m in self._all_mappings() if m.server_id not in usable}
+        """不可用 Skill 标识：不可用 Server 派生者 + 已标 ``vanished`` 者（全部版本）。"""
+        return {
+            m.skill_id
+            for m in self._all_mappings()
+            if m.server_id not in usable or m.status == "vanished"
+        }
 
     # ───────────────────────── 内部工具 ─────────────────────────
 

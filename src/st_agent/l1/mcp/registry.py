@@ -48,6 +48,7 @@ __all__ = [
     "SERVER_PREFIX",
     "EnvResolver",
     "McpServerRegistry",
+    "ServerRemovedHook",
     "TransportFactory",
 ]
 
@@ -59,6 +60,9 @@ TransportFactory = Callable[[McpServerRecord], McpTransport]
 
 EnvResolver = Callable[[str], str]
 """环境变量名 → 取值（凭据库读取由上层注入；缺省不注入任何变量）。"""
+
+ServerRemovedHook = Callable[[str], None]
+"""``remove_server`` 成功后的回调形态（组合根接线到 ``McpSkillMapper.recycle_server``）。"""
 
 
 def _now() -> datetime:
@@ -74,6 +78,9 @@ class McpServerRegistry:
     :param transport_factory: 可选传输工厂（缺省按记录种类造真实传输）
     :param env_resolver: 可选环境变量解析器（``env_refs`` → 取值）
     :param timeout_ms: 单次收发与出网超时（毫秒）
+    :param on_server_removed: 可选回调——``remove_server`` 成功后被调用（T-L1-007：
+        由组合根接 ``McpSkillMapper.recycle_server`` 做「删除即回收」；缺省 ``None``
+        时 ``remove_server`` 行为与既有完全一致）
     """
 
     def __init__(
@@ -84,12 +91,14 @@ class McpServerRegistry:
         transport_factory: TransportFactory | None = None,
         env_resolver: EnvResolver | None = None,
         timeout_ms: int = DEFAULT_TIMEOUT_MS,
+        on_server_removed: ServerRemovedHook | None = None,
     ) -> None:
         self._store = store
         self._gateway = gateway
         self._factory = transport_factory
         self._env_resolver = env_resolver
         self._timeout_ms = timeout_ms
+        self._on_removed = on_server_removed
         self._permissions = McpPermissionBook(store)
 
     @property
@@ -165,12 +174,18 @@ class McpServerRegistry:
         return result
 
     def remove_server(self, server_id: str) -> None:
-        """移除一台 Server（连同其批准状态；出网审计记录**不动**——审计不可注销）。"""
+        """移除一台 Server（连同其批准状态；出网审计记录**不动**——审计不可注销）。
+
+        若构造时注入了 ``on_server_removed``，删除成功后调用它（T-L1-007「删除即回收」
+        的接线点，由组合根接 ``McpSkillMapper.recycle_server``）。
+        """
         sid = check_server_id(server_id)
         if self._path(sid) not in self._store.list_files("config"):
             raise McpServerNotFoundError(f"MCP Server {sid!r} 未注册")
         self._store.delete("config", self._path(sid))
         self._permissions.forget(sid)
+        if self._on_removed is not None:
+            self._on_removed(sid)
 
     def enable_server(self, server_id: str) -> McpServerRecord:
         """启用（幂等）。"""

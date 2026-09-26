@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -27,12 +28,13 @@ from st_agent.l1.mcp import (
     McpServerNotFoundError,
     McpServerRegistry,
     McpSkillMapper,
+    McpToolMapping,
     McpTransport,
     McpValidationError,
     ToolSpec,
     tool_fingerprints,
 )
-from st_agent.l1.skills import SkillRegistry, skill_id_for
+from st_agent.l1.skills import SkillNotFoundError, SkillRegistry, skill_id_for
 
 PASS = "correct horse battery staple"
 STUB = Path(__file__).resolve().parent / "_mcp_stub_server.py"
@@ -240,13 +242,14 @@ class TestIdempotentAndIncremental:
         assert len(SkillRegistry(store).list_all()) == 2
 
     def test_removed_tool_leaves_record_untouched(self, store: Store):
-        """A8：tool 消失时不回收（无 spec 依据不删用户可见的 Skill）。"""
+        """T-L1-007 收口原 A8 边界：tool 消失 → 标 `vanished`（记录保留、可逆），不回收。"""
         _, mapper, factory = build(store, tools=(ECHO, tool("list_watch_groups")))
         mapper.sync_tools("srv_a")
         factory.tools = [ECHO]
         after = mapper.sync_tools("srv_a")
         assert [m.tool for m in after] == ["echo_symbol", "list_watch_groups"]
-        assert len(SkillRegistry(store).list_all()) == 2
+        assert {m.tool: m.status for m in after}["list_watch_groups"] == "vanished"
+        assert len(SkillRegistry(store).list_all()) == 2  # 描述体保留（tool 回归即自愈）
 
 
 # ───────────────────────── GWT-3 契约变化 ─────────────────────────
@@ -509,3 +512,139 @@ class TestBoundaries:
         reworded = tool("t", description="换了个说法")
         assert (tool_fingerprints(ToolSpec(name="t", input_schema=described["inputSchema"]))
                 == tool_fingerprints(ToolSpec(name="t", input_schema=reworded["inputSchema"])))
+
+
+# ───────────────────────── T-L1-007 失效标记与回收 ─────────────────────────
+
+
+class TestVanishedMarking:
+    """T-L1-007：tool 消失标 `vanished`、从可用列表滤除、回归即自愈。"""
+
+    WATCH = tool("list_watch_groups")
+
+    def test_vanished_hides_skill_from_available(self, store: Store):
+        _, mapper, factory = build(store, tools=(ECHO, self.WATCH))
+        mapper.sync_tools("srv_a")
+        assert skill_ids(mapper) == {
+            "sk_mcp_srv_a_echo_symbol_v1.0", "sk_mcp_srv_a_list_watch_groups_v1.0",
+        }
+        factory.tools = [ECHO]
+        mapper.sync_tools("srv_a")
+        assert skill_ids(mapper) == {"sk_mcp_srv_a_echo_symbol_v1.0"}
+
+    def test_vanished_record_carries_change_note(self, store: Store):
+        _, mapper, factory = build(store, tools=(ECHO, self.WATCH))
+        mapper.sync_tools("srv_a")
+        factory.tools = [ECHO]
+        vanished = {m.tool: m for m in mapper.sync_tools("srv_a")}["list_watch_groups"]
+        assert vanished.status == "vanished"
+        assert "list_watch_groups" in vanished.change_note
+
+    def test_vanished_tool_returns_and_heals(self, store: Store):
+        _, mapper, factory = build(store, tools=(ECHO, self.WATCH))
+        mapper.sync_tools("srv_a")
+        factory.tools = [ECHO]
+        mapper.sync_tools("srv_a")
+        factory.tools = [ECHO, self.WATCH]
+        healed = {m.tool: m for m in mapper.sync_tools("srv_a")}["list_watch_groups"]
+        assert healed.status == "active"
+        assert healed.change_note == ""
+        assert "sk_mcp_srv_a_list_watch_groups_v1.0" in skill_ids(mapper)
+
+    def test_vanished_requires_change_note(self, store: Store):
+        """记录形态不变量：`vanished` 必须带说明（与 `pending-remap` 同口径）。"""
+        with pytest.raises(McpValidationError):
+            McpToolMapping(
+                server_id="srv_a", tool="t", skill_id="sk_mcp_srv_a_t_v1.0",
+                fingerprint="f", input_fingerprint="i", output_fingerprint="o",
+                mapping_version="1.0", status="vanished", change_note="",
+                updated_at=datetime.now().astimezone(),
+            )
+
+
+class TestRecycleServer:
+    """T-L1-007：Server 移除即回收映射记录与派生 Skill（硬回收、不可逆）。"""
+
+    def test_recycle_removes_mappings_and_skills(self, store: Store):
+        _, mapper, _ = build(store)
+        mapper.sync_tools("srv_a")
+        assert "mcp-mapping/srv_a/echo_symbol.json" in store.list_files("config")
+        removed = mapper.recycle_server("srv_a")
+        assert removed == ("sk_mcp_srv_a_echo_symbol_v1.0",)
+        assert [n for n in store.list_files("config") if n.startswith("mcp-mapping/srv_a/")] == []
+        skills = SkillRegistry(store)
+        assert skills.list_all() == ()
+        with pytest.raises(SkillNotFoundError):
+            skills.get("sk_mcp_srv_a_echo_symbol_v1.0")
+
+    def test_recycle_drops_all_versions_and_marker(self, store: Store):
+        """反注册粒度是 base 的**全部版本**（`skill-update/` 待检查标记同清）。"""
+        _, mapper, factory = build(store)
+        mapper.sync_tools("srv_a")
+        factory.tools = [tool("echo_symbol", input_schema={
+            "type": "object", "properties": {"symbol": {"type": "string"}},
+            "required": ["symbol", "market"]})]
+        mapper.sync_tools("srv_a")  # → pending-remap
+        mapper.apply_remap("srv_a", "echo_symbol")  # 不兼容 → 主版本 v2.0 + 待检查标记
+        assert len(SkillRegistry(store).list_versions("sk_mcp_srv_a_echo_symbol")) == 2
+        assert "skill-update/sk_mcp_srv_a_echo_symbol.json" in store.list_files("config")
+        removed = mapper.recycle_server("srv_a")
+        assert set(removed) == {
+            "sk_mcp_srv_a_echo_symbol_v1.0", "sk_mcp_srv_a_echo_symbol_v2.0",
+        }
+        assert SkillRegistry(store).list_versions("sk_mcp_srv_a_echo_symbol") == ()
+        assert "skill-update/sk_mcp_srv_a_echo_symbol.json" not in store.list_files("config")
+
+    def test_recycle_via_remove_server_hook(self, store: Store):
+        """GWT-3：接线 `on_server_removed` 后，`remove_server` 即回收（组合根的等价形态）。"""
+        holder: dict = {}
+        servers = McpServerRegistry(
+            store, transport_factory=Factory((ECHO,)),
+            on_server_removed=lambda sid: holder["mapper"].recycle_server(sid),
+        )
+        servers.add_server("srv_a", display_name="存根 Server", command=FAKE_COMMAND)
+        mapper = McpSkillMapper(store, servers=servers, skills=SkillRegistry(store))
+        holder["mapper"] = mapper
+        mapper.sync_tools("srv_a")
+        servers.remove_server("srv_a")
+        assert SkillRegistry(store).list_all() == ()
+        assert [n for n in store.list_files("config") if n.startswith("mcp-mapping/")] == []
+
+    def test_unwired_remove_server_keeps_records(self, store: Store):
+        """缺省未接线时 `remove_server` 行为与既有一致（映射与描述体不动）。"""
+        servers, mapper, _ = build(store)
+        mapper.sync_tools("srv_a")
+        servers.remove_server("srv_a")
+        assert [m.tool for m in mapper.mappings("srv_a")] == ["echo_symbol"]
+        assert len(SkillRegistry(store).list_all()) == 1
+
+    def test_recycle_keeps_non_mcp_skills(self, store: Store):
+        _, mapper, _ = build(store)
+        mapper.sync_tools("srv_a")
+        SkillRegistry(store).register(
+            "sk_official_probe", version="1.0", name="官方探查",
+            description="官方 Pack 的探查 Skill", source="official",
+            offline_level="full", version_policy="follow-latest",
+        )
+        mapper.recycle_server("srv_a")
+        assert [d.skill_id for d in SkillRegistry(store).list_all()] == [
+            "sk_official_probe_v1.0",
+        ]
+
+    def test_recycle_of_unmapped_server_is_noop(self, store: Store):
+        _, mapper, _ = build(store)  # 未 sync 过
+        assert mapper.recycle_server("srv_a") == ()
+        assert mapper.mappings("srv_a") == ()
+
+    def test_vanished_mapping_is_recycled_too(self, store: Store):
+        """`vanished`（tool 消失）后再移除 Server → 一并回收（两种情形都收口）。"""
+        servers, mapper, factory = build(store, tools=(ECHO, tool("list_watch_groups")))
+        mapper.sync_tools("srv_a")
+        factory.tools = [ECHO]
+        mapper.sync_tools("srv_a")
+        servers.remove_server("srv_a")
+        removed = mapper.recycle_server("srv_a")
+        assert set(removed) == {
+            "sk_mcp_srv_a_echo_symbol_v1.0", "sk_mcp_srv_a_list_watch_groups_v1.0",
+        }
+        assert SkillRegistry(store).list_all() == ()
