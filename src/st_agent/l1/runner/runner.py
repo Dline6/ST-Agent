@@ -1,7 +1,7 @@
 """Skill 执行流水线（T-L1-001.2；03 §1.2）。
 
 标准流水线（一次 ``skill_run_id``）：解析 → 参数确认 → 依赖 DAG 解析 →
-权限检查 → 执行与留痕。
+权限检查 → 执行与留痕 → 输出登记。
 
 - 解析：``match`` 按查询文本匹配 SkillDescriptor（GWT-2 调度匹配口径）
 - 参数确认：``confirm_card`` 返回参数确认卡数据；``run`` 内经
@@ -13,6 +13,8 @@
 - 执行与留痕：执行器为同步 callable（A4）；输出统一 ``ResultEnvelope``；
   ``SkillRun`` 落 ``execution_log`` 分区并追加 ``skill_run`` TraceStep
   （GWT-6）
+- 输出登记：``outputs`` 非空时把 ``ok``/``empty`` 输出登记为可复用结果
+  （T-L1-001.4 / 03 §1.2 步骤 6）；登记失败 → 信封转 ``failed``（不静默）
 
 布局（只经 ``Store`` 读写，不直连文件系统）：
 - SkillRun 记录 → ``execution_log`` 分区 ``skill-run/<skill_run_id>.json``
@@ -35,6 +37,8 @@ from st_agent.l1.runner.errors import (
     RunnerValidationError,
 )
 from st_agent.l1.runner.models import RUN_PREFIX, checked_skill_run
+from st_agent.l1.reuse.errors import ReuseError
+from st_agent.l1.reuse.models import REUSABLE_STATUSES
 from st_agent.l1.skills.errors import (
     SkillNotFoundError,
     SkillValidationError,
@@ -74,6 +78,12 @@ class SkillContext(BaseModel):
     """``LlmClient`` 句柄（无则为 None，执行器须显式处理）。"""
     gateway: Any = None
     """``EgressGateway`` 句柄（无则为 None，执行器须显式处理）。"""
+    freshness: Any = None
+    """新鲜度查询句柄（``reuse.FreshnessOracle``；无则为 None）。
+
+    执行器经此自查数据源新鲜度，据 ``StalenessVerdict`` 走 ``unavailable``
+    分支（GWT-8）——「最后更新时间」取自判定，不自行编造（01 §8）。
+    """
 
 
 class RunOutcome(BaseModel):
@@ -90,11 +100,14 @@ class RunOutcome(BaseModel):
 class SkillRunner:
     """Skill 执行流水线门面（03 §1.2；持久化只经 ``Store``）。"""
 
-    def __init__(self, store, registry, *, llm=None, gateway=None) -> None:
+    def __init__(self, store, registry, *, llm=None, gateway=None,
+                 outputs=None, freshness=None) -> None:
         self._store = store
         self._registry = registry
         self._llm = llm
         self._gateway = gateway
+        self._outputs = outputs
+        self._freshness = freshness
         self._executors: dict[str, SkillExecutor] = {}
 
     # ───────────────────────── 执行器注册（A4） ─────────────────────────
@@ -204,6 +217,13 @@ class SkillRunner:
 
         def finish(envelope: ResultEnvelope, upstream: tuple[str, ...],
                    params: dict[str, Any]) -> tuple[ResultEnvelope, Trace, str]:
+            if self._outputs is not None and envelope.status in REUSABLE_STATUSES:
+                try:
+                    self._outputs.register(run_id, skill_id, envelope)
+                except ReuseError as exc:
+                    # 登记是流水线步骤 6，失败即本次执行失败（禁止静默失败）
+                    envelope = ResultEnvelope.failed(
+                        f"Skill {skill_id!r} 输出登记失败：{exc}", log_ref=log_ref)
             duration = int((time.monotonic() - started) * 1000)
             record = checked_skill_run(
                 skill_run_id=run_id, skill_id=skill_id,
@@ -284,7 +304,8 @@ class SkillRunner:
             skill_id=skill_id, skill_run_id=run_id,
             trace_id=chain.trace_id.value,
             initiator=initiator, purpose=purpose,
-            upstream=dict(upstream), llm=self._llm, gateway=self._gateway)
+            upstream=dict(upstream), llm=self._llm, gateway=self._gateway,
+            freshness=self._freshness)
         try:
             envelope = fn(ctx, dict(params))
         except Exception as exc:  # 执行器抛裸异常 → 显式 failed（禁止静默失败）
