@@ -4,7 +4,7 @@
 - ``render_ledger.serialize`` 回写任务文件时**不得丢字段**（未知键与空值键原样保留）——
   派生父状态会重写任务文件，丢字段属静默数据损坏；
 - ``T-INT-*`` 集成关卡层被 ID_RE / layer_of / LAYER_ORDER 识别；
-- ``verify_docs`` 的两项新检查（接口面完整、集成关卡覆盖）与 `gate: skip` 例外。
+- ``verify_docs`` 的三项新检查（接口面完整、集成关卡覆盖、遗留销账）与 `gate: skip` 例外。
 """
 
 from __future__ import annotations
@@ -162,3 +162,46 @@ def test_gate_skip_task_is_exempt(fake_tasks):
         {"skip.md": {"gate": "skip"}},
     )
     assert vd.check_integration_gates() == []
+
+
+# ───────────────────────── 检查 8：遗留销账 ─────────────────────────
+# 归属任务做完了、册内条目却还在 —— 条目会静默滞留，正是 L0 册 C1/C2 的成因。
+
+_LEGACY_HEAD = "| # | 遗留内容 | 来源 | 归属 | 解封条件 |\n|---|---|---|---|---|\n"
+
+
+def _registry(tmp_path, body, name="L9-遗留问题.md"):
+    d = tmp_path / "遗留问题"
+    d.mkdir(exist_ok=True)
+    (d / name).write_text(body, encoding="utf-8")
+    return str(d)
+
+
+def _task(tid, status):
+    return {"id": tid, "status": status, "parent": "", "path": f"{tid}.md", "milestone": "M0"}
+
+
+def test_legacy_entry_whose_owner_is_done_is_flagged(fake_tasks, tmp_path, monkeypatch):
+    fake_tasks([_task("T-L0-001", "done")], {})
+    monkeypatch.setattr(vd, "LEGACY_DIR", _registry(tmp_path, _LEGACY_HEAD +
+        "| A1 | 归属方已做完却未销账 | [T-L0-001] | `T-L0-001` | T-L0-001 `done` |\n"))
+    assert vd.check_legacy_settlement() == [
+        ("L9-遗留问题.md · A1", "归属/解封条件 T-L0-001 已全 done，条目未销账")]
+
+
+def test_legacy_entry_whose_owner_is_open_passes(fake_tasks, tmp_path, monkeypatch):
+    """来源列里的已 done 任务不算（那是留痕不是归属）。"""
+    fake_tasks([_task("T-L0-001", "done"), _task("T-L2-001", "todo")], {})
+    monkeypatch.setattr(vd, "LEGACY_DIR", _registry(tmp_path, _LEGACY_HEAD +
+        "| A1 | 归属方还没轮到 | [T-L0-001] | `T-L2-001` | T-L2-001 `done` |\n"))
+    assert vd.check_legacy_settlement() == []
+
+
+def test_legacy_closed_section_and_unborn_task_are_ignored(fake_tasks, tmp_path, monkeypatch):
+    """「已闭（备查）」之后不再判；册内点到尚不存在的任务 id（如待立项）也不判。"""
+    fake_tasks([_task("T-L0-001", "done")], {})
+    monkeypatch.setattr(vd, "LEGACY_DIR", _registry(tmp_path, _LEGACY_HEAD +
+        "| A1 | 任务尚不存在 | — | 建议新立 `T-L0-099` | 立项后 |\n"
+        "\n## 已闭（备查）\n\n"
+        "- **A2** 归属 `T-L0-001` 但已闭，不该判\n"))
+    assert vd.check_legacy_settlement() == []

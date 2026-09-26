@@ -11,6 +11,8 @@
   6. 接口面    doing/blocked/done 叶子任务是否有 `## 接口面` 实填节（警告；--strict 下判失败）
   7. 集成关卡  每个里程碑是否有 T-INT-* 关卡任务、且其 depends_on 覆盖本里程碑全部叶子任务
                （警告；--strict 下判失败）
+  8. 遗留销账  遗留问题/*.md 未闭区（「## 已闭」之前）条目的「归属 / 解封条件」所指任务若已全 done，
+               说明归属方做完了却没销账（警告；--strict 下判失败）
 
 用法：
   python tools/verify_docs.py            # 只读校验
@@ -190,6 +192,42 @@ def check_integration_gates():
             issues.append((gates[0]["id"], "依赖未覆盖本里程碑任务：" + ", ".join(uncovered)))
     return issues
 
+# 检查 8：遗留销账（2026-09-26 机制）
+# 遗留册未闭区的表格行里，「归属」/「解封条件」两列点名的任务若已全部 done，说明归属方做完了
+# 却没销账——条目会静默滞留册中，正是 L0 册 C1/C2 的成因。只认这两列（「来源」列的已 done
+# 任务不算：那是留痕不是归属）。任务 id 在册内不存在（如「待立项」的 T-L0-008）一律不判。
+LEGACY_DIR = os.path.join(rl.PM, "遗留问题")
+CLOSED_HEAD = re.compile(r"^##\s*已闭", re.M)
+TASK_ID_RX = re.compile(rl.ID_RE.pattern + r"(?:\.\d+)?")   # 层号含数字（L0/L1 等），复用 ID_RE
+FENCE_RX = re.compile(r"```.*?```", re.S)
+
+def check_legacy_settlement():
+    """遗留册未闭区里「归属方已 done 但条目仍在」的行。"""
+    if not os.path.isdir(LEGACY_DIR): return []
+    status = {t["id"]: t["status"] for t in rl.scan(rl.TASKS) + rl.scan(rl.DONE)}
+    issues = []
+    for fn in sorted(os.listdir(LEGACY_DIR)):
+        if not fn.endswith(".md") or fn == "README.md": continue
+        txt = FENCE_RX.sub('', open(os.path.join(LEGACY_DIR, fn), encoding="utf-8").read())
+        m = CLOSED_HEAD.search(txt)
+        body = txt[:m.start()] if m else txt          # 「已闭（备查）」之后不再判
+        owner = unlock = width = None
+        for line in body.splitlines():
+            if not line.lstrip().startswith("|"):
+                owner = unlock = None                 # 出了表格，列映射作废
+                continue
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            if owner is None:                         # 找表头（同时含「归属」与「解封条件」两列）
+                if "归属" in cells and "解封条件" in cells:
+                    owner, unlock, width = cells.index("归属"), cells.index("解封条件"), len(cells)
+                continue
+            if len(cells) != width or set("".join(cells)) <= set("-: "): continue   # 分隔行 / 串行
+            ids = list(dict.fromkeys(TASK_ID_RX.findall(" ".join((cells[owner], cells[unlock])))))
+            if ids and all(status.get(i) == "done" for i in ids):
+                issues.append((f"{fn} · {cells[0]}",
+                               f"归属/解封条件 {'、'.join(ids)} 已全 done，条目未销账"))
+    return issues
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8")   # 兼容 Windows GBK 控制台，避免 emoji/中文崩溃
@@ -230,6 +268,10 @@ def main():
     gates = check_integration_gates()
     print(f"[7] 集成关卡  : {len(gates)} 处")
     for tid, why in gates: print(f"      ⚠ {tid} {why}"); warn += 1
+
+    legacy = check_legacy_settlement()
+    print(f"[8] 遗留销账  : {len(legacy)} 处")
+    for tid, why in legacy: print(f"      ⚠ {tid} {why}"); warn += 1
 
     fail = hard_fail + (warn if a.strict else 0)
     print("\n结果：", "PASS ✅" if fail == 0 else f"FAIL ❌（硬失败 {hard_fail}，警告 {warn}{'' if not a.strict else '·strict'}）")
