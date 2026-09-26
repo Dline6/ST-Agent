@@ -15,6 +15,10 @@
   （GWT-6）
 - 输出登记：``outputs`` 非空时把 ``ok``/``empty`` 输出登记为可复用结果
   （T-L1-001.4 / 03 §1.2 步骤 6）；登记失败 → 信封转 ``failed``（不静默）
+- 沙箱（T-L1-001.5 / 03 §1.5）：``sandbox`` 非空时——禁用 Skill 直接
+  ``validation_failed`` 拦截且执行器不被调用；``ctx.gateway`` / ``ctx.llm``
+  换成受限出口，``ctx.sandbox`` 挂受限会话（文件/命令出口由执行器经此自查）。
+  ``sandbox=None`` 时行为与现状逐字节一致（句柄原样透传）
 
 布局（只经 ``Store`` 读写，不直连文件系统）：
 - SkillRun 记录 → ``execution_log`` 分区 ``skill-run/<skill_run_id>.json``
@@ -84,6 +88,12 @@ class SkillContext(BaseModel):
     执行器经此自查数据源新鲜度，据 ``StalenessVerdict`` 走 ``unavailable``
     分支（GWT-8）——「最后更新时间」取自判定，不自行编造（01 §8）。
     """
+    sandbox: Any = None
+    """受限会话句柄（``l1.sandbox.SandboxSession``；未接沙箱时为 None）。
+
+    执行器经此自查文件/命令出口（``ctx.sandbox.read_file`` / ``run_command``）
+    ——越界拦截且不执行原操作（T-L1-001.5 / GWT-W3）。
+    """
 
 
 class RunOutcome(BaseModel):
@@ -101,13 +111,14 @@ class SkillRunner:
     """Skill 执行流水线门面（03 §1.2；持久化只经 ``Store``）。"""
 
     def __init__(self, store, registry, *, llm=None, gateway=None,
-                 outputs=None, freshness=None) -> None:
+                 outputs=None, freshness=None, sandbox=None) -> None:
         self._store = store
         self._registry = registry
         self._llm = llm
         self._gateway = gateway
         self._outputs = outputs
         self._freshness = freshness
+        self._sandbox = sandbox
         self._executors: dict[str, SkillExecutor] = {}
 
     # ───────────────────────── 执行器注册（A4） ─────────────────────────
@@ -249,6 +260,13 @@ class SkillRunner:
                 ResultEnvelope.validation_failed(f"Skill {skill_id!r} 未注册：{exc}"),
                 (), dict(values))
 
+        # ── 沙箱禁用拦截（T-L1-001.5 / GWT-W1：直接拦截，不执行不解析依赖） ──
+        if self._sandbox is not None and self._sandbox.is_disabled(skill_id):
+            return finish(
+                ResultEnvelope.validation_failed(
+                    f"Skill {skill_id!r} 已被禁用，拒绝执行（03 §1.5）"),
+                (), dict(values))
+
         # ── 参数确认（超范围 → validation_failed，不执行） ──
         try:
             params = self._registry.validate_call_params(skill_id, values)
@@ -293,6 +311,12 @@ class SkillRunner:
                     f"Skill {skill_id!r} 缺少已批准权限：{missing}（01 §10）"),
                 tuple(ordered), params)
 
+        # ── 沙箱（T-L1-001.5）：为本次执行开受限会话（携带声明 + 已批准 + trace） ──
+        session = None
+        if self._sandbox is not None:
+            session = self._sandbox.session(
+                descriptor, approved, trace_id=chain.trace_id.value)
+
         # ── 执行（无执行器/抛裸异常/非法返回 → failed，带 log_ref） ──
         fn = self._executors.get(skill_id)
         if fn is None:
@@ -304,8 +328,13 @@ class SkillRunner:
             skill_id=skill_id, skill_run_id=run_id,
             trace_id=chain.trace_id.value,
             initiator=initiator, purpose=purpose,
-            upstream=dict(upstream), llm=self._llm, gateway=self._gateway,
-            freshness=self._freshness)
+            upstream=dict(upstream),
+            llm=(session.guard_llm(self._llm)
+                 if session is not None and self._llm is not None else self._llm),
+            gateway=(session.guard_gateway(self._gateway)
+                     if session is not None and self._gateway is not None
+                     else self._gateway),
+            freshness=self._freshness, sandbox=session)
         try:
             envelope = fn(ctx, dict(params))
         except Exception as exc:  # 执行器抛裸异常 → 显式 failed（禁止静默失败）

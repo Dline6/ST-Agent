@@ -6,9 +6,14 @@
   （与 .2 流水线一致：运行时不抛裸异常）。唯一例外是流式出口
   ``SandboxedGateway.stream``（其契约为「产块/抛异常」），越界抛
   ``SandboxViolationError``。
+- ``provider → host`` 映射（``provider_hosts``，T-L1-001.5）：重复登记 /
+  未登记走 ``ProviderHost*`` 异常；映射内容非法走 ``SandboxValidationError``。
 """
 
 __all__ = [
+    "ProviderHostError",
+    "ProviderHostExistsError",
+    "ProviderHostNotFoundError",
     "SandboxError",
     "SandboxValidationError",
     "SandboxViolationError",
@@ -25,3 +30,15 @@ class SandboxValidationError(SandboxError, ValueError):
 
 class SandboxViolationError(SandboxError):
     """越界拦截的异常形态（仅供「产块/抛异常」契约的流式出口使用）。"""
+
+
+class ProviderHostError(SandboxError):
+    """``provider → host`` 映射子系统错误基类（T-L1-001.5；D-005）。"""
+
+
+class ProviderHostExistsError(ProviderHostError):
+    """同一 provider 重复登记（更新请用 ``update``）。"""
+
+
+class ProviderHostNotFoundError(ProviderHostError):
+    """provider 未登记。"""
