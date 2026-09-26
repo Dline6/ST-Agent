@@ -32,6 +32,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from st_agent.contracts.capability_types import ParameterSpec, Provenance, SkillDescriptor
 from st_agent.contracts.registry_types import SemVer, validate_permissions
+from st_agent.l1.sandbox.models import DISABLED_PREFIX
 from st_agent.l1.skills.errors import (
     SkillExistsError,
     SkillNotFoundError,
@@ -163,10 +164,16 @@ class SkillRegistry:
         """注册一个 Skill 版本（已存在 → ``SkillExistsError``，更新走 ``publish_version``）。"""
         skill_id = skill_id_for(base, version if isinstance(version, SemVer) else SemVer.parse(version))
         path = self._skill_path(skill_id)
-        if path in self._store.list_files("config"):
+        existing = self._store.list_files("config")
+        if path in existing:
             raise SkillExistsError(
                 f"Skill {skill_id!r} 已存在；新版本请用 publish_version，不得静默覆盖"
             )
+        # 走到此处该 skill_id 必未注册，故残留的禁用旗标只能属于已消失的旧实体：
+        # 新注册的 Skill 不继承旧禁用状态（T-L1-008 / GWT-1）。
+        flag = f"{DISABLED_PREFIX}{skill_id}.json"
+        if flag in existing:
+            self._store.delete("config", flag)
         if not self._name_ok(name):
             raise SkillValidationError(f"Skill 命名未过中性化校验: {name!r}（01 §6）")
         try:

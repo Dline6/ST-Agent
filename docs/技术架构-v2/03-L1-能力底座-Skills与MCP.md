@@ -185,7 +185,7 @@ stories: [PRD Story 2 — Skills Runtime, Story 6 — Skill Studio, Story 8 — 
 | 触发 | 经 `remove_server` 的**可选**回调 `on_server_removed`（缺省 `None` 即行为逐字节不变），由组合根接 `McpSkillMapper.recycle_server`——包内依赖保持 `mapping → registry` 单向，不让注册表反向 import 映射 |
 | Server 显式移除 | **硬回收**：删该 Server 全部映射记录 + 反注册其派生 Skill（base 的**全部版本**，含 `skill-update/<base>.json` 待检查标记）；`skill_id` 由 `(server, tool)` 确定性派生，重新挂载即重新注册 |
 | tool 从 Server 消失 | **软失效**：映射标 `vanished`（必带变化说明）并从可用列表滤除；记录与描述体保留，tool 回归即自愈为 `active`——瞬态少列一个 tool 不得造成不可逆损失 |
-| 范围边界 | 只回收 `source=mcp-mapped` 的派生 Skill；不动 `execution_log` 审计（append-only）；`mcp-lifecycle` 状态记录与 `sandbox-disabled` 旗标**不在**回收范围 |
+| 范围边界 | 只回收 `source=mcp-mapped` 的派生 Skill；不动 `execution_log` 审计（append-only）；`mcp-lifecycle` 状态记录**不在**回收范围；`sandbox-disabled` 旗标不经回收动作清除，改由**注册侧自愈**兜底——`skill_id` 由 `(server, tool)` 确定性派生、重挂即复用同一 id，故新注册的 Skill 一律不继承旧禁用旗标 |
 
 硬回收 / 软失效的分野取**动作的持久性**：`remove_server` 是用户显式且持久的决定，回收是其预期终态；tool 消失可能是 Server 侧瞬态，硬删不可逆且丢版本历史，故软失效并可自愈。反注册粒度取 base（单版本删除会让 `get_latest` / `list_versions` 语义碎裂）。
 

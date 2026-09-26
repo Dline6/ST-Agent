@@ -151,9 +151,12 @@ def derive_io_contract(
     ``properties``；键取 ``<node_id>.<prop>``。某节点有入边（出边）时，其入
     （出）端口整体视为已连——与 §3.1 的粗粒度节点到节点边模型对称。
 
-    依赖缺失时由 ``registry.get`` 抛 ``SkillNotFoundError``；需要提示而非异常的
-    调用方应先跑 ``missing_dependencies``。
+    依赖缺失（含引用已回收 Skill）时抛 ``CompositeDependencyError``，携逐条
+    ``gaps``——与 ``save_as_composite_skill`` 的依赖门同一口径。
     """
+    gaps = missing_dependencies(dag, registry)
+    if gaps:
+        raise CompositeDependencyError(gaps)
     incoming = {e.to_node for e in dag.edges}
     outgoing = {e.from_node for e in dag.edges}
     node_ids = {n.node_id for n in dag.nodes}

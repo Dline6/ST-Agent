@@ -153,11 +153,19 @@ class SkillSandbox:
             self._store.delete("config", self._disabled_path(skill_id))
 
     def is_disabled(self, skill_id: str) -> bool:
-        """是否已被用户禁用。"""
+        """是否已被用户禁用（有 ``Store`` 时以盘为准，外部清除即刻生效）。"""
+        if self._store is not None:
+            return self._disabled_path(skill_id) in self._store.list_files("config")
         return skill_id in self._disabled
 
     def disabled_skills(self) -> tuple[str, ...]:
-        """当前全部已禁用 Skill（升序）。"""
+        """当前全部已禁用 Skill（升序；有 ``Store`` 时以盘为准）。"""
+        if self._store is not None:
+            return tuple(sorted(
+                name[len(DISABLED_PREFIX):-len(".json")]
+                for name in self._store.list_files("config")
+                if name.startswith(DISABLED_PREFIX) and name.endswith(".json")
+            ))
         return tuple(sorted(self._disabled))
 
     # ───────────────────────── 越界留痕（GWT-S1/2/3） ─────────────────────────
