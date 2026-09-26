@@ -486,8 +486,10 @@ def test_begin_call_refuses_a_disabled_server(store):
 def test_cancel_signal_aborts_inflight_remote_call_end_to_end(store):
     """GWT-4 中止链路：真实 ``HttpSseTransport`` → 网关 → ``cancelled`` 审计 + 显式失败。
 
-    并发窗口内**只有工作线程写盘**（信令走不写盘的 ``cancel_inflight``）——``Store``
-    的清单缓存无写并发保护（见 L0 遗留册 E1），本用例刻意不制造跨线程同日分区竞争。
+    本用例的信号走不写盘的 ``cancel_inflight``，故并发窗口内只有工作线程写盘——这只是
+    该场景的天然形态，不再是规避手段：``Store`` 的同分区并发写自 ``T-L0-008`` 起已由分区级
+    互斥锁串行化（原「清单缓存无写并发保护」的 L0 遗留册 E1 随之关闭，回归用例见
+    ``tests/l0/test_store_concurrency.py``）。
     """
     gateway = EgressGateway(store)
     registry = make_registry(store, gateway=gateway)

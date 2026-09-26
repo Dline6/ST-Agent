@@ -16,6 +16,13 @@
 - ``wipe_partition(partition)`` → 清空重建（§2.1 独立清空）
 - ``partition_state(name)`` → ok / corrupted（损坏范围查询）
 
+并发（02 §2.4）：
+- 同一进程内，同一分区的读写以**分区级互斥锁**串行化——并发写不丢清单条目，
+  读不观察到「清单登记与文件内容配对不一致」的中间态（否则会误报损坏）
+- 清单与文件内容一律「同目录临时文件 + ``os.replace``」原子替换，中断只留完整
+  旧版本 + 无害残留，不留半截文件
+- 分区间互不阻塞；**多个进程同开同一 root 不在保证范围内**（需由上层约定单一写者）
+
 物理布局（④ 对齐）::
 
     root/
@@ -34,6 +41,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import threading
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -116,6 +124,39 @@ class Store:
         self._manifests: dict[str, PartitionManifest] = {}
         self._states: dict[str, str] = {p.name: "ok" for p in PARTITIONS}
         self._reports: dict[str, CorruptedPartitionReport] = {}
+        # 分区级互斥（02 §2.4）：同分区读写串行化，分区间互不阻塞
+        self._part_locks: dict[str, threading.RLock] = {}
+        self._part_locks_guard = threading.Lock()
+
+    def _part_lock(self, partition: PartitionName) -> threading.RLock:
+        """取该分区的互斥锁（延迟创建 + 双检；``_part_locks`` 自身由 guard 保护）。
+
+        用 ``RLock`` 而非 ``Lock``：``export_partition`` 在持有分区锁时仍会调
+        ``get`` / ``list_files``（同一线程重入须放行）。
+        """
+        lock = self._part_locks.get(partition)
+        if lock is None:
+            with self._part_locks_guard:
+                lock = self._part_locks.get(partition)
+                if lock is None:
+                    lock = threading.RLock()
+                    self._part_locks[partition] = lock
+        return lock
+
+    @staticmethod
+    def _atomic_write(target: Path, data: bytes) -> None:
+        """同目录临时文件 + ``os.replace`` 原子替换（02 §2.4 落盘原子性）。
+
+        失败（含中断）只可能留下一个不在清单口径内的临时文件，**不会**让
+        ``target`` 处于半截状态——旧内容完整保留。
+        """
+        tmp = target.parent / f".{target.name}.tmp-{os.urandom(6).hex()}"
+        try:
+            tmp.write_bytes(data)
+            os.replace(tmp, target)
+        except OSError:
+            tmp.unlink(missing_ok=True)
+            raise
 
     # ───────────────────────── 初始化与打开 ─────────────────────────
 
@@ -197,71 +238,86 @@ class Store:
     def put(self, partition: PartitionName, name: str, data: bytes) -> None:
         """写入/覆盖一个文件（清单与密文同批更新，GWT-3 往返一致）。"""
         validate_partition_name(partition)
-        self._require_ok(partition)
-        self._check_rel_name(name)
-        manifest = self._manifest(partition)
-        sealed = seal_bytes(self._keys[partition], data, aad=_AAD_FILE)
-        target = self._root / partition / name
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(sealed)
-        entries = {e.path: e for e in manifest.entries}
-        entries[name] = ManifestEntry(path=name, size=len(data), digest=compute_digest(data))
-        self._write_manifest(partition, PartitionManifest(entries=tuple(entries.values())))
+        with self._part_lock(partition):
+            self._require_ok(partition)
+            self._check_rel_name(name)
+            manifest = self._manifest(partition)
+            sealed = seal_bytes(self._keys[partition], data, aad=_AAD_FILE)
+            target = self._root / partition / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            self._atomic_write(target, sealed)
+            entries = {e.path: e for e in manifest.entries}
+            entries[name] = ManifestEntry(path=name, size=len(data), digest=compute_digest(data))
+            self._write_manifest(partition, PartitionManifest(entries=tuple(entries.values())))
 
     def get(self, partition: PartitionName, name: str) -> bytes:
         """读回一个文件；篡改 → CryptoError（GCM）或清单校验失败。"""
         validate_partition_name(partition)
-        self._require_ok(partition)
-        manifest = self._manifest(partition)
-        entry = manifest.entry_for(name)
-        if entry is None:
-            raise KeyError(f"分区 {partition} 无文件 {name!r}")
-        sealed = (self._root / partition / name).read_bytes()
-        plain = open_bytes(self._keys[partition], sealed, aad=_AAD_FILE)
-        if compute_digest(plain) != entry.digest or len(plain) != entry.size:
-            raise StorageCorruptionError(
-                StoreCorruptionReport(corrupted=(CorruptedPartitionReport(
-                    partition=partition,
-                    reason="文件内容与清单校验和不符",
-                    affected_files=(name,),
-                ),), healthy=tuple(n for n in PARTITION_NAMES if n != partition))
-            )
-        return plain
+        with self._part_lock(partition):
+            self._require_ok(partition)
+            manifest = self._manifest(partition)
+            entry = manifest.entry_for(name)
+            if entry is None:
+                raise KeyError(f"分区 {partition} 无文件 {name!r}")
+            sealed = (self._root / partition / name).read_bytes()
+            plain = open_bytes(self._keys[partition], sealed, aad=_AAD_FILE)
+            if compute_digest(plain) != entry.digest or len(plain) != entry.size:
+                raise StorageCorruptionError(
+                    StoreCorruptionReport(corrupted=(CorruptedPartitionReport(
+                        partition=partition,
+                        reason="文件内容与清单校验和不符",
+                        affected_files=(name,),
+                    ),), healthy=tuple(n for n in PARTITION_NAMES if n != partition))
+                )
+            return plain
 
     def delete(self, partition: PartitionName, name: str) -> None:
-        """删除一个文件并同步清单。"""
+        """删除一个文件并同步清单。
+
+        顺序为「**先写清单、后删文件**」：中断只会留下一个不在清单口径内的孤儿
+        文件（无害、不产生损坏报告）；反序则会让清单指向已删文件，重开时被误判
+        为分区损坏（GWT-5）。
+        """
         validate_partition_name(partition)
-        self._require_ok(partition)
-        manifest = self._manifest(partition)
-        if manifest.entry_for(name) is None:
-            raise KeyError(f"分区 {partition} 无文件 {name!r}")
-        f = self._root / partition / name
-        if f.exists():
-            f.unlink()
-        remaining = tuple(e for e in manifest.entries if e.path != name)
-        self._write_manifest(partition, PartitionManifest(entries=remaining))
+        with self._part_lock(partition):
+            self._require_ok(partition)
+            manifest = self._manifest(partition)
+            if manifest.entry_for(name) is None:
+                raise KeyError(f"分区 {partition} 无文件 {name!r}")
+            remaining = tuple(e for e in manifest.entries if e.path != name)
+            self._write_manifest(partition, PartitionManifest(entries=remaining))
+            f = self._root / partition / name
+            if f.exists():
+                f.unlink()
 
     def list_files(self, partition: PartitionName) -> tuple[str, ...]:
         """列出分区内全部文件（清单口径，非目录扫描）。"""
         validate_partition_name(partition)
-        return tuple(sorted(self._manifest(partition).paths()))
+        with self._part_lock(partition):
+            return tuple(sorted(self._manifest(partition).paths()))
 
     def sealed_mtime(self, partition: PartitionName, name: str) -> float:
         """分区内文件的落盘密文 mtime（epoch 秒；T-L0-006 留存年龄口径）。"""
         validate_partition_name(partition)
-        if self._manifest(partition).entry_for(name) is None:
-            raise KeyError(f"分区 {partition} 无文件 {name!r}")
-        return (self._root / partition / name).stat().st_mtime
+        with self._part_lock(partition):
+            if self._manifest(partition).entry_for(name) is None:
+                raise KeyError(f"分区 {partition} 无文件 {name!r}")
+            return (self._root / partition / name).stat().st_mtime
 
     # ───────────────────────── 分区级操作（§2.1 独立导出/清空） ─────────────────────────
 
     def export_partition(self, partition: PartitionName) -> dict[str, bytes]:
-        """导出整个分区为 ``{相对路径: 明文}``（独立导出，GWT-1）。"""
-        return {name: self.get(partition, name) for name in self.list_files(partition)}
+        """导出整个分区为 ``{相对路径: 明文}``（独立导出，GWT-1）。
+
+        全程持分区锁，导出的是一份**一致快照**（不会混入并发写的中间态）。
+        """
+        with self._part_lock(partition):
+            return {name: self.get(partition, name) for name in self.list_files(partition)}
 
     def wipe_partition(self, partition: PartitionName) -> None:
         """清空分区（独立清空，GWT-1）：删目录、重建空清单。"""
-        self._rebuild_partition(partition)
+        with self._part_lock(partition):
+            self._rebuild_partition(partition)
 
     def reset_partition(self, partition: PartitionName) -> CorruptedPartitionReport:
         """冷启动重建（§2.3 GWT-4 无备份路径）：损坏分区重建为空。
@@ -270,30 +326,32 @@ class Store:
         只对**损坏**分区放行——健康分区不得被静默清空（误用即抛）。
         """
         validate_partition_name(partition)
-        if self._states.get(partition) == "ok":
-            raise ValueError(
-                f"分区 {partition} 健康，无需冷启动重建；要清空请用 wipe_partition"
+        with self._part_lock(partition):
+            if self._states.get(partition) == "ok":
+                raise ValueError(
+                    f"分区 {partition} 健康，无需冷启动重建；要清空请用 wipe_partition"
+                )
+            report = self._reports.get(partition) or CorruptedPartitionReport(
+                partition=partition, reason="未知损坏（重建前未登记）"
             )
-        report = self._reports.get(partition) or CorruptedPartitionReport(
-            partition=partition, reason="未知损坏（重建前未登记）"
-        )
-        self._rebuild_partition(partition)
-        return report
+            self._rebuild_partition(partition)
+            return report
 
     def partition_state(self, partition: PartitionName) -> StorageState:
         """查询分区状态（ok / corrupted；GWT-5 损坏范围查询）。"""
         validate_partition_name(partition)
-        report = self._reports.get(partition)
-        if report:
+        with self._part_lock(partition):
+            report = self._reports.get(partition)
+            if report:
+                return StorageState(
+                    partition=partition, state="corrupted",
+                    file_count=len(self._manifests.get(partition, PartitionManifest()).entries),
+                    detail=report.reason,
+                )
             return StorageState(
-                partition=partition, state="corrupted",
-                file_count=len(self._manifests.get(partition, PartitionManifest()).entries),
-                detail=report.reason,
+                partition=partition, state="ok",
+                file_count=len(self._manifest(partition).entries),
             )
-        return StorageState(
-            partition=partition, state="ok",
-            file_count=len(self._manifest(partition).entries),
-        )
 
     def storage_report(self) -> StoreCorruptionReport:
         """全存储损坏报告（打开失败被 catch 后仍可查询；正常打开时恒 clean）。"""
@@ -375,8 +433,8 @@ class Store:
         return m
 
     def _write_manifest(self, partition: PartitionName, manifest: PartitionManifest) -> None:
-        (self._root / partition / MANIFEST_NAME).write_bytes(
-            manifest.seal(self._keys[partition])
+        self._atomic_write(
+            self._root / partition / MANIFEST_NAME, manifest.seal(self._keys[partition])
         )
         self._manifests[partition] = manifest
 
