@@ -1,16 +1,26 @@
-"""工作流子系统（T-L1-003.1；03 §3.1 + §4「校验」）。
+"""工作流子系统（T-L1-003.1 / .2；03 §3）。
 
-交付 WorkflowDAG 模型、静态校验、持久化与版本。上层入口一律 ``from
-st_agent.l1.workflow import ...``。
+交付 WorkflowDAG 模型、静态校验、持久化与版本，以及「工作流 → 复合 Skill」
+（``.2``）。上层入口一律 ``from st_agent.l1.workflow import ...``。
 
 布局（只经 ``Store`` 读写）：
 - 工作流定义 → ``config`` 分区 ``workflow/<flow_id>.json``
 - 激活指针 → ``config`` 分区 ``workflow-active/<base>.json``
 
-后续子任务：``T-L1-003.2`` 复合 Skill / ``.3`` 试跑调试 / ``.4`` 编辑面 /
-``.5`` 模板库与空状态。
+复合 Skill 复用 Skill 库布局（``skill-registry/<skill_id>.json``，见 ``composite``）。
+
+后续子任务：``T-L1-003.3`` 试跑调试 / ``.4`` 编辑面 / ``.5`` 模板库与空状态。
 """
 
+from st_agent.l1.workflow.composite import (
+    CompositeDependencyError,
+    DependencyGap,
+    composite_skill_id,
+    derive_io_contract,
+    missing_dependencies,
+    save_as_composite_skill,
+    source_flow_id,
+)
 from st_agent.l1.workflow.errors import (
     WorkflowError,
     WorkflowExistsError,
@@ -56,6 +66,8 @@ __all__ = [
     "ID_PATTERN",
     "WORKFLOW_PREFIX",
     "ActivePointer",
+    "CompositeDependencyError",
+    "DependencyGap",
     "ParamBinding",
     "WorkflowDAG",
     "WorkflowDiff",
@@ -74,9 +86,14 @@ __all__ = [
     "base_of",
     "check_flow_id",
     "checked_dag",
+    "composite_skill_id",
     "dependency_graph",
+    "derive_io_contract",
     "flow_id_for",
+    "missing_dependencies",
     "parse_flow_id",
+    "save_as_composite_skill",
+    "source_flow_id",
     "topological_order",
     "validate_dag",
 ]

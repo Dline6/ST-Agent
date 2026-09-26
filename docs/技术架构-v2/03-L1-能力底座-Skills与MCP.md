@@ -89,6 +89,19 @@ stories: [PRD Story 2 — Skills Runtime, Story 6 — Skill Studio, Story 8 — 
 
 用户可将工作流保存为复合 Skill（「命名的工作流」）：对外暴露统一输入输出契约 + 参数，进入 Skill 库；导出为 `.stflow`/`.stskill`（见 [09-生态](09-生态与分享.md)）。复合 Skill 依赖的原 Skill 缺失时，导入方走依赖提示流程。
 
+**落地口径**：
+
+| 面 | 口径 |
+| --- | --- |
+| 标识 | `skill_id` 由工作流 base 派生——`wf_<名>_v<主>.<次>` → `sk_<名>_v<主>.<次>`（版本随 `version`）；重名即拒（更新走版本发布，不静默覆盖） |
+| 输入输出契约 | 默认由**未连线端口**推导（`type` 恒为 `object`）；`properties` 取**节点限定点号键** `<node_id>.<prop>`——可无损回指节点与端口，跨节点同名不冲突 |
+| 已连线判据 | 与 §3.1 的粗粒度节点到节点边模型对称：入端口「已连」= 该节点有入边 **或** 有同名绑定（`literal` / `ref`）；出端口「已连」= 该节点有出边 **或** 被其他节点以 `ref` 引用 |
+| 显式覆盖 | 可显式给出 `input_schema` / `output_schema`，以显式为准；其 `properties` **键集必须与推导集相等**、同名键的 `type` 必须相等，其余关键字（`required` / 描述等）随显式——不一致即拒，不静默取其一 |
+| 参数暴露 | 节点参数是内部绑定细节，**不**自动上浮；由 `exposed_params` 显式声明（`<node_id>.<参数名>`）才进入 `SkillDescriptor.parameters`，与其余 Skill 同走双通道改参 |
+| 能力字段 | `offline_level` 取所引用 Skill 的最差（全 `full`→`full`；任一 `none`→`none`；否则 `degraded`）、`permissions` 取并集——复合体只声明其部件所能支持的面 |
+
+依赖缺失时**不落半成品**：物化（注册进 Skill 库）以依赖齐全为前提并显式失败；用户在依赖未安装期间不丢工作，因为工作流定义本身已由 §3.1 的持久化承载，只是复合 Skill 的物化等待依赖就绪。
+
 ## 4. Skill Studio 子系统
 
 承载 [Story 6](../PRD-v2-Agent/story-06-skill-studio.md)：
