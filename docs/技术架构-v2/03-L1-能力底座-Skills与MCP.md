@@ -112,6 +112,24 @@ stories: [PRD Story 2 — Skills Runtime, Story 6 — Skill Studio, Story 8 — 
 - **模板库**：官方预置工作流模板（每日 ST 简报 / 退市风险扫描 / 策略回测流水线等），可 fork 后修改
 - **空状态**：无自建工作流时展示模板库 + 「用一句话描述你想要的工作流」入口
 
+**编辑面落地口径**：
+
+| 面 | 口径 |
+| --- | --- |
+| 编辑会话 | `CanvasEditor` = 内存编辑会话（草稿态**不落盘**）；每次写操作返回 `EditResult`（是否生效 + 新 DAG 视图 + 校验结论 + 人可读提示）。落盘只发生在「接受」 |
+| 校验复用 | 编辑期与保存期是**同一判定件的两次调用**，不另造第二套：连线契约走 [01 §2](01-平台共享契约.md) 的 `check_link`、全图走 `validate_dag`、成环走 `validate.find_cycle`（与 `dependency_graph` / `topological_order` 并列的公共判定件） |
+| 连线拦截范围 | `connect` 只拦**本连线造成**的问题——① 该边落在环上（拒，携环路径）② `check_link` 不匹配（拒，携「这里需要一个 XX 类型的输入」式说明）。草稿**既有**的语义问题不阻断后续编辑、只在 `EditResult` 中回显；被拒时画布状态不变 |
+| 删节点 | 删除一个节点即**连带移除它的全部引用**——入射 / 出射连线、`ref` 参数绑定、分组内的成员位。依据：§3.1 的依赖图 = 边 ∪ `ref` 绑定（两者取并），删后依赖图不留悬空引用 |
+| 分组 | `group` / `ungroup` 只动 `groups[]`，不改节点与连线；分组不参与依赖图 |
+| 草稿接收契约 | 工作流草稿 = [05-L3 §5](05-L3-对话主入口.md) 四字段 + 工作流专用 `workflow_draft` 子对象（`name` / `description` / `nodes` / `edges` / `groups` / `schedule`，可含 ASCII `flow_name`）——身份字段 `flow_id` / `version` **不在草稿中**，由接收方派生 |
+| 非法草稿边界 | **形状**非法（缺 `name` / 非法 `node_id` / 缺必填字段 / 无法派生注册名 / 违规携带 `flow_id` 或 `version` / 含无法识别的字段，即构造期即拒）→ 显式拒、**画布不开**；**语义**不合规（成环 / 契约不匹配 / 命名未中性化 / Skill 未注册 / 参数未声明）→ **照开画布**，违规清单随首次 `EditResult` 带回 |
+| 注册名派生 | `flow_id` 的 `<注册名>` 取草稿的 ASCII `flow_name`；缺省时由展示名 `name` slug 化（小写、非 `[a-z0-9]` 转 `_`、去首尾 `_`）——slug 为空（如纯中文名）即拒并提示补 `flow_name`。画布期用临时身份 `wf_<注册名>_v0.0` 表「未发布」 |
+| 接受 | 把画布期身份换成首版 `wf_<注册名>_v1.0`，经 `WorkflowStore.save` 落 `config` 分区 `workflow/<flow_id>.json`；base 已存在 → **拒**（改既有工作流走 `WorkflowStore.publish_version`，不属本流程） |
+| 变更留痕 | 「接受」产生一条 `ChangeRecord`（[01 §7](01-平台共享契约.md)）并落 `execution_log` 分区 `workflow-change/<change_id>.json`——与 §5.3 的 `mcp-hub-change/` 同构（同分区不同前缀），`change_id` 即回滚单位 |
+| 微调 / 拒绝 | 「微调」返回**同一个** `CanvasEditor` 句柄（会话不分裂）；「拒绝」丢弃会话、**不落盘**，`reason` 仅随返回值透传（反馈采集归 [08-L6 §1](08-L6-反思演进.md)） |
+
+草稿态与落盘态的边界**只有一条**：编辑期一律不落盘，「接受」是唯一落盘点——由此「拒绝」天然无副作用、「微调」天然可无限次、无论编辑多久都不产生版本。
+
 **调试协议落地口径**：
 
 | 面 | 口径 |

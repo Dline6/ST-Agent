@@ -77,6 +77,7 @@ from st_agent.l1.workflow.validate import (
     WorkflowIssue,
     WorkflowValidation,
     dependency_graph,
+    find_cycle,
     topological_order,
     validate_dag,
 )
@@ -125,6 +126,7 @@ __all__ = [
     "composite_skill_id",
     "dependency_graph",
     "derive_io_contract",
+    "find_cycle",
     "flow_id_for",
     "missing_dependencies",
     "parse_flow_id",
