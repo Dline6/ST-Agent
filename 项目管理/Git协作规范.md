@@ -125,7 +125,17 @@ main ──────────●──────────●───
 1. **创建**：从 `main` HEAD 创建，立即 push 到远端（即使 solo 也建 remote 做备份）。
 2. **rebase 策略**：分支存活超 1 天时，每日开工先 `git rebase main`（保持线性历史）。
 3. **合入**：通过 PR/MR 合入（solo 也走 PR，给自己留审查痕迹）→ **Squash Merge**（每个任务一条提交落到 main）。
-4. **删除**：合入后删除远端分支 + 本地 `git branch -d`。
+   - **启用 auto-merge（2026-09-26 起，取代此前的「等 CI 绿后手动 squash」）**：PR 建好后即
+     `gh pr merge <n> --auto --squash --delete-branch`，CI 一绿自动合入并删分支；CI 尚未跑完时
+     它挂起等待。若启用时检查**已全绿**，GitHub 会**立即**合入——这是 auto-merge 的正常语义，不是绕过门禁。
+   - **前置条件（平台限制，不可忽略）**：GitHub 的 auto-merge **不支持私有仓库 + free 计划**。本仓库
+     为此已由负责人**将可见性由私有改为公开**并在设置里开启 auto-merge（见 [决策日志 D-011](决策日志.md)）。
+     **若仓库改回私有，本惯例随即失效**，须退回「等 CI 绿手动 squash」或改用自建 CI workflow 合入。
+   - 代价要认：**CI 绿即落地，没有事后补检查的机会**，故 §5.2 的「人工 / Agent 自查部分」必须在**建 PR 之前**过完。
+   - **squash 提交体取自分支的单条 commit**，故 §4.6 的 `Task:` trailer 与署名行照常随分支提交落到 main ——
+     「一任务一条干净 commit」这条既有要求因此更要紧（多 commit 分支会丢掉这条保证）。
+4. **删除**：合入后删除远端分支 + 本地 `git branch -d`（用 `--delete-branch` 时 gh 已代劳，本地只需
+   `git fetch --prune` 清远端跟踪）。
 5. **禁止**：force-push 到 main；rebase 已推送到远端的 main 历史。
 
 ### 3.4 与任务工作流的映射
@@ -136,7 +146,7 @@ main ──────────●──────────●───
 | ⑤ Implement | 分支上多次 commit（WIP 允许，但 squash 后 main 只留一条干净记录） |
 | ⑥ Verify & Log | 跑 `python tools/verify_docs.py --strict` + `python tools/render_ledger.py render` → 账本与日志变化一起 commit |
 | ⑦ Sync（若涉及） | 同分支续 commit 或新分支 |
-| 合入 | PR → squash merge → 删分支 → `render_ledger.py archive`（若里程碑满员）→ 单独 chore commit |
+| 合入 | PR → `gh pr merge <n> --auto --squash --delete-branch`（CI 绿即自动合入）→ `render_ledger.py archive`（若里程碑满员）→ 单独 chore commit |
 
 ---
 
@@ -243,6 +253,8 @@ repos:
 3. `python tools/render_ledger.py status` 就绪集正确——PR 中涉及的任务文件 `status` 字段与实际进度一致。
 4. Commit message 格式校验（可选：配 commitlint 或简单 grep 正则 `^(feat|fix|docs|refactor|test|chore|ci|style)(\(.+\))?: .+$`）。
 
+**合入方式（2026-09-26 起）**：PR 建好后即 `gh pr merge <n> --auto --squash --delete-branch`，CI 绿后自动合入，**不必守着 CI**（此前惯例是等 CI 绿再手动 squash，已废止；见 [决策日志 D-011](决策日志.md)）。因 auto-merge 一旦满足条件即落地，上列「人工 / Agent 自查部分」3、4 两条必须在**建 PR 之前**过完。
+
 > CI 只跑离线部分：真实网络 / 长跑用例标 `@pytest.mark.live` 放 `tests/live/`，本地按需 `pytest -m live` 单跑，不进 CI。baostock 是可选依赖（`pip install -e ".[market]"`），CI 不装——其缺失路径本身有测试覆盖。
 
 ### 5.3 收工 checklist（每次准备 commit / push 时过一遍）
@@ -343,7 +355,7 @@ git config log.date iso8601          # git log 显示带时区的 ISO 时间
 | 开一个新任务 | `git checkout -b feat/T-L0-005-baostock-cache main` |
 | 提交本地变更 | `git add -A && git commit` → 按 §4 格式写 message |
 | 同步 main 最新 | `git fetch origin && git rebase origin/main` |
-| 推分支并建 PR | `git push -u origin <branch>` → 在远端创建 PR → squash merge |
+| 推分支并建 PR | `git push -u origin <branch>` → 在远端创建 PR → `gh pr merge <n> --auto --squash --delete-branch` |
 | 确认账本同步 | `python tools/render_ledger.py render` → `git diff --stat` 看账本有无变化 |
 | 看 CI 结果 | GitHub 仓库 Actions 页 / PR 页的 checks（PR gate 机器部分，见 §5.2） |
 | 跑真实网络用例 | `python -m pytest -m live`（默认被 `addopts` 排除，不进 CI） |
