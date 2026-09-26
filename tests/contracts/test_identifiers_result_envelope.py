@@ -16,6 +16,7 @@ from st_agent.contracts import (
     DeliveryId,
     EvidenceRef,
     FeedbackId,
+    FlowId,
     LensId,
     MemoryNodeId,
     PlatformId,
@@ -81,9 +82,22 @@ class TestSection1Identifiers:
         data = tid.model_dump(mode="json")
         assert TraceId.model_validate(data).value == tid.value
 
+    def test_flow_id_registered_form(self):
+        """flow_id 形态 = wf_<注册名>_v<主>.<次>（01 §1；由 T-L1-003.1 触发登记）。"""
+        assert FlowId.of("wf_daily_brief_v1.0").id_kind == "flow_id"
+        assert FlowId.of("wf_daily-brief_v2.3").value == "wf_daily-brief_v2.3"
+        for bad in ("wf_daily_brief", "daily_brief_v1.0", "sk_x_v1.0", "wf__v1.0"):
+            with pytest.raises(ValidationError):
+                FlowId.of(bad)
+
+    def test_flow_id_not_locally_generated(self):
+        """flow_id 由 L1 按注册名 + 版本拼接（workflow/ids.py），本地随机生成须被拒绝。"""
+        with pytest.raises(ContractViolation, match="flow_id_for"):
+            FlowId.generate()
+
     def test_registry_covers_contract_table(self):
-        """ID_REGISTRY 是 §1 表的完整机器可读副本（12 类）。"""
-        assert len(ID_KINDS) == 12
+        """ID_REGISTRY 是 §1 表的完整机器可读副本（13 类）。"""
+        assert len(ID_KINDS) == 13
         assert set(ID_KINDS) == set(ID_REGISTRY) == set(ID_ALIASES)
 
 

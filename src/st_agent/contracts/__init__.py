@@ -9,6 +9,7 @@
 
 from st_agent.contracts.errors import ContractViolation
 from st_agent.contracts.identifiers import (
+    FLOW_ID_PATTERN,
     ID_ALIASES,
     ID_KINDS,
     ID_REGISTRY,
@@ -17,6 +18,7 @@ from st_agent.contracts.identifiers import (
     DatasetSnapshotId,
     DeliveryId,
     FeedbackId,
+    FlowId,
     LensId,
     MemoryNodeId,
     PlatformId,
@@ -94,6 +96,8 @@ __all__ = [
     "EnvelopeStatus",
     "EvidenceRef",
     "FeedbackId",
+    "FLOW_ID_PATTERN",
+    "FlowId",
     "ID_ALIASES",
     "ID_KINDS",
     "ID_REGISTRY",

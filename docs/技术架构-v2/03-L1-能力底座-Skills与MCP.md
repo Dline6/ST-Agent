@@ -78,7 +78,7 @@ stories: [PRD Story 2 — Skills Runtime, Story 6 — Skill Studio, Story 8 — 
 
 | 字段 | 说明 |
 | --- | --- |
-| `flow_id` / `name` / `description` | 标识（名称过中性化校验） |
+| `flow_id` / `name` / `description` | 标识（`flow_id` 形态为 `wf_<注册名>_v<主>.<次>`，见 [01 §1](01-平台共享契约.md)；`name` 过中性化校验） |
 | `nodes[]` | 每节点：引用 skill_id、参数绑定（含常量与上游输出引用） |
 | `edges[]` | 数据流连线，携带类型契约（连线时校验输入输出 schema 匹配，不匹配提示「这里需要一个 XX 类型的输入」） |
 | `groups[]` | 子流程分组（可整体作为复合 Skill 导出） |
