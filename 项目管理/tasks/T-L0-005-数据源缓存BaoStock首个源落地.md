@@ -34,7 +34,7 @@ verify: pytest 277/277（既有 238 + 市场 39）· 断链 0 · commits 待收�
 - 输入（消费的前置接口）：T-L0-001 `Store`（`data_cache` 分区）；T-L0-004 网关（`execute` + 按次 sender 注入）；数据库设计族 `schema.sql` 与 06 API 映射契约
 - 输出（本任务交付的公共 API / 落盘位置）：
   - `MarketDb`：`.exists` / `.init_db` / `.tables` / `.views` / `.last_updated_at` / `.query`（只读白名单）/ `.freshness` / `.as_of` / `.snapshot_id` / `.connect` / `.transact` / `.check_readonly_sql`
-  - `BaoStockSync`：`.setup` / `.run_task` / `.run_all` / `.freshness_verdict` / `.dataset_snapshot`；`Fetcher` 协议 + 18 个 `map_*` 映射函数；`TaskSpec` / `get_task` / `window_for` / `quarter_end` / `last_n_quarters` / `last_monday` / `next_day`
+  - `BaoStockSync`：`.setup` / `.run_task` / `.run_all` / `.freshness_verdict` / `.dataset_snapshot`；`RUN_ORDER`（全量执行序，2026-09-26 由 [T-L0-007.1](T-L0-007.1-脚本化全量同步与续跑语义.md) 追加为公开常量）；`Fetcher` 协议 + 18 个 `map_*` 映射函数；`TaskSpec` / `get_task` / `window_for` / `quarter_end` / `last_n_quarters` / `last_monday` / `next_day`
   - 清洗：`clean_str` / `clean_num` / `clean_int` / `normalize_date` / `normalize_minute_ts`；错误：`MarketValidationError` / `FetchError` / `FetchUnavailableError`
   - 落盘：`data_cache/market.db`（加密 blob，工作拷贝 + 提交后写回）
   - 消费方：T-L1-001.4（新鲜度查询）、T-L1-004 官方 Pack 行情面、T-L0-005.1 真实抓取器

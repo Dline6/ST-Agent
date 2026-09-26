@@ -23,7 +23,7 @@ from st_agent.l0.market.errors import (
 )
 from st_agent.l0.market.fetch import Fetcher, FetchResult
 from st_agent.l0.market.live import BaoStockFetcher
-from st_agent.l0.market.sync import DOMAIN_TASKS, BaoStockSync
+from st_agent.l0.market.sync import DOMAIN_TASKS, RUN_ORDER, BaoStockSync
 from st_agent.l0.market.tasks import (
     SYNC_TASKS,
     TASK_COUNT,
@@ -48,6 +48,7 @@ __all__ = [
     "MarketDb",
     "MarketError",
     "MarketValidationError",
+    "RUN_ORDER",
     "TaskSpec",
     "clean_int",
     "clean_num",
