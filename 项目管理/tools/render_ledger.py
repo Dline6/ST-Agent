@@ -99,6 +99,17 @@ def serialize(fm, body):
     out += ["---", "", body]
     return "\n".join(out).rstrip() + "\n"
 
+def write_file(path, text):
+    """写文本文件，**强制 LF**（2026-09-26）。
+
+    Windows 文本模式默认把 ``\\n`` 翻成 ``\\r\\n``；本目录的写入口（bootstrap /
+    派生父状态 / 账本渲染 / verify_docs --fix）若不锁定换行符，就会在盘上留下
+    CRLF，与仓库其余 LF 文件不一致——此后任何编辑都会产生整文件 diff。
+    """
+    with open(path, "w", encoding="utf-8", newline="\n") as f:
+        f.write(text)
+
+
 def scan(root):
     res = []
     for dp, subdirs, fs in os.walk(root):
@@ -156,7 +167,7 @@ def bootstrap(force=False):
               "depends_on": "[" + ", ".join(deps) + "]" if deps else "[]",
               "status": "todo", "decisions": "[]", "verify": ""}
         fn = existing or f"{tid}-{slugify(title)}.md"
-        open(os.path.join(TASKS, fn), "w", encoding="utf-8").write(serialize(fm, body))
+        write_file(os.path.join(TASKS, fn), serialize(fm, body))
         created += 1
     print(f"bootstrap: wrote {created}, protected(hand) {skipped}")
 
@@ -175,7 +186,7 @@ def compute_status(tasks):
         if v != byid[pid]["status"]:
             byid[pid]["status"] = v
             fm, body = read_fm(byid[pid]["path"]); fm["status"] = v
-            open(byid[pid]["path"], "w", encoding="utf-8").write(serialize(fm, body))
+            write_file(byid[pid]["path"], serialize(fm, body))
         return v
     for pid in list(children):
         if pid in byid: derive(pid)
@@ -233,7 +244,7 @@ def build_ledger():
 
 def render():
     text, na, nr, nready = build_ledger()
-    open(LEDGER, "w", encoding="utf-8").write(text)
+    write_file(LEDGER, text)
     print(f"render: active {na}, archived {nr}, ready {nready} → 任务账本.md")
 
 # ---------- archive ----------

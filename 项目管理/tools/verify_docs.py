@@ -86,7 +86,7 @@ def check_ledger(fix):
     if cur.strip() == newn.strip():
         return "SYNC", f"活跃{na}/归档{nr}/就绪{nready}"
     if fix:
-        open(rl.LEDGER, 'w', encoding='utf-8').write(new)
+        rl.write_file(rl.LEDGER, new)      # 强制 LF（见 render_ledger.write_file）
         return "FIXED", "账本已刷新"
     return "STALE", "账本落后于 tasks/ 真相源，请跑 render"
 

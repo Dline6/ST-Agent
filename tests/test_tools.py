@@ -46,6 +46,34 @@ def test_serialize_quotes_arch_link():
     assert line.startswith('arch_link: "')   # 值含 Markdown 链接，须成对引号包裹
 
 
+# ───────────────────────── 写文件强制 LF ─────────────────────────
+# 历史事故（2026-09-26）：Windows 文本模式把 \n 翻成 \r\n，bootstrap 写出的 27 个任务
+# 文件在仓库里是 CRLF，与其余 LF 文件不一致，此后每次编辑都产生整文件 diff。
+
+def test_write_file_emits_lf_only(tmp_path):
+    p = tmp_path / "x.md"
+    rl.write_file(str(p), "行1\n行2\n")
+    assert p.read_bytes() == "行1\n行2\n".encode("utf-8")
+
+
+def test_parent_status_rewrite_keeps_lf(tmp_path, monkeypatch):
+    """派生父状态的回写路径（曾是 CRLF 来源）必须写出 LF。"""
+    monkeypatch.setattr(rl, "PM", str(tmp_path))   # scan 用 PM 算相对路径，须同一盘符
+    parent = tmp_path / "T-X-001-父.md"
+    child = tmp_path / "T-X-001.1-子.md"
+    rl.write_file(str(parent), rl.serialize(
+        {"id": "T-X-001", "title": "父", "status": "todo", "verify": ""}, "## 目标\n父"))
+    rl.write_file(str(child), rl.serialize(
+        {"id": "T-X-001.1", "parent": "T-X-001", "title": "子", "status": "done", "verify": ""},
+        "## 目标\n子"))
+
+    rl.compute_status(rl.scan(str(tmp_path)))          # 子全 done → 父应派生为 done
+
+    text = parent.read_text(encoding="utf-8")
+    assert "status: done" in text
+    assert b"\r" not in parent.read_bytes()
+
+
 # ───────────────────────── INT 层识别 ─────────────────────────
 
 def test_int_layer_recognized():
