@@ -29,7 +29,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from st_agent.l0.net import EgressError, EgressUnavailableError
+from st_agent.l0.net import EgressCancelledError, EgressError, EgressUnavailableError
 from st_agent.l1.mcp.errors import McpConnectionError
 from st_agent.l1.mcp.ids import check_remote_url, check_server_id, remote_host
 
@@ -322,7 +322,14 @@ class StdioTransport(McpTransport):
 
 
 class HttpSseTransport(McpTransport):
-    """远程 HTTP-SSE 传输——**出网一律经 L0 网关**（02 §6）。"""
+    """远程 HTTP-SSE 传输——**出网一律经 L0 网关**（02 §6）。
+
+    :param cancel: 可选取消信号（``threading.Event``；``T-L1-002.3`` 的禁用中止
+        经此接入）。置位后在**发包前 / 发包后**各查一次：已置即按
+        ``EgressCancelledError`` 上报，网关据此落 ``cancelled`` 审计、信封走失败
+        分支——不留「已禁用但调用成功」的假象。会话中间无法抢占式中断（02 §6
+        的 ``execute`` 只在发起前查 ``cancel``），故此处是**检查点**语义。
+    """
 
     def __init__(
         self,
@@ -331,6 +338,7 @@ class HttpSseTransport(McpTransport):
         server_id: str,
         *,
         post: Callable[[str, str, int], str] | None = None,
+        cancel: "threading.Event | None" = None,
         timeout_ms: int = DEFAULT_TIMEOUT_MS,
     ) -> None:
         super().__init__(timeout_ms=timeout_ms)
@@ -338,11 +346,17 @@ class HttpSseTransport(McpTransport):
         self._gateway = gateway
         self._server_id = check_server_id(server_id)
         self._post = post if post is not None else _stdlib_post
+        self._cancel = cancel
         self._pending: str | None = None
 
     @property
     def server_id(self) -> str:
         return self._server_id
+
+    @property
+    def cancel(self) -> "threading.Event | None":
+        """本次会话绑定的取消信号（未绑定为 ``None``）。"""
+        return self._cancel
 
     def _write(self, payload: str) -> None:
         if self._gateway is None:
@@ -352,14 +366,19 @@ class HttpSseTransport(McpTransport):
 
         def sender(_kind: str, _target_host: str, timeout_ms: int) -> tuple[int, int, list[str]]:
             """按次发包实现：真实 POST 在此完成，响应体经闭包带回（假设 A2）。"""
+            if self._cancel is not None and self._cancel.is_set():
+                raise EgressCancelledError("MCP 调用已取消（Server 已被禁用）")
             body = self._post(self._url, payload, timeout_ms)
+            if self._cancel is not None and self._cancel.is_set():
+                raise EgressCancelledError("MCP 调用已取消（Server 已被禁用）")
             holder.append(body)
             return body_bytes, len(body.encode("utf-8")), [body]
 
         envelope = self._gateway.execute(
             "remote_mcp", remote_host(self._url),
             initiator=self._server_id, purpose=REMOTE_PURPOSE,
-            bytes_out=body_bytes, timeout_ms=self._timeout_ms, sender=sender,
+            bytes_out=body_bytes, timeout_ms=self._timeout_ms,
+            cancel=self._cancel, sender=sender,
         )
         if envelope.status != "ok":
             raise McpConnectionError(

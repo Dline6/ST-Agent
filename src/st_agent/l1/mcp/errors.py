@@ -1,4 +1,4 @@
-"""MCP Hub 错误类型（T-L1-002.1 传输 / 注册 / 权限；T-L1-002.2 映射）。
+"""MCP Hub 错误类型（T-L1-002.1 传输 / 注册 / 权限；T-L1-002.2 映射；T-L1-002.3 生命周期）。
 
 与 L1 既有口径一致：子类挂在一个层内根错误下，便于上层按类别捕获；
 全部继承 ``Exception`` 而非裸 ``ValueError``（沿用 skills / sandbox 子包先例）。
@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 __all__ = [
+    "McpCancelledError",
     "McpConnectionError",
     "McpError",
     "McpMappingError",
@@ -14,6 +15,8 @@ __all__ = [
     "McpPermissionError",
     "McpServerExistsError",
     "McpServerNotFoundError",
+    "McpStateError",
+    "McpStateTransitionError",
     "McpValidationError",
 ]
 
@@ -48,3 +51,15 @@ class McpMappingNotFoundError(McpError):
 
 class McpMappingError(McpError):
     """映射操作非法（该映射无待重新映射事项；Server 已不再提供该 tool）。"""
+
+
+class McpStateError(McpError):
+    """生命周期操作非法（在禁用 Server 上发起调用 / 触发重连等）。"""
+
+
+class McpStateTransitionError(McpStateError):
+    """非法状态转移（不在 ``ALLOWED_TRANSITIONS`` 内；失败显式化，不静默改态）。"""
+
+
+class McpCancelledError(McpError):
+    """调用已被取消（Server 被禁用时中止进行中调用）。"""
