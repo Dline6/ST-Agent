@@ -259,3 +259,46 @@ class TestStorageLayoutAndGuards:
     def test_semver_two_levels(self):
         assert str(SemVer.parse("2.0")) == "2.0.0"
         assert not SemVer.parse("2.0").is_compatible_upgrade_from(SemVer.parse("1.9"))
+
+
+# ───────────────────────── T-L1-007 反注册（回收面） ─────────────────────────
+
+
+class TestUnregister:
+    """T-L1-007：反注册 base 的**全部版本** + 待检查标记（MCP 派生 Skill 回收用）。"""
+
+    def test_removes_all_versions_and_marker(self, registry):
+        registry.register(**minimal())
+        registry.publish_version("sk_demo_thing", version="1.1")
+        registry.publish_version("sk_demo_thing", version="2.0",
+                                 changelog="契约不兼容", impact="引用方须确认")
+        assert len(registry.list_versions("sk_demo_thing")) == 3
+        assert registry.pending_updates() != ()
+        removed = registry.unregister("sk_demo_thing")
+        assert set(removed) == {
+            "sk_demo_thing_v1.0", "sk_demo_thing_v1.1", "sk_demo_thing_v2.0",
+        }
+        assert registry.list_versions("sk_demo_thing") == ()
+        assert registry.pending_updates() == ()
+        files = registry._store.list_files("config")
+        assert [f for f in files if f.startswith(SKILL_PREFIX) and "sk_demo_thing" in f] == []
+        assert f"{UPDATE_PREFIX}sk_demo_thing.json" not in files
+
+    def test_unknown_base_raises(self, registry):
+        with pytest.raises(SkillNotFoundError):
+            registry.unregister("sk_nope_nothing")
+
+    def test_bad_base_shape_rejected(self, registry):
+        with pytest.raises(SkillValidationError):
+            registry.unregister("demo_thing")
+
+    def test_other_bases_and_audit_untouched(self, registry):
+        """只动本 base；`execution_log` 是 append-only 审计（02 §6），不注销。"""
+        registry.register(**minimal())
+        registry.register(**minimal(base="sk_other_thing"))
+        registry._store.put("execution_log", "audit/x.json", b"{}")
+        registry.unregister("sk_demo_thing")
+        assert registry.get_latest("sk_other_thing") is not None
+        with pytest.raises(SkillNotFoundError):
+            registry.get("sk_demo_thing_v1.0")
+        assert "audit/x.json" in registry._store.list_files("execution_log")

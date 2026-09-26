@@ -87,6 +87,7 @@ from st_agent.l1.mcp.registry import (
     SERVER_PREFIX,
     EnvResolver,
     McpServerRegistry,
+    ServerRemovedHook,
     TransportFactory,
 )
 from st_agent.l1.mcp.transports import (
@@ -154,6 +155,7 @@ __all__ = [
     "ReconnectSettings",
     "SERVER_ID_PATTERN",
     "SERVER_PREFIX",
+    "ServerRemovedHook",
     "StateTransition",
     "StdioTransport",
     "TOOL_NAME_PATTERN",

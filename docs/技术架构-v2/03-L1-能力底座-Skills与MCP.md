@@ -169,16 +169,29 @@ stories: [PRD Story 2 — Skills Runtime, Story 6 — Skill Studio, Story 8 — 
 
 - 支持 stdio（本地进程）与 HTTP/SSE（远程）两种传输；**默认只允许本地 stdio**，远程 Server 需显式开启并确认「数据会离开本机」警示
 - Server 注册表：添加/删除/启用/禁用；添加时连接测试 + 权限申请展示（「这个 Server 想做什么」）+ 逐项批准
+- **删除即回收**：`remove_server` 连同该 Server 的映射记录与派生 Skill 一并清除（经组合根接线的回收回调，见 §5.2）
 
 ### 5.2 tool → Skill 自动映射
 
 - MCP Server 的每个 tool 自动注册为 Skill（`source: mcp-mapped`），SkillDescriptor 元数据从 MCP schema 派生
 - Server 禁用 → 其全部 Skill 立即从可用列表移除，进行中调用中止
+- tool 从 Server 消失 → 该 tool 的映射标失效（`vanished`，含变化说明）并从可用列表滤除；tool 回归即自愈为 `active`（映射与描述体保留，可逆）
 - tool 契约变化 → 提示用户重新映射（映射关系版本化，遵循 01 §9）
+
+**回收落地口径**：
+
+| 面 | 口径 |
+| --- | --- |
+| 触发 | 经 `remove_server` 的**可选**回调 `on_server_removed`（缺省 `None` 即行为逐字节不变），由组合根接 `McpSkillMapper.recycle_server`——包内依赖保持 `mapping → registry` 单向，不让注册表反向 import 映射 |
+| Server 显式移除 | **硬回收**：删该 Server 全部映射记录 + 反注册其派生 Skill（base 的**全部版本**，含 `skill-update/<base>.json` 待检查标记）；`skill_id` 由 `(server, tool)` 确定性派生，重新挂载即重新注册 |
+| tool 从 Server 消失 | **软失效**：映射标 `vanished`（必带变化说明）并从可用列表滤除；记录与描述体保留，tool 回归即自愈为 `active`——瞬态少列一个 tool 不得造成不可逆损失 |
+| 范围边界 | 只回收 `source=mcp-mapped` 的派生 Skill；不动 `execution_log` 审计（append-only）；`mcp-lifecycle` 状态记录与 `sandbox-disabled` 旗标**不在**回收范围 |
+
+硬回收 / 软失效的分野取**动作的持久性**：`remove_server` 是用户显式且持久的决定，回收是其预期终态；tool 消失可能是 Server 侧瞬态，硬删不可逆且丢版本历史，故软失效并可自愈。反注册粒度取 base（单版本删除会让 `get_latest` / `list_versions` 语义碎裂）。
 
 ### 5.3 状态机与降级
 
-Server 生命周期状态：`connected` / `disconnected` / `reconnecting` / `permission_pending` / `disabled`。崩溃 → 明确提示 + 自动重连（次数可配）+ 可降级到官方数据源 Skill 兜底。Server 的全部网络请求经 L0 网关登记（[02-L0 §6](02-L0-本地优先基座.md)），在网络活动面板可见。
+Server 生命周期状态：`connected` / `disconnected` / `reconnecting` / `permission_pending` / `disabled`。崩溃 → 明确提示 + 自动重连（次数可配）+ 可降级到官方数据源 Skill 兜底。**远程** Server 的网络请求经 L0 网关登记（[02-L0 §6](02-L0-本地优先基座.md)），在网络活动面板可见；本地 stdio Server 经 stdin/stdout 管道与 L1 通信，其子进程自身出网**不在**审计范围（已知边界，见 [02-L0 §1](02-L0-本地优先基座.md)）。
 
 ### 5.4 权限模型
 
