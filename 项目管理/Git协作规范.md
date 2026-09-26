@@ -126,12 +126,18 @@ main ──────────●──────────●───
 2. **rebase 策略**：分支存活超 1 天时，每日开工先 `git rebase main`（保持线性历史）。
 3. **合入**：通过 PR/MR 合入（solo 也走 PR，给自己留审查痕迹）→ **Squash Merge**（每个任务一条提交落到 main）。
    - **启用 auto-merge（2026-09-26 起，取代此前的「等 CI 绿后手动 squash」）**：PR 建好后即
-     `gh pr merge <n> --auto --squash --delete-branch`，CI 一绿自动合入并删分支；CI 尚未跑完时
-     它挂起等待。若启用时检查**已全绿**，GitHub 会**立即**合入——这是 auto-merge 的正常语义，不是绕过门禁。
-   - **前置条件（平台限制，不可忽略）**：GitHub 的 auto-merge **不支持私有仓库 + free 计划**。本仓库
-     为此已由负责人**将可见性由私有改为公开**并在设置里开启 auto-merge（见 [决策日志 D-011](决策日志.md)）。
-     **若仓库改回私有，本惯例随即失效**，须退回「等 CI 绿手动 squash」或改用自建 CI workflow 合入。
-   - 代价要认：**CI 绿即落地，没有事后补检查的机会**，故 §5.2 的「人工 / Agent 自查部分」必须在**建 PR 之前**过完。
+     `gh pr merge <n> --auto --squash --delete-branch`，检查满足即自动合入并删分支。
+   - **关键机制（不可误解）**：auto-merge 只等**被分支规则要求**的检查，**不是**「等所有在跑的检查」。
+     若 `main` 没有必检规则，auto-merge 会**立即合入**——实测 [PR #20](https://github.com/Dline6/ST-Agent/pull/20)
+     于 `07:35:09` 合入，其 CI run 于 `07:34:49` 启动、当时仍在 `in_progress`。那等于「合入不等 CI」，
+     比手动等绿**更松**，与目标相反。
+   - **两条前置条件（缺一不可，均已由负责人落实，2026-09-26）**：
+     ① **仓库须为公开**——GitHub 的 auto-merge 不支持私有仓库 + free 计划；仓库若改回私有，本惯例失效，
+     须退回「等 CI 绿手动 squash」或改用自建 CI workflow 合入。
+     ② **`main` 须要求 CI 检查**——本仓库用 ruleset `main-require-ci`（id `24035392`）要求必检
+     `check`（`.github/workflows/ci.yml` 的 job 名）；其中对仓库管理员配了 `always` bypass，
+     以保留「收口日志直推 main」惯例。见 [决策日志 D-011](决策日志.md) / [D-012](决策日志.md)。
+   - 代价要认：**检查一满足即落地，没有事后补检查的机会**，故 §5.2 的「人工 / Agent 自查部分」必须在**建 PR 之前**过完。
    - **squash 提交体取自分支的单条 commit**，故 §4.6 的 `Task:` trailer 与署名行照常随分支提交落到 main ——
      「一任务一条干净 commit」这条既有要求因此更要紧（多 commit 分支会丢掉这条保证）。
 4. **删除**：合入后删除远端分支 + 本地 `git branch -d`（用 `--delete-branch` 时 gh 已代劳，本地只需
@@ -253,7 +259,7 @@ repos:
 3. `python tools/render_ledger.py status` 就绪集正确——PR 中涉及的任务文件 `status` 字段与实际进度一致。
 4. Commit message 格式校验（可选：配 commitlint 或简单 grep 正则 `^(feat|fix|docs|refactor|test|chore|ci|style)(\(.+\))?: .+$`）。
 
-**合入方式（2026-09-26 起）**：PR 建好后即 `gh pr merge <n> --auto --squash --delete-branch`，CI 绿后自动合入，**不必守着 CI**（此前惯例是等 CI 绿再手动 squash，已废止；见 [决策日志 D-011](决策日志.md)）。因 auto-merge 一旦满足条件即落地，上列「人工 / Agent 自查部分」3、4 两条必须在**建 PR 之前**过完。
+**合入方式（2026-09-26 起）**：PR 建好后即 `gh pr merge <n> --auto --squash --delete-branch`，检查满足后自动合入，**不必守着 CI**（此前惯例是等 CI 绿再手动 squash，已废止；见 [决策日志 D-011](决策日志.md) / [D-012](决策日志.md)）。**前提是 `main` 上有必检规则**（本仓库：ruleset `main-require-ci` 要求 `check`）——没有它 auto-merge 会立即合入、根本不过 CI。因 auto-merge 一旦满足条件即落地，上列「人工 / Agent 自查部分」3、4 两条必须在**建 PR 之前**过完。
 
 > CI 只跑离线部分：真实网络 / 长跑用例标 `@pytest.mark.live` 放 `tests/live/`，本地按需 `pytest -m live` 单跑，不进 CI。baostock 是可选依赖（`pip install -e ".[market]"`），CI 不装——其缺失路径本身有测试覆盖。
 
