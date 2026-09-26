@@ -10,6 +10,7 @@ GWT 对照（任务文件 5 条）：
 - GWT-3 同键并发读写零假损坏：只读到完整版本，从不抛 ``StorageCorruptionError``
 - GWT-4 落盘原子：中断只留完整旧值 / 无害孤儿，不留半截有效状态
 - GWT-5 删除窗口不制造损坏：先清单后删文件，孤儿文件不触发损坏报告
+- 附 原子替换的 Windows 瞬时句柄冲突：有界重试（验证期实测补，见 [D-016]）
 """
 
 from __future__ import annotations
@@ -249,3 +250,54 @@ def test_gwt5_delete_interrupted_after_manifest_update_stays_clean(
     reopened = Store.open(root_of(store), PASS)           # 孤儿不产生损坏报告
     assert reopened.partition_state(PART).state == "ok"
     assert reopened.list_files(PART) == ()
+
+
+# ─────────── 原子替换的 Windows 瞬时句柄冲突（有界重试，T-L0-008 验证期补） ───────────
+
+def test_atomic_replace_retries_transient_permission_error(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``os.replace`` 的瞬时 ``EACCES``（外部句柄短暂持有）被有界重试吸收。
+
+    实测来源：全量跑 `tests/l1/test_runner_sandbox.py` 时 `Store.create` 的清单
+    替换偶发 `PermissionError: [WinError 5]`（约 2000+ 次写盘中 1 次，不可稳定复现）。
+    """
+    real_replace = os.replace
+    failures = {"left": 2}
+
+    def flaky(src, dst):  # 注入：只让清单替换抖动前两次
+        if Path(dst).name == MANIFEST_NAME and failures["left"] > 0:
+            failures["left"] -= 1
+            raise PermissionError(13, "injected: 外部句柄短暂持有")
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", flaky)
+    store.put(PART, "config/flaky.json", b"value")
+    monkeypatch.setattr(os, "replace", real_replace)
+
+    assert failures["left"] == 0                      # 确实抖动过，且被重试吸收
+    assert store.get(PART, "config/flaky.json") == b"value"
+    assert store.list_files(PART) == ("config/flaky.json",)
+
+
+def test_atomic_replace_retry_is_bounded_and_leaves_no_tmp(
+    store: Store, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """持续冲突**不得**被吞：重试次数有界、耗尽即原样抛，并清掉残留临时文件。"""
+    real_replace = os.replace
+    attempts = {"n": 0}
+
+    def always_denied(src, dst):  # 注入：任何替换都冲突
+        attempts["n"] += 1
+        raise PermissionError(13, "injected: 持续冲突")
+
+    monkeypatch.setattr(os, "replace", always_denied)
+    with pytest.raises(PermissionError):
+        store.put(PART, "config/denied.json", b"value")
+    monkeypatch.setattr(os, "replace", real_replace)
+
+    assert attempts["n"] == 3                         # 有界（3 次即止）
+    leftovers = [p.name for p in (root_of(store) / PART).iterdir() if p.name.startswith(".")]
+    assert leftovers == []                            # 残留 tmp 已清
+    assert store.list_files(PART) == ()               # 未登记
+    assert store.partition_state(PART).state == "ok"

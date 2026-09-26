@@ -42,6 +42,7 @@ import json
 import os
 import shutil
 import threading
+import time
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -77,6 +78,11 @@ __all__ = [
 
 _KEYFILE = "keyfile.json"
 _AAD_FILE = b"st-agent/file/v1"
+
+_REPLACE_ATTEMPTS = 3
+"""``os.replace`` 的尝试次数（**只**对 ``PermissionError`` 重试）。"""
+_REPLACE_BACKOFF_S = 0.02
+"""重试间隔基数（第 n 次前停 ``n × 基数``）。"""
 
 
 class StorageState(BaseModel):
@@ -149,11 +155,25 @@ class Store:
 
         失败（含中断）只可能留下一个不在清单口径内的临时文件，**不会**让
         ``target`` 处于半截状态——旧内容完整保留。
+
+        ``PermissionError`` 有界重试：Windows 的 ``MoveFileEx`` 会在目标 / 临时
+        文件被**外部句柄短暂持有**时报 ``EACCES``（实时扫描、索引器是常见来源），
+        这是 tmp+replace 模式在 Windows 上的已知代价、CI（Linux）照不到。重试次数
+        有界，**持续冲突照样显式失败**（不静默、不降级为非原子写）；其余 ``OSError``
+        （磁盘满、路径不存在等）不重试。
         """
         tmp = target.parent / f".{target.name}.tmp-{os.urandom(6).hex()}"
         try:
             tmp.write_bytes(data)
-            os.replace(tmp, target)
+            for attempt in range(_REPLACE_ATTEMPTS):
+                try:
+                    os.replace(tmp, target)
+                except PermissionError:
+                    if attempt == _REPLACE_ATTEMPTS - 1:
+                        raise
+                    time.sleep(_REPLACE_BACKOFF_S * (attempt + 1))
+                else:
+                    break
         except OSError:
             tmp.unlink(missing_ok=True)
             raise
