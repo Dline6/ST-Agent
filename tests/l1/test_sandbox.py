@@ -30,7 +30,7 @@ from st_agent.l1.sandbox import (
     normalize_path,
     path_in_scope,
 )
-from st_agent.l1.skills import SkillRegistry, ensure_official_pack
+from st_agent.l1.skills import SkillExistsError, SkillRegistry, ensure_official_pack
 
 PASS = "correct horse battery staple"
 
@@ -268,6 +268,57 @@ class TestDisableOption:
         assert not sandbox.is_disabled(desc.skill_id)
         assert SkillSandbox(store).disabled_skills() == ()
         assert not any(n.startswith(DISABLED_PREFIX) for n in store.list_files("config"))
+
+
+# ────────────── T-L1-008 · 陈旧禁用旗标自愈（L1 遗留 B2 收口） ──────────────
+
+
+class TestStaleDisabledFlagSelfHeal:
+    def test_stale_flag_cleared_on_reregister(self, registry, sandbox, store):
+        """回收后重注册同 id（mcp 派生必然复用）→ 旧旗标不得误伤新 Skill。"""
+        desc = make_skill(registry, base="sk_heal", permissions=(CACHE_SCOPE,))
+        sandbox.disable(desc.skill_id)
+        assert desc.skill_id in SkillSandbox(store).disabled_skills()
+        registry.unregister("sk_heal")
+        assert any(n.startswith(DISABLED_PREFIX) for n in store.list_files("config"))
+        rereg = make_skill(registry, base="sk_heal", permissions=(CACHE_SCOPE,))
+        assert rereg.skill_id == desc.skill_id
+        assert not any(n.startswith(DISABLED_PREFIX) for n in store.list_files("config"))
+        assert not sandbox.is_disabled(desc.skill_id)              # 同进程
+        assert not SkillSandbox(store).is_disabled(desc.skill_id)  # 新建实例
+
+    def test_other_skills_disable_state_untouched(self, registry, sandbox, store):
+        keep = make_skill(registry, base="sk_keep", permissions=(CACHE_SCOPE,))
+        sandbox.disable(keep.skill_id)
+        make_skill(registry, base="sk_other", permissions=(CACHE_SCOPE,))
+        assert sandbox.is_disabled(keep.skill_id)
+        assert any(n.startswith(DISABLED_PREFIX) and "sk_keep" in n
+                   for n in store.list_files("config"))
+        assert not sandbox.is_disabled("sk_other_v1.0")
+
+    def test_existing_skill_flag_survives_duplicate_register(self, registry, sandbox):
+        """同 id 已注册（SkillExistsError）→ 其禁用态不得被自愈逻辑误清。"""
+        desc = make_skill(registry, base="sk_live", permissions=(CACHE_SCOPE,))
+        sandbox.disable(desc.skill_id)
+        with pytest.raises(SkillExistsError):
+            make_skill(registry, base="sk_live", permissions=(CACHE_SCOPE,))
+        assert sandbox.is_disabled(desc.skill_id)
+
+    def test_is_disabled_follows_store_when_store_present(self, registry, sandbox, store):
+        """有 Store 时以盘为准：盘上旗标被外部清除即刻生效（内存态不再滞留）。"""
+        desc = make_skill(registry, base="sk_ext", permissions=(CACHE_SCOPE,))
+        sandbox.disable(desc.skill_id)
+        assert sandbox.is_disabled(desc.skill_id)
+        store.delete("config", f"{DISABLED_PREFIX}{desc.skill_id}.json")
+        assert not sandbox.is_disabled(desc.skill_id)
+
+    def test_memory_fallback_without_store(self):
+        """无 Store：仍走进程内集合（既有语义不变）。"""
+        sandbox = SkillSandbox(None)
+        assert not sandbox.is_disabled("sk_none_v1.0")
+        sandbox.disable("sk_none_v1.0")
+        assert sandbox.is_disabled("sk_none_v1.0")
+        assert sandbox.disabled_skills() == ("sk_none_v1.0",)
 
 
 # ───────────────────────── 作用域匹配与入参校验 ─────────────────────────

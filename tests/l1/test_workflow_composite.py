@@ -333,6 +333,41 @@ class TestGwt4MissingDependencies:
         assert store.list_files("config") == before        # 不落半成品
 
 
+# ───────────── T-L1-008 · 悬空引用显式化（L1 遗留 B3 收口） ─────────────
+
+
+class TestDeriveContractOnMissingDeps:
+    def test_ghost_dep_raises_dependency_error_not_notfound(self, registry):
+        """B3：公开 API 不得裸抛 ``SkillNotFoundError``。"""
+        with pytest.raises(CompositeDependencyError) as excinfo:
+            derive_io_contract(make_dag(nodes=[node("a", "sk_ghost_v1.0")]), registry)
+        gaps = excinfo.value.gaps
+        assert [(g.node_id, g.skill_id) for g in gaps] == [("a", "sk_ghost_v1.0")]
+        assert "未注册" in gaps[0].reason
+
+    def test_recycled_skill_reference_is_explicit_failure(self, registry):
+        """与 B3 场景同构：注册后回收 → DAG 引用即悬空。"""
+        registry.register("sk_tmp", version="1.0", name="临时演示能力",
+                          description="用于复现回收后悬空的演示能力",
+                          input_schema={"type": "object"},
+                          output_schema={"type": "object"})
+        registry.unregister("sk_tmp")
+        with pytest.raises(CompositeDependencyError) as excinfo:
+            derive_io_contract(make_dag(nodes=[node("a", "sk_tmp_v1.0")]), registry)
+        assert [g.skill_id for g in excinfo.value.gaps] == ["sk_tmp_v1.0"]
+        assert "未注册" in excinfo.value.gaps[0].reason
+
+    def test_missing_version_reason_preserved(self, registry):
+        with pytest.raises(CompositeDependencyError) as excinfo:
+            derive_io_contract(make_dag(nodes=[node("a", "sk_scan_v9.9")]), registry)
+        assert "该版本未注册" in excinfo.value.gaps[0].reason
+
+    def test_healthy_dag_still_derives(self, registry):
+        ins, outs = derive_io_contract(scan_then_alert(), registry)
+        assert "a.symbol" in ins["properties"]
+        assert "b.alerts" in outs["properties"]
+
+
 # ───────────────────────── GWT-5 命名中性化与重名 ─────────────────────────
 
 
