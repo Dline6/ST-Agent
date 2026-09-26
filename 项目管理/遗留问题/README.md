@@ -29,3 +29,4 @@ consumed_by: [编码 Agent, 项目负责人]
 ## 册内索引
 
 - [L0 · 本地优先基座](L0-遗留问题.md)
+- [L1 · 能力底座 Skills/MCP](L1-遗留问题.md)
