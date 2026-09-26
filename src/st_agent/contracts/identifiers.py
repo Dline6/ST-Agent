@@ -1,20 +1,23 @@
 """01-平台共享契约 §1 标识（ID）体系。
 
 契约要点（§1）：
-- 13 类 ID，全局唯一、生成后不可变、可本地持久化
+- 14 类 ID，全局唯一、生成后不可变、可本地持久化
 - ``stock_id`` 首个落地形态 = 本地市场数据库 ``security`` 主档主键
   （BaoStock ``sh.``/``sz.`` 格式，数据库设计 01-核心实体层）——由 L0 数据缓存
   按交易所代码映射产生，**不由本地随机生成**
 - ``flow_id`` 与 ``skill_id`` 同构，形态为 ``wf_<注册名>_v<主>.<次>``（**不是**
   ``<prefix>_<uuid>``），由 L1 按「注册名 + 版本」拼接产生（2026-09-26 由
   ``T-L1-003.1`` 触发登记进 §1；选型见决策日志 [D-018]）
-- 其余 11 类由本机产生（``generate()``：``<prefix>_<uuid4 前 20 位>``），
+- ``trial_id`` 为一次工作流试跑的留存与对比单位（2026-09-26 由 ``T-L1-003.3``
+  触发登记进 §1）：形态与其余本机生成的 ID 同构；试跑共用一条推理链，
+  但其标识**独立于** ``trace_id``（两者是不同实体）
+- 其余 12 类由本机产生（``generate()``：``<prefix>_<uuid4 前 20 位>``），
   无中心分配方，与本地优先原则一致
 
 实现约定（④ 对齐确认，决策记执行日志）：
 - 每类 ID 是一个 frozen pydantic 值对象（``value`` + ``id_kind`` 判别字段），
   不可变由模型保证；``id_kind`` 防跨层串用（如把 trace_id 当 signal_id 传）
-- 12 类结构同构：格式校验统一继承自 ``PlatformId._check_format``，
+- 各类型结构同构：格式校验统一继承自 ``PlatformId._check_format``，
   各类型只覆写 ``_pattern`` 类属性（含 stock_id 的交易所格式特例）——
   任何构造路径（of / model_validate）都走同一校验管道
 - `§1` 表的「指代对象/产生方」以 ``ID_REGISTRY`` 登记，作为 §1 的机器可读副本
@@ -49,6 +52,7 @@ __all__ = [
     "SkillRunId",
     "StockId",
     "TraceId",
+    "TrialId",
 ]
 
 
@@ -58,7 +62,7 @@ def new_id(prefix: str) -> str:
 
 
 class PlatformId(BaseModel):
-    """12 类契约 ID 的公共基类（值对象）。
+    """14 类契约 ID 的公共基类（值对象）。
 
     - frozen：生成后不可变（§1）
     - ``id_kind``：契约 ID 名判别字段，防止跨层串用
@@ -89,7 +93,7 @@ class PlatformId(BaseModel):
 
     @classmethod
     def generate(cls) -> "PlatformId":
-        """生成一个新 ID（仅限本机产生的 11 类；``StockId`` / ``FlowId`` 不适用）。"""
+        """生成一个新 ID（仅限本机产生的 12 类；``StockId`` / ``FlowId`` 不适用）。"""
         if cls._generated_by:
             raise ContractViolation(cls._generated_by)
         return cls(value=new_id(cls._prefix))  # type: ignore[return-value, call-arg]
@@ -107,7 +111,7 @@ _STOCK_PATTERN = re.compile(r"^(sh|sz|bj)\.\d{6}$")
 def _make_id_type(kind: str, prefix: str, *, exchange: bool = False,
                   pattern: re.Pattern[str] | None = None,
                   generated_by: str = "") -> type[PlatformId]:
-    """动态构造一类契约 ID 值对象（13 类结构同构，仅 kind/prefix/pattern 不同）。
+    """动态构造一类契约 ID 值对象（14 类结构同构，仅 kind/prefix/pattern 不同）。
 
     :param exchange: ``stock_id`` 特例（交易所代码形态，非本机生成）
     :param pattern: 显式形态（默认 ``<prefix>_<uuid4 前 20 位>``）；``flow_id``
@@ -161,6 +165,9 @@ FlowId = _make_id_type(
                  "不得本地随机生成；用 FlowId.of('wf_daily_brief_v1.0') 构造",
 )
 
+TrialId = _make_id_type("trial_id", "trial")
+"""一次工作流试跑（03 §4 调试协议）——本机生成，形态 ``trial_<uuid4 前 20 位>``。"""
+
 # 契约 §1 表的机器可读副本：id → (指代对象, 产生方)。§1 增删类型时同步此表。
 ID_REGISTRY: dict[str, tuple[str, str]] = {
     "stock_id": ("证券标的", "L0 数据缓存"),
@@ -176,12 +183,13 @@ ID_REGISTRY: dict[str, tuple[str, str]] = {
     "change_id": ("一次配置/演进变更", "配置注册表"),
     "lens_id": ("一个视角定义", "L4"),
     "flow_id": ("一条工作流定义（含版本语义）", "L1"),
+    "trial_id": ("一次工作流试跑", "L1"),
 }
 ID_KINDS: tuple[str, ...] = tuple(ID_REGISTRY)
 ID_ALIASES: dict[str, type[PlatformId]] = {
     t.id_kind: t  # type: ignore[attr-defined]
     for t in (StockId, AnnouncementId, DatasetSnapshotId, SkillId, SkillRunId,
               MemoryNodeId, TraceId, SignalId, DeliveryId, FeedbackId, ChangeId,
-              LensId, FlowId)
+              LensId, FlowId, TrialId)
 }
 """契约名 → ID 类型登记表（§1 全表，供上层按名取类型）。"""

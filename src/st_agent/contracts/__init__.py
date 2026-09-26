@@ -27,6 +27,7 @@ from st_agent.contracts.identifiers import (
     SkillRunId,
     StockId,
     TraceId,
+    TrialId,
 )
 from st_agent.contracts.result_envelope import (
     EnvelopeStatus,
@@ -130,6 +131,7 @@ __all__ = [
     "TraceError",
     "TraceId",
     "TraceStep",
+    "TrialId",
     "VersionBump",
     "check_link",
     "check_payload",
