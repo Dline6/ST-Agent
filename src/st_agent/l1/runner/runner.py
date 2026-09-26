@@ -13,6 +13,10 @@
 - 执行与留痕：执行器为同步 callable（A4）；输出统一 ``ResultEnvelope``；
   ``SkillRun`` 落 ``execution_log`` 分区并追加 ``skill_run`` TraceStep
   （GWT-6）
+- 输出契约核验（T-L1-001.6 / 01 §2 方言）：执行器返回后、登记前，``ok``
+  载荷须过描述体 ``output_schema`` 核验（``contracts.check_payload``）；
+  不合契约 → 信封转 ``failed`` + 违规点说明 + ``log_ref``（步骤 5），
+  因此**不进入**输出登记（GWT-C1）；``output_schema`` 为空时不校验（GWT-C3）
 - 输出登记：``outputs`` 非空时把 ``ok``/``empty`` 输出登记为可复用结果
   （T-L1-001.4 / 03 §1.2 步骤 6）；登记失败 → 信封转 ``failed``（不静默）
 - 沙箱（T-L1-001.5 / 03 §1.5）：``sandbox`` 非空时——禁用 Skill 直接
@@ -35,6 +39,7 @@ from pydantic import BaseModel, ConfigDict
 
 from st_agent.contracts.identifiers import SkillRunId, TraceId
 from st_agent.contracts.result_envelope import ResultEnvelope
+from st_agent.contracts.schema_check import check_payload
 from st_agent.contracts.trace import Trace, TraceStep, digest_of
 from st_agent.l1.runner.errors import (
     CycleDetectedError,
@@ -349,6 +354,14 @@ class SkillRunner:
                     f"{type(envelope).__name__}（须为 ResultEnvelope）",
                     log_ref=log_ref),
                 tuple(ordered), params)
+        # ── 输出契约核验（T-L1-001.6 / 01 §2 方言；不合契约即失败且不登记） ──
+        if envelope.status == "ok":
+            check = check_payload(descriptor.output_schema, envelope.data)
+            if not check.passed:
+                envelope = ResultEnvelope.failed(
+                    f"Skill {skill_id!r} 输出不合 output_schema"
+                    f"（01 §2 方言）：{check.describe()}",
+                    log_ref=log_ref)
         return finish(envelope, tuple(ordered), params)
 
 
