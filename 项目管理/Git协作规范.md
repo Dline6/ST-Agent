@@ -140,8 +140,11 @@ main ──────────●──────────●───
    - 代价要认：**检查一满足即落地，没有事后补检查的机会**，故 §5.2 的「人工 / Agent 自查部分」必须在**建 PR 之前**过完。
    - **squash 提交体取自分支的单条 commit**，故 §4.6 的 `Task:` trailer 与署名行照常随分支提交落到 main ——
      「一任务一条干净 commit」这条既有要求因此更要紧（多 commit 分支会丢掉这条保证）。
-4. **删除**：合入后删除远端分支 + 本地 `git branch -d`（用 `--delete-branch` 时 gh 已代劳，本地只需
-   `git fetch --prune` 清远端跟踪）。
+4. **删除**：本仓库已开 `delete_branch_on_merge`（`true`，2026-09-26 冷读双路确认）——GitHub 在 PR 合入后
+   **自动删除 head 分支**。**这一步是必需的、不能指望 `--delete-branch`**：真 auto-merge 是**服务端异步合入**，
+   gh 不参与合入动作，故 `--delete-branch` 对**远端**分支不生效（PR #19 / #20 能删，是因那两次 gh 直接合入）。
+   本地侧合入后 `git fetch --prune` + `git branch -d <branch>`（squash 后分支与 main 无祖先关系时用 `-D`，
+   或先 `git diff --quiet main <branch>` 证明树一致再删）。
 5. **禁止**：force-push 到 main；rebase 已推送到远端的 main 历史。
 
 ### 3.4 与任务工作流的映射
