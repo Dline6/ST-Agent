@@ -72,6 +72,7 @@ __all__ = [
     "BAOSTOCK_HOST",
     "BaoStockSync",
     "DOMAIN_TASKS",
+    "RUN_ORDER",
 ]
 
 BAOSTOCK_HOST = "baostock"
@@ -91,8 +92,8 @@ DOMAIN_TASKS: dict[str, tuple[str, ...]] = {
     "announcement": (),
 }
 
-#: 05 初始化顺序（run_all 执行序；分钟线按需附后）。
-_RUN_ORDER: tuple[str, ...] = (
+#: 05 初始化顺序（``run_all`` 执行序；分钟线按需附后）。
+RUN_ORDER: tuple[str, ...] = (
     "bs_calendar", "bs_security_basic", "bs_all_stock",
     "bs_industry", "bs_sz50", "bs_hs300", "bs_zz500",
     "bs_k_daily", "bs_k_period", "bs_adjust_factor", "bs_dividend",
@@ -101,6 +102,7 @@ _RUN_ORDER: tuple[str, ...] = (
     "bs_money_month", "bs_money_year",
     "bs_k_minute",
 )
+"""全量同步执行序（公开：长跑脚本 T-L0-007.1 据此逐任务计时，不重写 `run_all` 语义）。"""
 
 
 def _now() -> datetime:
@@ -239,8 +241,8 @@ class BaoStockSync:
         results: dict[str, ResultEnvelope] = {}
         setup_env = self.setup()
         if setup_env.status != "ok":
-            return {t: setup_env for t in _RUN_ORDER}
-        for task_key in _RUN_ORDER:
+            return {t: setup_env for t in RUN_ORDER}
+        for task_key in RUN_ORDER:
             if task_key == "bs_k_minute" and not (watchlist or (enabled or {}).get(
                     "bs_k_minute", False)):
                 results[task_key] = self._disabled_envelope(
