@@ -19,14 +19,16 @@
 并发（02 §2.4）：
 - 同一进程内，同一分区的读写以**分区级互斥锁**串行化——并发写不丢清单条目，
   读不观察到「清单登记与文件内容配对不一致」的中间态（否则会误报损坏）
-- 清单与文件内容一律「同目录临时文件 + ``os.replace``」原子替换，中断只留完整
-  旧版本 + 无害残留，不留半截文件
+- 清单与文件内容一律「临时文件 + ``os.replace``」原子替换，中断只留完整旧版本
+  + 无害残留，不留半截文件；中间产物写在**专属临时目录** ``root/.st-agent-tmp/``
+  （不污染分区目录），其崩溃残留由 ``Store.open`` 整体回收（E2）
 - 分区间互不阻塞；**多个进程同开同一 root 不在保证范围内**（需由上层约定单一写者）
 
 物理布局（④ 对齐）::
 
     root/
       keyfile.json        # salt(master/secrets) + verifier 密文（明文元数据，无用户数据）
+      .st-agent-tmp/      # 原子替换的中间产物（仅密文；open 时整体回收）
       memory/    manifest.bin, <加密文件>...
       config/    ...
       chat_history/ ...
@@ -79,6 +81,14 @@ __all__ = [
 _KEYFILE = "keyfile.json"
 _AAD_FILE = b"st-agent/file/v1"
 
+TMP_DIR_NAME = ".st-agent-tmp"
+"""原子替换的中间产物目录名（存储根下；`Store.open` 时整体回收，见 02 §2.4）。
+
+独立成目录而非「同目录临时文件」：回收对象因而是一个**专属目录**，无需按文件名
+模式匹配，不可能误删用户数据；分区目录也随之保持「只有清单 + 数据文件」。
+必须与目标同卷——``os.replace`` 的原子性以此为前提。
+"""
+
 _REPLACE_ATTEMPTS = 3
 """``os.replace`` 的尝试次数（**只**对 ``PermissionError`` 重试）。"""
 _REPLACE_BACKOFF_S = 0.02
@@ -130,6 +140,7 @@ class Store:
         self._manifests: dict[str, PartitionManifest] = {}
         self._states: dict[str, str] = {p.name: "ok" for p in PARTITIONS}
         self._reports: dict[str, CorruptedPartitionReport] = {}
+        self._tmp_dir = self._root / TMP_DIR_NAME  # 原子替换的中间产物（同卷，见 02 §2.4）
         # 分区级互斥（02 §2.4）：同分区读写串行化，分区间互不阻塞
         self._part_locks: dict[str, threading.RLock] = {}
         self._part_locks_guard = threading.Lock()
@@ -149,12 +160,23 @@ class Store:
                     self._part_locks[partition] = lock
         return lock
 
-    @staticmethod
-    def _atomic_write(target: Path, data: bytes) -> None:
-        """同目录临时文件 + ``os.replace`` 原子替换（02 §2.4 落盘原子性）。
+    def _reset_tmp_dir(self) -> None:
+        """(重)建中间产物目录并清空其中的崩溃残留（02 §2.4）。
 
-        失败（含中断）只可能留下一个不在清单口径内的临时文件，**不会**让
-        ``target`` 处于半截状态——旧内容完整保留。
+        整目录回收而非按文件名模式匹配：该目录**只**由 ``_atomic_write`` 写入，
+        故清空不可能触及用户数据。残留仅含密文（``seal_bytes`` 先于落盘），
+        回收不涉明文数据主权。
+        """
+        if self._tmp_dir.exists():
+            shutil.rmtree(self._tmp_dir)
+        self._tmp_dir.mkdir(parents=True)
+
+    def _atomic_write(self, target: Path, data: bytes) -> None:
+        """中间产物目录内临时文件 + ``os.replace`` 原子替换（02 §2.4 落盘原子性）。
+
+        中间产物写在 ``root/.st-agent-tmp/``（与目标同卷，保证替换原子）、不落
+        分区目录；失败（含中断）只可能在那里留下一个残留，**不会**让 ``target``
+        处于半截状态——旧内容完整保留。残留由下次 ``Store.open`` 回收。
 
         ``PermissionError`` 有界重试：Windows 的 ``MoveFileEx`` 会在目标 / 临时
         文件被**外部句柄短暂持有**时报 ``EACCES``（实时扫描、索引器是常见来源），
@@ -162,7 +184,7 @@ class Store:
         有界，**持续冲突照样显式失败**（不静默、不降级为非原子写）；其余 ``OSError``
         （磁盘满、路径不存在等）不重试。
         """
-        tmp = target.parent / f".{target.name}.tmp-{os.urandom(6).hex()}"
+        tmp = self._tmp_dir / f"{target.name}.tmp-{os.urandom(6).hex()}"
         try:
             tmp.write_bytes(data)
             for attempt in range(_REPLACE_ATTEMPTS):
@@ -205,6 +227,7 @@ class Store:
         root.mkdir(parents=True, exist_ok=True)
         kf.write_text(json.dumps(keyfile, indent=2), encoding="utf-8")
         store = cls._unlock(root, master, secrets_key)
+        store._reset_tmp_dir()          # 中间产物目录（02 §2.4）须先于任何写入就位
         for p in PARTITIONS:
             d = root / p.name
             d.mkdir(exist_ok=True)
@@ -213,7 +236,11 @@ class Store:
 
     @classmethod
     def open(cls, root: Path | str, passphrase: str) -> "Store":
-        """打开既有存储：密码错 → 拒绝；分区损坏 → 详见异常报告。"""
+        """打开既有存储：密码错 → 拒绝；分区损坏 → 详见异常报告。
+
+        打开时**回收**中间产物目录（02 §2.4）：上次进程被强杀留下的原子写残留
+        在此清除，并使早于该机制的既有存储自动补建该目录。
+        """
         root = Path(root)
         kf = root / _KEYFILE
         if not kf.exists():
@@ -238,6 +265,7 @@ class Store:
                 "无产品方恢复通道）"
             )
         store = cls._unlock(root, master, secrets_key)
+        store._reset_tmp_dir()                 # 回收上次的崩溃残留（E2 / 02 §2.4）
         report = store._verify_all()
         if not report.is_clean:
             raise StorageCorruptionError(report)

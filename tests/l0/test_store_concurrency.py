@@ -1,29 +1,37 @@
-"""T-L0-008 测试：02-L0 §2.4 存储并发访问口径（关闭 L0 遗留册 E1）。
+"""``Store`` 的 02-L0 §2.4 契约测试：并发访问口径 + 落盘原子性 + 崩溃残留回收。
 
-来源：``T-L1-002.3`` GWT-4 全链路用例暴露 —— ``Store`` 的 ``put`` / ``delete`` 是
-「读内存清单缓存 → 重建 → 写回」三步且全程无锁，同分区并发写者互相覆盖、条目
-静默丢失（该任务为此把用例退让成「并发窗口内单一写者」）。
+T-L0-008（关闭 L0 遗留册 E1）：来源 ``T-L1-002.3`` GWT-4 全链路用例暴露 ——
+``Store`` 的 ``put`` / ``delete`` 是「读内存清单缓存 → 重建 → 写回」三步且全程
+无锁，同分区并发写者互相覆盖、条目静默丢失（该任务为此把用例退让成「并发窗口内
+单一写者」）。
 
-GWT 对照（任务文件 5 条）：
+T-L0-009（关闭 L0 遗留册 E2）：原子替换的中间产物从「分区目录内」移到存储根下的
+专属临时目录，并在 ``Store.open`` 时整体回收。
+
+GWT 对照（T-L0-008 任务文件 5 条 + T-L0-009 任务文件 5 条）：
 - GWT-1 同分区并发写不丢条目（核心回归；修复前实现必丢）
 - GWT-2 并发删改混合不丢不残留：清单口径与磁盘事实一致
 - GWT-3 同键并发读写零假损坏：只读到完整版本，从不抛 ``StorageCorruptionError``
 - GWT-4 落盘原子：中断只留完整旧值 / 无害孤儿，不留半截有效状态
 - GWT-5 删除窗口不制造损坏：先清单后删文件，孤儿文件不触发损坏报告
-- 附 原子替换的 Windows 瞬时句柄冲突：有界重试（验证期实测补，见 [D-016]）
+- 附① 原子替换的 Windows 瞬时句柄冲突：有界重试（T-L0-008 验证期实测补，见 D-016）
+- 附② T-L0-009 的 GWT-1..5：中间产物承载位置与 ``open`` 时回收（见本文件末节）
 """
 
 from __future__ import annotations
 
 import os
+import shutil
 import threading
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
 import pytest
 
+from st_agent.l0.backup import WIPE_CONFIRM_TOKENS, wipe_all
 from st_agent.l0.storage import StorageCorruptionError, Store
 from st_agent.l0.storage.manifest import MANIFEST_NAME
+from st_agent.l0.storage.store import TMP_DIR_NAME
 
 PASS = "concurrency-passphrase"
 PART = "execution_log"
@@ -189,9 +197,8 @@ def test_gwt4_interrupted_write_keeps_complete_old_version(
 
     assert store.get(PART, name) == b"old-complete"       # 旧内容完整
     assert store.list_files(PART) == (name,)
-    # 中断留下的临时文件已被清理，分区目录只剩清单与数据文件
-    leftovers = [p.name for p in (root_of(store) / PART).iterdir() if p.name.startswith(".")]
-    assert leftovers == []
+    # 中断留下的临时文件已被清理，临时目录为空
+    assert list((root_of(store) / TMP_DIR_NAME).iterdir()) == []
 
     reopened = Store.open(root_of(store), PASS)
     assert reopened.partition_state(PART).state == "ok"
@@ -297,7 +304,62 @@ def test_atomic_replace_retry_is_bounded_and_leaves_no_tmp(
     monkeypatch.setattr(os, "replace", real_replace)
 
     assert attempts["n"] == 3                         # 有界（3 次即止）
-    leftovers = [p.name for p in (root_of(store) / PART).iterdir() if p.name.startswith(".")]
-    assert leftovers == []                            # 残留 tmp 已清
+    assert list((root_of(store) / TMP_DIR_NAME).iterdir()) == []   # 残留 tmp 已清
     assert store.list_files(PART) == ()               # 未登记
     assert store.partition_state(PART).state == "ok"
+
+
+# ──────── 中间产物的承载位置与回收（T-L0-009 / 关闭 L0 册 E2） ────────
+
+def test_tmp_product_never_lands_in_partition_dir(store: Store) -> None:
+    """GWT-2：中间产物只出现在专属临时目录，分区目录保持「只有清单 + 数据文件」。"""
+    store.put(PART, "a.bin", b"a")
+    store.put(PART, "net/b.bin", b"b")
+    store.delete(PART, "a.bin")
+
+    partition_dir = root_of(store) / PART
+    assert sorted(p.name for p in partition_dir.iterdir()) == [MANIFEST_NAME, "net"]
+    assert sorted(p.name for p in (partition_dir / "net").iterdir()) == ["b.bin"]
+    assert list((root_of(store) / TMP_DIR_NAME).iterdir()) == []   # 写完后临时目录为空
+
+
+def test_stale_tmp_residue_is_reclaimed_on_open(store: Store) -> None:
+    """GWT-1 + GWT-3：模拟「进程被强杀」留下的残留 → 下次 open 回收，数据面无损。"""
+    store.put(PART, "net/keep.bin", b"payload")
+    before = store.export_partition(PART)
+
+    tmp_dir = root_of(store) / TMP_DIR_NAME
+    stale = tmp_dir / "manifest.bin.tmp-0badc0ffee42"      # 半截密文
+    stale.write_bytes(os.urandom(64))
+    assert stale.exists()
+
+    reopened = Store.open(root_of(store), PASS)
+
+    assert list((root_of(store) / TMP_DIR_NAME).iterdir()) == []   # 残留整体回收
+    assert reopened.export_partition(PART) == before               # 数据逐字节不变
+    assert reopened.list_files(PART) == ("net/keep.bin",)
+    assert reopened.partition_state(PART).state == "ok"
+
+
+def test_open_recreates_missing_tmp_dir(store: Store) -> None:
+    """GWT-4：早于该机制的既有存储（无临时目录）→ open 自动补建，不报错且可写。"""
+    store.put(PART, "net/keep.bin", b"payload")
+    shutil.rmtree(root_of(store) / TMP_DIR_NAME)
+    assert not (root_of(store) / TMP_DIR_NAME).exists()
+
+    reopened = Store.open(root_of(store), PASS)
+
+    assert (root_of(store) / TMP_DIR_NAME).is_dir()
+    assert reopened.get(PART, "net/keep.bin") == b"payload"
+    reopened.put(PART, "net/after.bin", b"after")                  # 补建后可正常写
+    assert reopened.get(PART, "net/after.bin") == b"after"
+
+
+def test_wipe_all_removes_tmp_dir_too(store: Store) -> None:
+    """GWT-5：完全清空走 ``rmtree(root)``，临时目录随存储根一并消失。"""
+    store.put(PART, "net/keep.bin", b"payload")
+    (root_of(store) / TMP_DIR_NAME / "residue.tmp-deadbeef").write_bytes(b"x")
+
+    wipe_all(root_of(store), list(WIPE_CONFIRM_TOKENS))
+
+    assert not root_of(store).exists()
