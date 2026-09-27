@@ -112,6 +112,8 @@ INFO_SOURCES: tuple[InfoSource, ...] = (
                 "np-anotice-stock.eastmoney.com")),
     InfoSource("cninfo_irm", "互动易（巨潮，深市投资者关系）",
                "https://irm.cninfo.com.cn", ("irm.cninfo.com.cn",)),
+    InfoSource("cninfo_api", "巨潮资讯网（数据中心 API / 专题统计）",
+               "https://webapi.cninfo.com.cn", ("webapi.cninfo.com.cn",)),
     InfoSource("sse_e", "上证e互动（沪市投资者关系）",
                "https://sns.sseinfo.com", ("sns.sseinfo.com",)),
     InfoSource("ths", "同花顺", "https://d.10jqka.com.cn",
@@ -162,10 +164,18 @@ INFO_TASKS: tuple[InfoTask, ...] = (
              "sse", "incremental", "每交易日盘后（仅沪市；上榜记录 + 席位兜底）",
              "sh", "backup", ("dragon_tiger", "dragon_tiger_seat"),
              watermark_desc="最近已拉交易日（沪市）"),
-    # ── 股东户数域：单源无备胎 ──
+    # ── 股东户数域：主（东财 latest）+ 备胎（巨潮按报告期全市场） ──
+    # 备胎口径见 T-L0-014（2026-09-27 实测）：巨潮 `p_sysapi1034` 按**报告期**一次
+    # 给全市场（`rdate` 仅季末、起点 2017Q1），故能回补东财 `RPT_HOLDERNUMLATEST`
+    # （latest-only、无报告期参数）拿不到的**更早季末**——不是单纯冗余，是实质互补；
+    # 两源同口径实测逐票一致（`avg_shares` 完全一致、`holder_num` 97.6% 一致），
+    # 故取 `backup` 让位主源：分歧行不覆盖（D-030 业务键级单一事实源）。
     InfoTask("info_shareholder_num_em", "shareholder_num", "shareholder_num",
              "eastmoney", "upsert_window", "每周（季频数据，重拉最近 8 个季度）",
-             "all", "sole", watermark_desc="已覆盖的最近统计截止日"),
+             "all", "primary", watermark_desc="已覆盖的最近统计截止日"),
+    InfoTask("info_shareholder_num_cninfo", "shareholder_num", "shareholder_num",
+             "cninfo_api", "upsert_window", "每周（季频数据，按报告期重拉最近 8 个季度）",
+             "all", "backup", watermark_desc="已覆盖的最近统计截止日"),
     # ── 舆情域：双市并行互补（非主备）+ 热度榜易腐 ──
     # 沪市（T-L0-013，2026-09-27 实测）：上证e互动**有全市场流**（feeds.do），无须逐
     # 公司定位 uid → 按窗口式节奏重拉。深市互动易**无**全市场流，口径已由 D-037 定为

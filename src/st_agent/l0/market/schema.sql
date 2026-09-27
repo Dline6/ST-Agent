@@ -376,14 +376,14 @@ CREATE TABLE dragon_tiger_seat (
   PRIMARY KEY (code, trade_date, side, rank)
 );
 
--- 股东户数变化（季频；单源无备胎，不可用即 unavailable）
+-- 股东户数变化（季频；**主备两源**——东财 latest 为主、巨潮按报告期全市场为备，见 D-041）
 CREATE TABLE shareholder_num (
   code         TEXT NOT NULL REFERENCES security(code),
   stat_date    TEXT NOT NULL,                 -- 统计截止日
   holder_num   INTEGER,                       -- 股东户数
   change_num   INTEGER,                       -- 较上期变化户数
   change_ratio REAL,                          -- 环比 %
-  avg_shares   REAL,                          -- 户均持股（股）
+  avg_shares   REAL,                          -- 户均持股（股；两源同口径＝总股本/户数）
   source_id    TEXT NOT NULL REFERENCES data_source(source_id),
   PRIMARY KEY (code, stat_date)
 );

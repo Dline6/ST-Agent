@@ -6,7 +6,9 @@
 - ``parse_*``——**纯函数**：源方载荷 → 规范化行。**离线可单测**（CI 覆盖），
   夹具取自**真实载荷形状**（2026-09-27 实测）
 - :class:`HttpInfoFetcher`——真实取数（``urllib``，无第三方依赖）。**CI 不联网**，
-  该层只在 ``tests/live/`` 单跑（``pytest -m live``）
+  该层只在 ``tests/live/`` 单跑（``pytest -m live``）。**唯一例外**：巨潮数据中心的
+  ``Accept-Enckey`` 签名用 ``cryptography``（**已是本项目核心依赖**，见
+  ``l0/storage/crypto.py``）——不引入新依赖，也不引 JS 引擎（见 T-L0-014 段）。
 
 端点知识移植自开源项目 ``simonlin1212/a-stock-data``（Apache-2.0，**取知识不取
 依赖**），并按 2026-09-27 的**真实探测**校正了三处与原文不符之处（见各解析件注释）。
@@ -24,6 +26,17 @@ T-L0-013 再校正两处口径：
   走巨潮**请求侧 ``category``**（26 类），见 [05](../../../../docs/数据库设计-BaoStock数据层/05-同步策略与新鲜度契约.md)
   与 [D-038](../../../../项目管理/决策日志.md)。各解析件的 ``ann_type`` 取值处已就地注明。
 
+T-L0-014 补一处股东户数口径（2026-09-27 实测）：
+
+- **巨潮有股东户数源、按报告期全市场**——``p_sysapi1034?rdate=<YYYYMMDD>``（``rdate``
+  仅季末、起点 2017Q1），鉴权头 ``Accept-Enckey`` ＝ 固定密钥 AES-128-CBC-PKCS7
+  加密当前 unix 秒（算法出自 akshare ``data/cninfo.js`` 的 ``getResCode1()``，
+  **取知识不取依赖**）→ 该源作**备胎**，回补东财 ``RPT_HOLDERNUMLATEST``
+  （latest-only、无报告期参数）拿不到的历史季末。
+- **东财 ``avg_shares`` 原先恒 ``NULL``**——解析件读的 ``AVG_FREE_SHARES`` 在真实
+  载荷中**不存在**（真实键为 ``AVG_HOLD_NUM``）；已校正，且与巨潮 ``F004N``
+  实测**同口径**（总股本/户数）。
+
 **出网纪律**：一切请求经 L0 出网网关（02 §6）——本层只做「发一次请求并返回
 载荷」，审计与限流在网关侧。**查询参数一律经 ``urlencode``**：东财的 ``filter``
 含 ``<`` / ``>``，直接拼进 URL 会被拒（实测 400）。
@@ -31,13 +44,18 @@ T-L0-013 再校正两处口径：
 
 from __future__ import annotations
 
+import base64
 import json
 import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from html import unescape
 from typing import Any, Protocol
+
+from cryptography.hazmat.primitives import padding
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from st_agent.l0.info.errors import (
     InfoFetchError,
@@ -59,6 +77,7 @@ __all__ = [
     "parse_sentiment_hot_ths",
     "parse_sentiment_qa_irm",
     "parse_sentiment_qa_sse",
+    "parse_shareholder_num_cninfo",
     "parse_shareholder_num_em",
 ]
 
@@ -508,7 +527,15 @@ def _sse_top(code: str, trade_date: str, section: str) -> dict:
 # ───────────────────────── 纯解析：股东户数 ─────────────────────────
 
 def parse_shareholder_num_em(payload: dict) -> tuple[dict, ...]:
-    """东财 ``RPT_HOLDERNUMLATEST`` → 股东户数行。"""
+    """东财 ``RPT_HOLDERNUMLATEST`` → 股东户数行（**每票最新一期**）。
+
+    ⚠️ 该报告是 **latest**——**无报告期参数**，故只能给每票最新一期；更早季末的
+    回补由 :func:`parse_shareholder_num_cninfo`（巨潮按报告期）承担（T-L0-014）。
+    ``END_DATE`` 可为**期中变动日**（非季末），合法。
+
+    ``avg_shares`` 取 ``AVG_HOLD_NUM``（户均持股）——原实现读的 ``AVG_FREE_SHARES``
+    在真实载荷中**不存在**，致该列恒 ``NULL``（T-L0-014 实测校正）。
+    """
     rows: list[dict] = []
     for item in (payload.get("result", {}).get("data") or payload.get("data") or []):
         code = _text(item.get("SECURITY_CODE"))
@@ -520,7 +547,43 @@ def parse_shareholder_num_em(payload: dict) -> tuple[dict, ...]:
             "holder_num": _int(item.get("HOLDER_NUM")),
             "change_num": _int(item.get("HOLDER_NUM_CHANGE")),
             "change_ratio": _num(item.get("HOLDER_NUM_RATIO")),
-            "avg_shares": _num(item.get("AVG_FREE_SHARES")),
+            "avg_shares": _num(item.get("AVG_HOLD_NUM")),
+        })
+    return tuple(rows)
+
+
+def parse_shareholder_num_cninfo(payload: dict) -> tuple[dict, ...]:
+    """巨潮 ``p_sysapi1034`` → 股东户数行（**按报告期全市场**）。
+
+    真实形状（2026-09-27 实测）：``{total, count, resultcode, records: [...]}``，
+    行字段为**匿名列名** ``F001N``…``F006N``——按位置与量纲对应：``F001N``＝本期
+    股东人数 / ``F002N``＝上期 / ``F003N``＝增幅% / ``F004N``＝人均持股（与东财
+    ``AVG_HOLD_NUM`` **实测同口径**，皆为总股本/户数）。``change_num`` 由
+    本期 − 上期推导（与东财 ``HOLDER_NUM_CHANGE`` 同义）。
+
+    ``records`` **缺失**是结构变更（抛错）；**存在但为空**是该报告期无数据
+    ——两态必须分开，否则「源挂了」会被读成「没数据」（沿用 T-L0-012 范式）。
+    """
+    if not isinstance(payload, dict) or "records" not in payload:
+        raise InfoValidationError(
+            "巨潮股东户数载荷缺少 records——页面结构可能已变"
+            f"（resultcode={payload.get('resultcode') if isinstance(payload, dict) else None}）"
+        )
+    rows: list[dict] = []
+    for item in payload.get("records") or ():
+        code = _text(item.get("SECCODE"))
+        stat = _day(item.get("ENDDATE"))
+        if not code or not stat:
+            continue
+        holders = _int(item.get("F001N"))
+        previous = _int(item.get("F002N"))
+        rows.append({
+            "code": to_stock_id(code), "stat_date": stat,
+            "holder_num": holders,
+            "change_num": (None if holders is None or previous is None
+                           else holders - previous),
+            "change_ratio": _num(item.get("F003N")),
+            "avg_shares": _num(item.get("F004N")),
         })
     return tuple(rows)
 
@@ -710,6 +773,46 @@ _SSE_FEED_TYPES = ("10", "11")
 ``answer=None``，稍后被回复 → 本次抓取内由后到的「有回答」行覆盖同键行
 （键 = ``(code, question, ask_time)``）。"""
 
+_CNINFO_API = "https://webapi.cninfo.com.cn/api/sysapi/p_sysapi1034"
+"""巨潮数据中心「股东人数及持股集中度」（专题统计）——**按报告期**全市场。"""
+
+_CNINFO_REFERER = "https://webapi.cninfo.com.cn/"
+_CNINFO_KEY = b"1234567887654321"
+"""``Accept-Enckey`` 的固定密钥（同时用作 IV）——AES-128-CBC。
+
+出处：akshare ``data/cninfo.js`` 的 ``getResCode1()``（**取知识不取依赖**，
+原实现用 ``py_mini_racer`` 跑 JS；此处以 ``cryptography`` 等价重写）。
+"""
+
+_CNINFO_EARLIEST = "2017-03-31"
+"""源端起点（该专题只到 2017Q1）——早于此的季末**不请求**，避免必然落空。"""
+
+
+def _cninfo_enckey(now: float | None = None) -> str:
+    """``Accept-Enckey`` ＝ ``base64(AES-128-CBC-PKCS7(unix 秒))``（key = IV）。"""
+    stamp = str(int(time.time() if now is None else now)).encode("ascii")
+    padder = padding.PKCS7(algorithms.AES.block_size).padder()
+    data = padder.update(stamp) + padder.finalize()
+    encryptor = Cipher(algorithms.AES(_CNINFO_KEY), modes.CBC(_CNINFO_KEY)).encryptor()
+    return base64.b64encode(encryptor.update(data) + encryptor.finalize()).decode("ascii")
+
+
+def _quarter_ends(window: tuple[str, str]) -> tuple[tuple[str, str], ...]:
+    """窗口内的季末 ``(YYYY-MM-DD, YYYYMMDD)``——巨潮 ``rdate`` **只接受季末**。
+
+    下界取 ``_CNINFO_EARLIEST``（源端起点），故正常 2 年窗口恒得 8 期；即便调用方
+    传入更早的窗口，也只会在源端真实存在的季末上请求。
+    """
+    start, end = window
+    start = max(start, _CNINFO_EARLIEST)
+    periods: list[tuple[str, str]] = []
+    for year in range(int(start[:4]), int(end[:4]) + 1):
+        for month, day in (("03", "31"), ("06", "30"), ("09", "30"), ("12", "31")):
+            iso = f"{year}-{month}-{day}"
+            if start <= iso <= end:
+                periods.append((iso, f"{year}{month}{day}"))
+    return tuple(periods)
+
 
 class HttpInfoFetcher:
     """真实 HTTP 抓取器（``urllib``，无第三方依赖）。
@@ -738,25 +841,31 @@ class HttpInfoFetcher:
 
     def _request(self, url: str, *, params: dict | None = None,
                  data: dict | None = None, json_body: Any = None,
-                 referer: str | None = None) -> Any:
+                 referer: str | None = None,
+                 headers: dict | None = None) -> Any:
         """发一次请求并解析 JSON（JSONP 自动剥壳）。
 
         **查询参数一律经 ``urlencode``**——东财的 ``filter`` 含 ``<`` / ``>``，
         直接拼进 URL 会被拒（实测 400）。
+
+        ``headers`` 供源端要求的特殊头（巨潮 ``Accept-Enckey``）；**不得**用它
+        覆盖出网纪律意义上的 UA / Accept 缺省值——缺省值先铺，自定义随后覆盖。
         """
         if params:
             url = f"{url}?{urllib.parse.urlencode(params, doseq=True)}"
-        headers = {"User-Agent": _UA, "Accept": "application/json, text/plain, */*"}
+        merged = {"User-Agent": _UA, "Accept": "application/json, text/plain, */*"}
         if referer:
-            headers["Referer"] = referer
+            merged["Referer"] = referer
+        if headers:
+            merged.update(headers)
         body = None
         if json_body is not None:
             body = json.dumps(json_body).encode("utf-8")
-            headers["Content-Type"] = "application/json"
+            merged["Content-Type"] = "application/json"
         elif data is not None:
             body = urllib.parse.urlencode(data, doseq=True).encode("utf-8")
-            headers["Content-Type"] = "application/x-www-form-urlencoded"
-        request = urllib.request.Request(url, data=body, headers=headers)
+            merged["Content-Type"] = "application/x-www-form-urlencoded"
+        request = urllib.request.Request(url, data=body, headers=merged)
         with urllib.request.urlopen(request, timeout=self._timeout) as response:
             raw = response.read().decode("utf-8", "ignore").strip()
         return self._unwrap(raw)
@@ -901,6 +1010,24 @@ class HttpInfoFetcher:
         payload = self._request(_DATACENTER, params=self._datacenter(
             "RPT_HOLDERNUMLATEST", sortColumns="END_DATE", sortTypes="-1"))
         return {"shareholder_num": parse_shareholder_num_em(payload)}
+
+    def _fetch_info_shareholder_num_cninfo(self, window: tuple[str, str]) -> InfoRows:
+        """巨潮数据中心股东户数（**按报告期**全市场）→ 股东户数行。
+
+        ``rdate`` 只接受**季末**，故按窗口内各季末逐期取数（2 年窗口 = 8 期，每期
+        一次请求）。该源作**备胎**：写入走 ``INSERT OR IGNORE``，只补主源空缺的
+        ``(code, stat_date)``，**不覆盖**主源口径（D-030）。
+        """
+        rows: list[dict] = []
+        for _iso, compact in _quarter_ends(window):
+            payload = self._request(
+                _CNINFO_API, params={"rdate": compact},
+                referer=_CNINFO_REFERER,
+                headers={"Accept-Enckey": _cninfo_enckey(),
+                         "X-Requested-With": "XMLHttpRequest"},
+            )
+            rows.extend(parse_shareholder_num_cninfo(payload))
+        return {"shareholder_num": tuple(rows)}
 
     # ── 舆情 ──
 
