@@ -4,7 +4,9 @@
 - ``render_ledger.serialize`` 回写任务文件时**不得丢字段**（未知键与空值键原样保留）——
   派生父状态会重写任务文件，丢字段属静默数据损坏；
 - ``T-INT-*`` 集成关卡层被 ID_RE / layer_of / LAYER_ORDER 识别；
-- ``verify_docs`` 的三项新检查（接口面完整、集成关卡覆盖、遗留销账）与 `gate: skip` 例外。
+- ``verify_docs`` 的三项新检查（接口面完整、集成关卡覆盖、遗留销账）与 `gate: skip` 例外；
+- ``verify_docs`` 的断链扫描跳过 ``.git`` 与 gitignored 的 ``tmp/`` ``temp/`` 草稿目录
+  （2026-09-27 加固）。
 """
 
 from __future__ import annotations
@@ -205,3 +207,29 @@ def test_legacy_closed_section_and_unborn_task_are_ignored(fake_tasks, tmp_path,
         "\n## 已闭（备查）\n\n"
         "- **A2** 归属 `T-L0-001` 但已闭，不该判\n"))
     assert vd.check_legacy_settlement() == []
+
+
+# ───────────────────────── 检查 1：断链扫描的目录跳过 ─────────────────────────
+# 历史现象（2026-09-27）：临时目录里的草稿 .md（如 temp/ 下的外部仓库快照）指向本项目
+# 不存在的文件，让 `--strict` 在本地恒红——而该目录在 .gitignore 里，永不可提交。
+
+def test_draft_dirs_are_not_scanned(tmp_path, monkeypatch):
+    (tmp_path / "target.md").write_text("目标", encoding="utf-8")
+    (tmp_path / "ok.md").write_text("[目标](target.md)[再指一次](target.md)", encoding="utf-8")
+    for d in ("tmp", "temp"):
+        (tmp_path / d).mkdir()
+        (tmp_path / d / "draft.md").write_text("[坏](不存在的文件.md)", encoding="utf-8")
+    monkeypatch.setattr(vd, "ROOT", str(tmp_path))
+
+    md, cnt, broken = vd.check_links()
+    assert md == 2                     # ok.md + target.md；草稿目录不参与计数
+    assert cnt == 2
+    assert broken == []                # 草稿里的断链不上报
+
+def test_git_dir_is_not_scanned(tmp_path, monkeypatch):
+    (tmp_path / ".git").mkdir()
+    (tmp_path / ".git" / "x.md").write_text("[坏](无.md)", encoding="utf-8")
+    monkeypatch.setattr(vd, "ROOT", str(tmp_path))
+
+    assert vd.check_links() == (0, 0, [])
+

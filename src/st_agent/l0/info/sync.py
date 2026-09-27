@@ -19,6 +19,7 @@ import sqlite3
 from datetime import datetime
 from typing import Any
 
+from st_agent.contracts.identifiers import digest_id
 from st_agent.contracts.result_envelope import ResultEnvelope
 
 from st_agent.l0.info.docs import DocConsistency, DocStore, audit_docs
@@ -59,18 +60,6 @@ DOMAIN_INFO_TASKS: dict[str, tuple[str, ...]] = {}
 for _t in INFO_TASKS:
     DOMAIN_INFO_TASKS.setdefault(_t.domain, ())
     DOMAIN_INFO_TASKS[_t.domain] = DOMAIN_INFO_TASKS[_t.domain] + (_t.task_key,)
-
-
-def digest_id(prefix: str, *parts: Any) -> str:
-    """业务键的**确定性摘要**标识（01 §1：跨源的同一实体得同一 ID，长度有界）。
-
-    形如 ``ann_1f3c...``（前缀 + 20 位十六进制，恒 24 字符）——远低于
-    ``EvidenceRef.ref`` 的 128 上限，且**不沿用源方 ID**（D-030 / D-031）。
-    """
-    import hashlib
-
-    raw = "\u0001".join(str(p or "").strip() for p in parts)
-    return f"{prefix}_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]}"
 
 
 def _now() -> datetime:

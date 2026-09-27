@@ -290,7 +290,10 @@ class BaoStockSync:
         )
 
     def dataset_snapshot(self) -> str:
-        """当前水位组合（``dataset_snapshot_id`` 锚定口径，02 §5）。"""
+        """当前 ``dataset_snapshot_id``（01 §1 形态；水位组合的确定性摘要，02 §5）。
+
+        可读原文经 ``MarketDb.snapshot_components()`` 取。
+        """
         return self._db.snapshot_id()
 
     # ───────────────────────── 内部：开关与前置 ─────────────────────────

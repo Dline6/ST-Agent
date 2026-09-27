@@ -16,13 +16,14 @@ L1 不 import L0 具体类，测试可注入离线 Fake。
 
 from __future__ import annotations
 
-import hashlib
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any, Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, ValidationError
 
+from st_agent.contracts.errors import ContractViolation
+from st_agent.contracts.identifiers import DatasetSnapshotId
 from st_agent.contracts.result_envelope import EvidenceRef, ResultEnvelope
 from st_agent.l1.skills.official.errors import OfficialPackLoadError
 
@@ -43,9 +44,6 @@ __all__ = [
 
 ROWS_KEY = "rows"
 """``ok`` 载荷中行集的键（``MarketDb.query`` 的口径：``{'columns', 'rows'}``）。"""
-
-SNAPSHOT_REF_LENGTH = 20
-"""``dataset_snapshot_id`` 摘要位数（对齐 01 §1 ``snap_<uuid4 前 20 位>`` 的位数）。"""
 
 
 @runtime_checkable
@@ -110,18 +108,25 @@ def empty_envelope(
 def snapshot_ref(source: MarketQuerySource) -> EvidenceRef | None:
     """数据快照证据引用（01 §1 ``dataset_snapshot_id``）；取数源无水位接口时 → ``None``。
 
-    水位取自 L0（``MarketDb.snapshot_id()``：各任务水位 + 成功时间的组合），
-    但该组合串在满任务表下约 350 字符、且不是 ``snap_<20 位>`` 形态——超出
-    ``EvidenceRef.ref`` 的 128 上限。故此处取**有界稳定摘要**：同一水位 → 同一
-    ID、换水位 → 换 ID（确定性，可复核）。取数源未提供 ``snapshot_id`` 时返回
-    ``None``（不编造证据）。
+    直取 L0 的 ``snapshot_id()``——它本身即契约形态（``MarketDb`` 已按
+    :func:`~st_agent.contracts.identifiers.digest_id` 产出 ``snap_<20 位十六进制>``，
+    见 [D-033]），故 L1 **不再二次加工**：形态断言只此一处，越界串进不来。
+
+    取数源未提供 ``snapshot_id`` 时返回 ``None``（不编造证据）；提供了但**不合契约
+    形态**时显式拒绝（``ContractViolation`` 携来源与非法值）——不静默摘要、不放行
+    越界串。
     """
     provider = getattr(source, "snapshot_id", None)
     if not callable(provider):
         return None
-    composite = str(provider())
-    digest = hashlib.sha256(composite.encode("utf-8")).hexdigest()[:SNAPSHOT_REF_LENGTH]
-    return EvidenceRef(kind="dataset_snapshot_id", ref=f"snap_{digest}")
+    raw = str(provider())
+    try:
+        return EvidenceRef(kind="dataset_snapshot_id", ref=DatasetSnapshotId.of(raw).value)
+    except ValidationError as exc:
+        raise ContractViolation(
+            f"取数源 {type(source).__name__} 提供的 snapshot_id 不合 01 §1 形态"
+            f"（须为 snap_<20 位十六进制>）：{raw!r}"
+        ) from exc
 
 
 # ───────────────────────── 执行器共用的支撑件（两 Bundle 复用） ─────────────────────────
