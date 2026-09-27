@@ -35,7 +35,7 @@ verify:
 
 ## 参考
 - Story（What）：[PRD 索引](../../docs/PRD-v2-Agent/README.md)
-- 前置关卡：[T-INT-001](T-INT-001-M0集成关卡骨架打通冒烟.md)
+- 前置关卡：[T-INT-001](done/M0/T-INT-001-M0集成关卡骨架打通冒烟.md)
 
 ## 备注
 不重复单任务单测；只测装配关系与跨层数据流。实现细节留给代码 / commit / 执行日志。

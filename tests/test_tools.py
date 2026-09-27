@@ -12,6 +12,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 
 import pytest
@@ -105,6 +106,102 @@ def test_eco_layer_sits_after_l4():
     """ECO 层置于 L4 之后、L5 之前（决策日志 D-044）；INT 仍居末。"""
     assert rl.LAYER_ORDER["L4"] < rl.LAYER_ORDER["ECO"] < rl.LAYER_ORDER["L5"] < rl.LAYER_ORDER["L6"]
     assert rl.LAYER_ORDER["INT"] == len(rl.LAYERS) - 1
+
+
+# ───────────────────────── archive：移动后改正相对链接 ─────────────────────────
+# 2026-09-27 加固：archive 只做 shutil.move，而任务文件里全是相对链接（`../../docs/`、
+# 邻居任务、`../工作流.md`）——搬深两层即 815 条断链。故 archive 同批改正链接。
+
+def test_link_path_skips_non_relative():
+    assert rl._link_path("../../docs/a.md") == "../../docs/a.md"
+    assert rl._link_path("../tasks/T-X-001.md#锚") == "../tasks/T-X-001.md"
+    for raw in ("#锚", "https://e.com/a", "mailto:a@b", "/abs/a.md", ""):
+        assert rl._link_path(raw) is None
+
+
+def test_retarget_picks_first_existing_and_is_idempotent(tmp_path):
+    here = tmp_path / "项目管理/tasks/done/M0"      # 比 tasks/ 深两层
+    here.mkdir(parents=True)
+    (tmp_path / "docs").mkdir(); (tmp_path / "docs/d.md").write_text("x", encoding="utf-8")
+    # 候选二 = 目标没搬走，仍是 tasks/<p>（相对此处即多深两层 → ../../../../docs/d.md）
+    cands = lambda p: [str(here / p), str(tmp_path / "项目管理/tasks" / p)]     # noqa: E731
+    once = rl._retarget("见 [01](../../docs/d.md)", str(here), cands)
+    assert "(../../../../docs/d.md)" in once
+    assert rl._retarget(once, str(here), cands) == once          # 幂等：已成立则不动
+
+
+def test_retarget_leaves_broken_link_alone(tmp_path):
+    """候选全不存在 → 原样保留（留给 verify_docs 报断链，不静默猜）。"""
+    here = tmp_path / "任务"
+    here.mkdir()
+    text = "见 [无](../../nowhere.md)"
+    assert rl._retarget(text, str(here), lambda p: [str(here / p)]) == text
+
+
+def _mini_repo(tmp_path):
+    """迷你仓库：一个已完成 M0 任务（带两类相对链接）+ 一个 M1 任务 + 一个外部引用页。"""
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs/d.md").write_text("# 契约\n", encoding="utf-8")
+    pm = tmp_path / "项目管理"
+    tasks = pm / "tasks"
+    tasks.mkdir(parents=True)
+    # 账本渲染会引用 LAYERS 里的 Story 链接——把目标建出来，否则断链检查假阳
+    for _c, _h, story, _m in rl.LAYERS:
+        for tgt in re.findall(r"\]\(([^)]+)\)", story):
+            doc = pm / tgt
+            doc.parent.mkdir(parents=True, exist_ok=True)
+            doc.write_text("# 占位\n", encoding="utf-8")
+    (tasks / "T-L1-001-甲.md").write_text(rl.serialize(
+        {"id": "T-L1-001", "title": "甲", "priority": "P0", "milestone": "M0",
+         "parent": "", "depends_on": "[]", "status": "done", "verify": ""},
+        "## 涉及契约\n[01](../../docs/d.md)\n\n## 参考\n[乙](T-L1-002-乙.md)\n"),
+        encoding="utf-8")
+    (tasks / "T-L1-002-乙.md").write_text(rl.serialize(
+        {"id": "T-L1-002", "title": "乙", "priority": "P1", "milestone": "M1",
+         "parent": "", "depends_on": "[]", "status": "todo", "verify": ""},
+        "## 目标\n乙\n"), encoding="utf-8")
+    notes = pm / "notes.md"
+    notes.write_text("[甲](tasks/T-L1-001-甲.md) [乙](tasks/T-L1-002-乙.md)\n", encoding="utf-8")
+    return pm, tasks, notes
+
+
+def _patch_paths(monkeypatch, tmp_path, tasks, pm):
+    """把工具的全部路径全局量指到迷你仓库（``PM`` 也须指，``scan`` 用它算 rel）。"""
+    for name, val in (("PM", str(pm)), ("TASKS", str(tasks)), ("DONE", str(tasks / "done")),
+                      ("LEDGER", str(pm / "任务账本.md")), ("ROOT", str(tmp_path))):
+        monkeypatch.setattr(rl, name, val)
+    monkeypatch.setattr(rl, "MILESTONES", [("M0", "甲", "目标")])
+    monkeypatch.setattr(vd, "ROOT", str(tmp_path))
+
+
+def test_archive_rewrites_links_and_leaves_no_broken(tmp_path, monkeypatch):
+    pm, tasks, notes = _mini_repo(tmp_path)
+    _patch_paths(monkeypatch, tmp_path, tasks, pm)
+
+    rl.archive(False)
+
+    moved = tasks / "done/M0/T-L1-001-甲.md"
+    assert moved.exists() and not (tasks / "T-L1-001-甲.md").exists()
+    text = moved.read_text(encoding="utf-8")
+    assert "(../../../../docs/d.md)" in text     # 没搬走的：只多深两层
+    assert "(../../T-L1-002-乙.md)" in text      # 跨里程碑的邻居：仍指 tasks/
+    # 外部引用页：指向本批的改、指向别处的分毫不动
+    n = notes.read_text(encoding="utf-8")
+    assert "[甲](tasks/done/M0/T-L1-001-甲.md)" in n
+    assert "[乙](tasks/T-L1-002-乙.md)" in n
+    # 账本随移动重生（派生视图），且全仓 0 断链
+    assert (pm / "任务账本.md").exists()
+    assert vd.check_links()[2] == []
+
+
+def test_archive_dry_moves_nothing(tmp_path, monkeypatch):
+    pm, tasks, notes = _mini_repo(tmp_path)
+    _patch_paths(monkeypatch, tmp_path, tasks, pm)
+
+    rl.archive(True)
+
+    assert (tasks / "T-L1-001-甲.md").exists()
+    assert not (tasks / "done").exists()
 
 
 # ───────────────────────── 检查 6：接口面 ─────────────────────────
