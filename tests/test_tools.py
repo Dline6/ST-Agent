@@ -120,6 +120,18 @@ def test_interface_filled_passes(fake_tasks):
     assert vd.check_interfaces() == []
 
 
+def test_section_with_domain_word_is_not_a_placeholder(fake_tasks):
+    """「待补」是领域词（离线待补偿的到期点），不是占位标记——不得误判（T-L1-005.3）。"""
+    body = ("## 接口面\n- 输入：`EgressGateway.online`\n- 输出：待补集落 `config/scheduler/`\n\n"
+            "## 假设与前提\n- A1 离线判定取网关单一源头，待补项按到期点登记\n")
+    fake_tasks(
+        [{"id": "T-X-005", "status": "done", "parent": "", "path": "j.md", "milestone": "M0"}],
+        {"j.md::body": body},
+    )
+    assert vd.check_interfaces() == []
+    assert vd.check_assumptions() == []
+
+
 def test_todo_task_exempt_from_section_checks(fake_tasks):
     fake_tasks(
         [{"id": "T-X-004", "status": "todo", "parent": "", "path": "i.md", "milestone": "M0"}],
