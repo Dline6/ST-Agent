@@ -15,7 +15,8 @@
   无中心分配方，与本地优先原则一致
 - 其中 ``announcement_id`` 与 ``dataset_snapshot_id`` 的形态是**确定性摘要**
   （``<prefix>_<sha256 前 20 位十六进制>``，业务键稳定 → ID 稳定）而非随机
-  uuid4——两者共用 :func:`digest_id`，全平台只此一份实现
+  uuid4——两者共用 :func:`digest_id`，全平台只此一份实现，且 ``generate()``
+  被**拒绝**（同 ``stock_id`` / ``flow_id``，走 ``_generated_by``）
 
 实现约定（④ 对齐确认，决策记执行日志）：
 - 每类 ID 是一个 frozen pydantic 值对象（``value`` + ``id_kind`` 判别字段），
@@ -158,8 +159,18 @@ StockId = _make_id_type(
     generated_by="stock_id 由 L0 数据缓存按交易所代码映射产生（security 主档主键），"
                  "不得本地随机生成；用 StockId.of('sh.600000') 构造",
 )
-AnnouncementId = _make_id_type("announcement_id", "ann")
-DatasetSnapshotId = _make_id_type("dataset_snapshot_id", "snap")
+AnnouncementId = _make_id_type(
+    "announcement_id", "ann",
+    generated_by="announcement_id 由 L0 数据缓存按业务键（代码 + 标题 + 披露日期）"
+                 "的确定性摘要产生（digest_id），不得本地随机生成；"
+                 "用 AnnouncementId.of(digest_id('ann', 代码, 标题, 披露日期)) 构造",
+)
+DatasetSnapshotId = _make_id_type(
+    "dataset_snapshot_id", "snap",
+    generated_by="dataset_snapshot_id 由 L0 数据缓存按同步水位的确定性摘要产生"
+                 "（MarketDb.snapshot_id），不得本地随机生成；"
+                 "用 DatasetSnapshotId.of(MarketDb.snapshot_id()) 构造",
+)
 SkillId = _make_id_type("skill_id", "sk")
 SkillRunId = _make_id_type("skill_run_id", "run")
 MemoryNodeId = _make_id_type("memory_node_id", "mn")
