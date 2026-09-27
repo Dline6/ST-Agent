@@ -14,6 +14,16 @@
 ``1842_xxpl`` 行内 ``bz`` 自带）、沪市官方走上交所每日交易信息（**定宽文本**）
 ——原记「席位明细暂无已验证源」与「沪市官方未接入」均已作废。
 
+T-L0-013 再校正两处口径：
+
+- **沪市舆情有全市场流**——``sns.sseinfo.com/ajax/feeds.do`` 按 ``type`` 直接分页，
+  原记「上证e互动为**按公司**接口、须先定位 ``uid``」对沪市**不成立**（深市互动易
+  仍无全市场流，本轮不覆盖，见 [D-037](../../../../项目管理/决策日志.md)）。
+- **``announcement.ann_type`` 无统一语义**——三源各给各的（东财＝**证券类别/板块码**、
+  巨潮＝恒 ``NULL``、深交所＝大类字段可空），**不是**「公告内容类型」；内容类型若需要，
+  走巨潮**请求侧 ``category``**（26 类），见 [05](../../../../docs/数据库设计-BaoStock数据层/05-同步策略与新鲜度契约.md)
+  与 [D-038](../../../../项目管理/决策日志.md)。各解析件的 ``ann_type`` 取值处已就地注明。
+
 **出网纪律**：一切请求经 L0 出网网关（02 §6）——本层只做「发一次请求并返回
 载荷」，审计与限流在网关侧。**查询参数一律经 ``urlencode``**：东财的 ``filter``
 含 ``<`` / ``>``，直接拼进 URL 会被拒（实测 400）。
@@ -26,6 +36,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from html import unescape
 from typing import Any, Protocol
 
 from st_agent.l0.info.errors import (
@@ -47,6 +58,7 @@ __all__ = [
     "parse_dragon_tiger_szse_detail",
     "parse_sentiment_hot_ths",
     "parse_sentiment_qa_irm",
+    "parse_sentiment_qa_sse",
     "parse_shareholder_num_em",
 ]
 
@@ -147,7 +159,15 @@ def _pythonish_list(value: Any) -> tuple[str, ...]:
 # ───────────────────────── 纯解析：公告 ─────────────────────────
 
 def parse_announcement_cninfo(payload: dict) -> tuple[dict, ...]:
-    """巨潮 ``hisAnnouncement/query`` → 公告行（覆盖**全市**）。"""
+    """巨潮 ``hisAnnouncement/query`` → 公告行（覆盖**全市**）。
+
+    ⚠️ 本源 ``ann_type`` **恒为 ``None``**：响应的 ``announcementTypeName`` 实测
+    30 行全空（2026-09-27），列表返回**不含公告内容类型**；另给的
+    ``announcementType`` 是**数字码串**且各类目**重叠**（``01010503`` 出现在全部
+    类目）→ 无法由响应反推类目。内容类型须走**请求侧 ``category``**（26 类），
+    见 [05](../../../../docs/数据库设计-BaoStock数据层/05-同步策略与新鲜度契约.md)
+    与 [D-038](../../../../项目管理/决策日志.md)。
+    """
     rows: list[dict] = []
     for item in (payload.get("announcements") or []):
         code = _text(item.get("secCode"))
@@ -171,6 +191,10 @@ def parse_announcement_szse(payload: dict) -> tuple[dict, ...]:
     真实形状（2026-09-27 实测）：顶层 ``{announceCount, data: [...]}``；记录里
     ``secCode`` / ``secName`` 是**字符串化的 Python 列表**（如 ``"['002670']"``），
     故经 :func:`_pythonish_list` 解出代码——**一条记录可能挂多只标的**，逐只展开。
+
+    ⚠️ 本源 ``ann_type`` **恒为 ``None``**：实测该窗口 20 行的 ``bigCategoryId`` /
+    ``smallCategoryId`` 全为 null；即便有值，那也是**源方大类字段**（非统一口径的
+    内容类型），故不填。见 [D-038](../../../../项目管理/决策日志.md)。
     """
     rows: list[dict] = []
     for item in (payload.get("data") or []):
@@ -193,7 +217,13 @@ def parse_announcement_em(payload: dict) -> tuple[dict, ...]:
 
     真实形状（2026-09-27 实测）：``data.list[].codes`` 是**字典列表**
     ``[{"stock_code": "600095", "ann_type": "A,SHA", "short_name": ...}]``——
-    **不是**分隔字符串；公告类型取自 ``codes[].ann_type``（记录本身无该字段）。
+    **不是**分隔字符串。
+
+    ⚠️ ``codes[].ann_type`` 是**证券类别/板块码**（实测 ``A,SHA`` 沪深A·沪市 /
+    ``A,SZA`` 深市 / ``A,CYB`` 创业板 / ``A,KCB`` 科创板 / ``A,BJA`` 北交所），
+    **不是公告内容类型**（[F5] 的原意即此）——本源**不承载**内容类型。该值仍落
+    ``announcement.ann_type`` 列（列上已有的信息不丢弃），但**不得**按「公告内容
+    类型」消费；内容类型须走巨潮请求侧 ``category``，见 [D-038](../../../../项目管理/决策日志.md)。
     """
     rows: list[dict] = []
     for item in ((payload.get("data") or {}).get("list") or []):
@@ -519,6 +549,110 @@ def parse_sentiment_qa_irm(payload: dict) -> tuple[dict, ...]:
     return tuple(rows)
 
 
+_SSE_FEED_ITEM = '<div class="m_feed_item'
+_SSE_FEED_NOTE = "m_feed_note"
+"""源端在翻到末页时给的「此时没有更多内容」标记（实测：载荷仅约 108 字节）。"""
+
+_SSE_ANSWER_SPLIT = 'class="m_feed_detail m_qa"'
+"""回答块的开头（带引号，故**不会**误命中提问块的 ``m_qa_detail``）。"""
+
+_SSE_FEED_TXT = re.compile(r'class="m_feed_txt"[^>]*>(.*?)</div>', re.S)
+_SSE_FEED_STOCK = re.compile(r"<a [^>]*>:([^<]*?)\((\d{6})\)</a>")
+_SSE_FEED_TIME = re.compile(r"<span>(\d{4})年(\d{2})月(\d{2})日 (\d{2}:\d{2})</span>")
+_SSE_ANSWER_FACE = re.compile(r'<a class="ansface"[^>]*\btitle="([^"]*)"')
+_HTML_TAG = re.compile(r"<[^>]+>")
+
+
+def _sse_stamp(parts: tuple[str, str, str, str]) -> str:
+    """``(年, 月, 日, 时:分)`` → ``YYYY-MM-DD HH:MM``。"""
+    year, month, day, clock = parts
+    return f"{year}-{month}-{day} {clock}"
+
+
+def _sse_order_key(kind: str, row: dict) -> str:
+    """该流的**排序键**（即翻页停止判据所依）：``11`` 按回复时间、``10`` 按提问时间。
+
+    入库的 ``ask_time`` 对 ``type=11`` **不单调**（旧提问可能刚被回复），故不能拿它
+    当游标——这条区分是「翻页至窗口起点即停」能否成立的关键。
+    """
+    if kind == "11":
+        return row.get("answer_time") or row["ask_time"]
+    return row["ask_time"]
+
+
+def _html_text(fragment: str) -> str:
+    """HTML 片段 → 纯文本（去标签、解实体、折叠空白）。"""
+    return " ".join(unescape(_HTML_TAG.sub(" ", fragment)).split())
+
+
+def parse_sentiment_qa_sse(payload: str) -> tuple[dict, ...]:
+    """上证e互动**全市场流**（``ajax/feeds.do``）→ 问答行（覆盖沪市）。
+
+    真实形状（2026-09-27 实测）：响应是 **HTML 片段**（非 JSON），每条问答一个
+    ``div.m_feed_item``。``type=10``（最新提问）的条目多一个类 ``m_question``，
+    且**没有回答块**——未回复是合法态（``answer=None``）；``type=11``（最新已回复）
+    另有 :data:`_SSE_ANSWER_SPLIT` 的回答块（回答者取自 ``a.ansface`` 的 ``title``）。
+    标的由提问正文首部的 ``:名称(代码)`` 锚点给出；时间为 ``YYYY年MM月DD日 HH:MM``。
+
+    ``market`` 显式标 ``sh``：该口为沪市专用，而沪市代码段含 ``5xx`` / ``1xx``
+    （ETF / 可转债），靠号段推断会误判为深市（同 :func:`parse_dragon_tiger_sse`
+    的不误标原则，D-032）。
+
+    ``answer_time`` 在 ``sentiment_qa`` 表里**没有列**——它只作抓取器的**翻页停止
+    判据**（该流按回复时间倒序，而入库的 ``ask_time`` 不单调，见
+    :meth:`HttpInfoFetcher._fetch_info_sentiment_qa_sse`）。
+
+    **fail-fast**：既无 ``m_feed_item`` 又无 ``m_feed_note`` → 载荷结构已变，抛错
+    而**不**返回空——「窗口耗尽」与「结构变更」必须可区分（对齐 T-L0-012 的两态判据）。
+    """
+    blocks = payload.split(_SSE_FEED_ITEM)[1:] if payload else []
+    if not blocks:
+        if _SSE_FEED_NOTE in (payload or ""):
+            return ()  # 源端显式告知「没有更多内容」——窗口耗尽，非结构变更
+        raise InfoValidationError(
+            "上证e互动 feeds.do 载荷既无 m_feed_item 又无 m_feed_note"
+            "——页面结构可能已变")
+    rows: list[dict] = []
+    for block in blocks:
+        question_html, _, answer_html = block.partition(_SSE_ANSWER_SPLIT)
+        stock = _SSE_FEED_STOCK.search(question_html)
+        if stock is None:
+            raise InfoValidationError(
+                "上证e互动问答块里找不到「:名称(代码)」锚点——页面结构可能已变")
+        text_match = _SSE_FEED_TXT.search(question_html)
+        if text_match is None:
+            raise InfoValidationError(
+                "上证e互动问答块里找不到 m_feed_txt 正文——页面结构可能已变")
+        question = _html_text(
+            _SSE_FEED_STOCK.sub("", text_match.group(1), count=1))
+        if not question:
+            raise InfoValidationError(
+                "上证e互动问答块的提问正文为空——页面结构可能已变")
+        times = _SSE_FEED_TIME.findall(question_html)
+        if not times:
+            raise InfoValidationError(
+                "上证e互动问答块里找不到提问时间——页面结构可能已变")
+        answer: str | None = None
+        answerer: str | None = None
+        answer_time: str | None = None
+        if answer_html:
+            answered = _SSE_FEED_TXT.search(answer_html)
+            if answered is not None:
+                answer = _html_text(answered.group(1)) or None
+            face = _SSE_ANSWER_FACE.search(answer_html)
+            if face is not None:
+                answerer = _text(unescape(face.group(1)))
+            answer_times = _SSE_FEED_TIME.findall(answer_html)
+            if answer_times:
+                answer_time = _sse_stamp(answer_times[0])
+        rows.append({
+            "code": stock.group(2), "question": question, "answer": answer,
+            "answerer": answerer, "ask_time": _sse_stamp(times[0]),
+            "answer_time": answer_time, "market": "sh",
+        })
+    return tuple(rows)
+
+
 def parse_sentiment_hot_ths(payload: dict) -> tuple[dict, ...]:
     """同花顺热榜 → 热度快照行（**易腐**：值是「此刻」排名）。
 
@@ -558,6 +692,23 @@ _SZSE_MAX_PAGES = 50
 _SSE_TRADE_PUBLIC = "https://query.sse.com.cn/infodisplay/showTradePublicFile.do"
 _SSE_REFERER = "https://www.sse.com.cn/disclosure/diclosure/public/"
 """上交所每日交易信息（路径里的 ``diclosure`` 是**源端原文拼写**，不可「纠正」）。"""
+
+_SSE_FEED = "https://sns.sseinfo.com/ajax/feeds.do"
+_SSE_FEED_REFERER = "https://sns.sseinfo.com/"
+"""上证e互动**全市场流**（沪市专用投资者关系问答；响应为 HTML 片段）。"""
+
+_SSE_FEED_PAGE_SIZE = 50
+"""每页条数——**实测被源端尊重**（非固定步长：``pageSize=30`` 实测给 30 条）。"""
+
+_SSE_FEED_MAX_PAGES = 120
+"""翻页上限（兜底）：按每页 50 计覆盖 6000 条 ≥ 实测可见窗口（``type=11`` 约
+5675 条 / ``type=10`` 约 4381 条——**条数上限**而非日期下界，更早条目不可回溯）。
+日常一律按窗口起点提前停止，故此上限只在首轮触及。"""
+
+_SSE_FEED_TYPES = ("10", "11")
+"""``10`` 最新提问 / ``11`` 最新已回复。**先 10 后 11**：同一问答尚未回复时先入
+``answer=None``，稍后被回复 → 本次抓取内由后到的「有回答」行覆盖同键行
+（键 = ``(code, question, ask_time)``）。"""
 
 
 class HttpInfoFetcher:
@@ -622,6 +773,22 @@ class HttpInfoFetcher:
             if inner.startswith(("{", "[")):
                 return json.loads(inner)
         raise InfoFetchError(f"无法解析源端载荷：{raw[:120]!r}")
+
+    def _request_text(self, url: str, *, params: dict | None = None,
+                      referer: str | None = None) -> str:
+        """发一次请求并返回**文本**载荷（非 JSON 源，如上证e互动的 HTML 片段）。
+
+        :meth:`_request` 只解 JSON / JSONP，撞上 HTML 会判「无法解析源端载荷」——
+        故文本源走这条。
+        """
+        if params:
+            url = f"{url}?{urllib.parse.urlencode(params, doseq=True)}"
+        headers = {"User-Agent": _UA, "Accept": "text/html, */*"}
+        if referer:
+            headers["Referer"] = referer
+        request = urllib.request.Request(url, headers=headers)
+        with urllib.request.urlopen(request, timeout=self._timeout) as response:
+            return response.read().decode("utf-8", "ignore")
 
     @staticmethod
     def _datacenter(report_name: str, **extra: Any) -> dict:
@@ -759,9 +926,30 @@ class HttpInfoFetcher:
         )
 
     def _fetch_info_sentiment_qa_sse(self, window: tuple[str, str]) -> InfoRows:
-        """上证e互动——同样**按公司**，且需先在分页公司列表里定位 ``uid``。"""
-        _ = window
-        raise InfoValidationError(
-            "上证e互动为**按公司**接口（须先在公司列表里定位 uid）：任务形状待调整"
-            "（已登记 T-L0-010 遗留册）"
-        )
+        """上证e互动**全市场流**（``ajax/feeds.do``）→ 问答行（覆盖沪市）。
+
+        实测（2026-09-27）：该流**无须逐公司定位 ``uid``**——按 ``type`` 直接分页，
+        且两条流各按**自己的时间键倒序**（``11`` 按回复时间、``10`` 按提问时间），
+        故「翻页至本页最早时间 ≤ 窗口起点」即停；**单调**正是该判据成立的前提
+        （入库的 ``ask_time`` 不单调，见 :func:`_sse_order_key`）。另设页数上限兜底。
+        """
+        start = window[0]
+        merged: dict[tuple[str, str, str], dict] = {}
+        for kind in _SSE_FEED_TYPES:
+            for page in range(1, _SSE_FEED_MAX_PAGES + 1):
+                payload = self._request_text(_SSE_FEED, params={
+                    "type": kind, "pageSize": str(_SSE_FEED_PAGE_SIZE),
+                    "lastid": "-1", "show": "1", "page": str(page),
+                }, referer=_SSE_FEED_REFERER)
+                batch = parse_sentiment_qa_sse(payload)
+                if not batch:
+                    break  # 源端显式「没有更多内容」——可见窗口已耗尽
+                for row in batch:
+                    key = (row["code"], row["question"], row["ask_time"])
+                    prev = merged.get(key)
+                    if prev is None or (prev.get("answer") is None
+                                        and row.get("answer")):
+                        merged[key] = row
+                if min(_sse_order_key(kind, r) for r in batch)[:10] <= start:
+                    break  # 已翻到窗口起点
+        return {"sentiment_qa": tuple(merged.values())}

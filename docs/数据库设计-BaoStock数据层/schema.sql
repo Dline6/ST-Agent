@@ -334,11 +334,15 @@ CREATE TABLE macro_money_supply_year (
 -- ---------------------------------------------------------------------
 
 -- 公告（实体：单条公告/披露）。正文落文件，表行存可查询的元数据（D-031）
+-- ann_type 逐源语义不同、【非】公告内容类型（D-038）：东财=证券类别/板块码
+--   ('A,SHA' 沪深A·沪市 / 'A,CYB' 创业板 / 'A,BJA' 北交所)、巨潮=恒 NULL、
+--   深交所=大类字段(可空)。内容类型须走巨潮【请求侧 category】（26 类），
+--   见 05-同步策略与新鲜度契约；该列**不得**按「公告内容类型」消费。
 CREATE TABLE announcement (
   announcement_id TEXT NOT NULL PRIMARY KEY,  -- L0 按业务键（code+标题+披露日期）确定性摘要，长度有界
   code            TEXT NOT NULL REFERENCES security(code),
   title           TEXT NOT NULL,
-  ann_type        TEXT,                       -- 公告类型（源方口径）
+  ann_type        TEXT,                       -- 逐源语义不同、【非】公告类型（见上方 · D-038）
   pub_date        TEXT NOT NULL,              -- 披露日期 'YYYY-MM-DD'
   url             TEXT,                       -- 源方详情页（人可复核）
   file_path       TEXT,                       -- 正文在 data_cache 内的相对路径；NULL = 仅有元数据
