@@ -43,6 +43,17 @@ CREATE TABLE indicator_dictionary (
   algorithm_desc  TEXT                  -- 算法说明（摘自手册）
 );
 
+-- 多源字段映射（纯增量，D-030）。indicator_dictionary 的 indicator_key 为主键、
+-- source_api / api_field 单值，无法表达「同一列来自多源」；本表承载该情形，
+-- 不动既有主键、不改既有种子生成口径。仅多源列需在此登记
+CREATE TABLE indicator_source_map (
+  indicator_key TEXT NOT NULL,          -- 目标列名（与 indicator_dictionary.indicator_key 同口径）
+  source_id     TEXT NOT NULL REFERENCES data_source(source_id),
+  source_api    TEXT NOT NULL,          -- 该源接口名
+  api_field     TEXT NOT NULL,          -- 该源接口原始字段名
+  PRIMARY KEY (indicator_key, source_id)
+);
+
 -- ---------------------------------------------------------------------
 -- 核心实体层（源无关，全局唯一事实）
 -- ---------------------------------------------------------------------
@@ -312,6 +323,97 @@ CREATE TABLE macro_money_supply_year (
   m1 REAL, m1_yoy REAL,
   m2 REAL, m2_yoy REAL
 );
+
+-- ---------------------------------------------------------------------
+-- 信息面（互补域）——公告 / 龙虎榜 / 股东变化 / 舆情
+-- 口径：00-设计总览 §多源扩展规约 §2 + 决策 D-029 / D-030 / D-031 / D-032
+--   ① 表组按【实体】切分，不按源切分；源为行级 source_id
+--   ② 同一业务键的记录只由一条源产生（主源先写、备胎让位）
+--   ③ 文本类信息 = 表行（元数据）＋文件（正文，落 data_cache 文本目录）
+--   ④ code 为硬外键 → 主档外代码由同步侧【预过滤】并计数，不入库
+-- ---------------------------------------------------------------------
+
+-- 公告（实体：单条公告/披露）。正文落文件，表行存可查询的元数据（D-031）
+CREATE TABLE announcement (
+  announcement_id TEXT NOT NULL PRIMARY KEY,  -- L0 按业务键（code+标题+披露日期）确定性摘要，长度有界
+  code            TEXT NOT NULL REFERENCES security(code),
+  title           TEXT NOT NULL,
+  ann_type        TEXT,                       -- 公告类型（源方口径）
+  pub_date        TEXT NOT NULL,              -- 披露日期 'YYYY-MM-DD'
+  url             TEXT,                       -- 源方详情页（人可复核）
+  file_path       TEXT,                       -- 正文在 data_cache 内的相对路径；NULL = 仅有元数据
+  coverage        TEXT NOT NULL CHECK (coverage IN ('all','sh','sz')),
+  source_id       TEXT NOT NULL REFERENCES data_source(source_id)
+);
+CREATE INDEX idx_announcement_code_date ON announcement(code, pub_date);
+CREATE INDEX idx_announcement_pub_date ON announcement(pub_date);
+
+-- 龙虎榜上榜记录（实体①：每标的每交易日一行）
+CREATE TABLE dragon_tiger (
+  code       TEXT NOT NULL REFERENCES security(code),
+  trade_date TEXT NOT NULL,
+  reasons    TEXT,                            -- 上榜原因（同源多原因合并）
+  net_amount REAL,                            -- 买卖净额（元）
+  buy_amount REAL,
+  sell_amount REAL,
+  turnover   REAL,                            -- 换手率 %
+  source_id  TEXT NOT NULL REFERENCES data_source(source_id),
+  PRIMARY KEY (code, trade_date)
+);
+CREATE INDEX idx_dragon_tiger_date ON dragon_tiger(trade_date);
+
+-- 龙虎榜席位明细（实体②：与上榜记录粒度不同，故分表——D-030）
+CREATE TABLE dragon_tiger_seat (
+  code       TEXT NOT NULL REFERENCES security(code),
+  trade_date TEXT NOT NULL,
+  side       TEXT NOT NULL CHECK (side IN ('buy','sell')),
+  rank       INTEGER NOT NULL,                -- 席位排名（1 起；东财给 TOP5，官方给全量明细）
+  seat_name  TEXT NOT NULL,                   -- 营业部 / 机构名称
+  buy_amount REAL,
+  sell_amount REAL,
+  net_amount REAL,
+  source_id  TEXT NOT NULL REFERENCES data_source(source_id),
+  PRIMARY KEY (code, trade_date, side, rank)
+);
+
+-- 股东户数变化（季频；单源无备胎，不可用即 unavailable）
+CREATE TABLE shareholder_num (
+  code         TEXT NOT NULL REFERENCES security(code),
+  stat_date    TEXT NOT NULL,                 -- 统计截止日
+  holder_num   INTEGER,                       -- 股东户数
+  change_num   INTEGER,                       -- 较上期变化户数
+  change_ratio REAL,                          -- 环比 %
+  avg_shares   REAL,                          -- 户均持股（股）
+  source_id    TEXT NOT NULL REFERENCES data_source(source_id),
+  PRIMARY KEY (code, stat_date)
+);
+CREATE INDEX idx_shareholder_num_stat_date ON shareholder_num(stat_date);
+
+-- 投资者问答（双市并行互补：互动易深市 + 上证e互动沪市；正文落文件）
+CREATE TABLE sentiment_qa (
+  qa_id     TEXT NOT NULL PRIMARY KEY,        -- L0 按业务键（code+问题原文+提问时间）确定性摘要
+  code      TEXT NOT NULL REFERENCES security(code),
+  market    TEXT NOT NULL CHECK (market IN ('sh','sz')),
+  question  TEXT NOT NULL,
+  answer    TEXT,                             -- NULL = 尚未回复
+  answerer  TEXT,                             -- 回答方
+  ask_time  TEXT NOT NULL,
+  file_path TEXT,                             -- 问答全文（正文）在 data_cache 内的相对路径
+  source_id TEXT NOT NULL REFERENCES data_source(source_id)
+);
+CREATE INDEX idx_sentiment_qa_code_time ON sentiment_qa(code, ask_time);
+
+-- 热度榜单快照（易腐数据：值是「此刻」排名、历史有限，不进档案型新鲜度契约）
+CREATE TABLE sentiment_hot (
+  code        TEXT NOT NULL REFERENCES security(code),
+  board       TEXT NOT NULL,                  -- 榜单名（如 'ths_hot' / 'em_popularity'）
+  snapshot_at TEXT NOT NULL,                  -- 快照时刻（ISO）
+  rank        INTEGER NOT NULL,
+  heat        REAL,                           -- 热度值（源方口径）
+  source_id   TEXT NOT NULL REFERENCES data_source(source_id),
+  PRIMARY KEY (board, snapshot_at, rank)
+);
+CREATE INDEX idx_sentiment_hot_code ON sentiment_hot(code, snapshot_at);
 
 -- ---------------------------------------------------------------------
 -- 视图（复权推导 + 常用便捷视图）
