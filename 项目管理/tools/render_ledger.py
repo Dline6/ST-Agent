@@ -38,9 +38,11 @@ LAYERS = [
     ("L2",  "L2 · 记忆图谱 — Story 3", "[memory-graph](../docs/PRD-v2-Agent/story-03-memory-graph.md)", "M1"),
     ("L3",  "L3 · 对话主入口 Chat-as-OS — Story 1", "[chat-as-os](../docs/PRD-v2-Agent/story-01-chat-as-os.md)", "M1"),
     ("L4",  "L4 · 多视角推理 Multi-Lens — Story 4", "[multi-lens](../docs/PRD-v2-Agent/story-04-multi-lens.md)", "M2"),
+    # ECO 置于 L4 之后：其分享物本体只取到 L4（`.stlens`），不依赖 L5/L6，
+    # 且 09 自定位「跨层（L1 生态面）」——按层表置末会把它无据地压到全盘最后（见 决策日志 D-044）。
+    ("ECO", "ECO · 生态与分享 — Story 10", "[skill-sharing](../docs/PRD-v2-Agent/story-10-skill-sharing.md)", "M4 · P1"),
     ("L5",  "L5 · 主动触达 Ambient Delivery — Story 7", "[ambient](../docs/PRD-v2-Agent/story-07-ambient-delivery.md)", "M3 · P1"),
     ("L6",  "L6 · 反思演进 Reflection Loop — Story 9", "[reflection](../docs/PRD-v2-Agent/story-09-reflection-loop.md)", "M4 · P2"),
-    ("ECO", "ECO · 生态与分享 — Story 10", "[skill-sharing](../docs/PRD-v2-Agent/story-10-skill-sharing.md)", "M4 · P2"),
     ("INT", "INT · 里程碑集成关卡 — 端到端数据流", "[00-架构总览](../docs/技术架构-v2/00-架构总览.md)", "M0–M4"),
 ]
 LAYER_ORDER = {c: i for i, (c, *_ ) in enumerate(LAYERS)}
@@ -56,6 +58,16 @@ MILESTONES = [
 def layer_of(tid): return ID_RE.match(tid).group(0).split("-")[1]
 def rel_to_file(p): return p.replace("../docs/", "../../docs/")   # 文件在 tasks/，比账本多一层
 def slugify(t): return re.sub(r"[ ·/（）()§.,，。+·\-—:：→&]", "", t)[:26]
+
+def ready_sort_key(t):
+    """就绪集排序（工作流「调度规则」§2）。
+
+    priority → **里程碑集成关卡优先** → 架构层号升序 → id 字典序。
+    关卡优先：其 depends_on 已覆盖本里程碑全部叶子，故 ready 时即该里程碑唯一收口阻塞项，
+    再按层号后置只会推迟 archive 与全量验证（故 INT 虽在 LAYERS 置末，此处须先于层号取用）。
+    """
+    lay = layer_of(t["id"])
+    return (t["priority"], 0 if lay == "INT" else 1, LAYER_ORDER.get(lay, 99), t["id"])
 
 # ---------- frontmatter ----------
 def read_fm(path):
@@ -216,10 +228,10 @@ def build_ledger():
         mark = "✅ " if tms and done == len(tms) else ""
         L.append(f"| {mid} · {name} | {goal} | {rng} | {mark}{done}/{len(tms)} |")
     L += ["", "## 依赖主轴（自底向上实现顺序）","",
-          "`01 契约 → L0 → L1 → L2 → L3 → L4 →（并行 L5）→ L6 → ECO`；跨层一律经 `01-平台共享契约`，仅向下依赖。","",
+          "`01 契约 → L0 → L1 → L2 → L3 → L4 → ECO →（并行 L5）→ L6`；跨层一律经 `01-平台共享契约`，仅向下依赖。","",
           "## 就绪集（可开工 · todo 且依赖全 done）",""]
     if ready:
-        for t in sorted(ready, key=lambda x:(x["priority"], LAYER_ORDER.get(layer_of(x["id"]),99), x["id"])):
+        for t in sorted(ready, key=ready_sort_key):
             L.append(f"- [`{t['id']}`]({t['rel']}) · {t['title']}（{t['priority']} / {t['milestone']}）")
     else: L.append("- （空）")
     L += ["","---",""]
