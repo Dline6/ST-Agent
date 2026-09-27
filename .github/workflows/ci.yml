@@ -57,8 +57,9 @@ jobs:
           elif printf '%s\n' "$changed" | grep -qE '^(src/st_agent/contracts/|pyproject\.toml)'; then
             targets="tests" # 契约与打包是跨层共享面 → 全量
           else
-            # 跨层廉价套件随层一起跑（锁层间依赖方向与工具行为，单层测试覆盖不到）
-            targets="tests/contracts tests/test_layering.py tests/test_tools.py"
+            # 跨层套件恒随跑（锁契约形态、层间依赖方向、工具行为与**装配端到端**
+            # ——这几面单层目录内的用例覆盖不到）
+            targets="tests/contracts tests/test_layering.py tests/test_tools.py tests/integration"
             if printf '%s\n' "$changed" | grep -qE '^(src/st_agent/l0/|tests/l0/)'; then
               targets="$targets tests/l0"
             fi
