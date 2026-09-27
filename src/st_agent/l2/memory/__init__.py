@@ -1,9 +1,13 @@
-"""L2 记忆图谱子系统（04-L2 §1–§3）。
+"""L2 记忆图谱子系统（04-L2 §1–§5）。
 
 - :mod:`st_agent.l2.memory.models` —— 六类节点 / 四类边的本体（§1–§2）
 - :mod:`st_agent.l2.memory.graph` —— ``MemoryGraph`` 图谱门面与 ``memory`` 分区落盘
 - :mod:`st_agent.l2.memory.writer` —— ``MemoryWriter`` 写入接口（§3.2）
 - :mod:`st_agent.l2.memory.reader` —— ``MemoryReader`` 上下文切片查询（§3.1）
+- :mod:`st_agent.l2.memory.config_store` —— L2 侧 01 §7 条目落盘与变更留痕共用件
+- :mod:`st_agent.l2.memory.write_policy` —— 自主写入白名单与写入策略（§4）
+- :mod:`st_agent.l2.memory.conflict` —— 冲突检测 · 提案队列与裁决落盘（§4）
+- :mod:`st_agent.l2.memory.confidence` —— 置信度模型（§5）
 - :mod:`st_agent.l2.memory.errors` —— 子系统错误类型
 
 对外统一从 ``st_agent.l2.memory`` import。
@@ -11,6 +15,31 @@
 
 from __future__ import annotations
 
+from st_agent.l2.memory.confidence import (
+    BASELINE_CONFIG_ID,
+    DEFAULT_BASELINE,
+    DEFAULT_DYNAMICS,
+    DYNAMICS_CONFIG_ID,
+    ConfidenceBaseline,
+    ConfidenceDynamics,
+    ConfidenceModel,
+    checked_baseline,
+    checked_dynamics,
+)
+from st_agent.l2.memory.config_store import (
+    CHANGE_PREFIX,
+    CONFIG_PREFIX,
+    MemoryPolicyStore,
+    new_change_id,
+)
+from st_agent.l2.memory.conflict import (
+    CONFLICT_PREFIX,
+    ConflictFinding,
+    ConflictKind,
+    ConflictQueue,
+    ConflictResolution,
+    MemoryConflictProposal,
+)
 from st_agent.l2.memory.errors import (
     MemoryConflictError,
     MemoryError,
@@ -56,10 +85,24 @@ from st_agent.l2.memory.reader import (
     MemorySliceResult,
     SliceQuery,
 )
+from st_agent.l2.memory.write_policy import (
+    DEFAULT_WRITE_WHITELIST,
+    WRITE_WHITELIST_CONFIG_ID,
+    WriteDecision,
+    WritePolicy,
+)
 from st_agent.l2.memory.writer import MemoryWriter
 
 __all__ = [
+    "BASELINE_CONFIG_ID",
+    "CHANGE_PREFIX",
+    "CONFIG_PREFIX",
+    "CONFLICT_PREFIX",
+    "DEFAULT_BASELINE",
+    "DEFAULT_DYNAMICS",
     "DEFAULT_TOKEN_BUDGET",
+    "DEFAULT_WRITE_WHITELIST",
+    "DYNAMICS_CONFIG_ID",
     "EDGE_PREFIX",
     "EDGE_TYPES",
     "INTERNAL_EDGE_TYPES",
@@ -69,19 +112,29 @@ __all__ = [
     "PRIVACY_LEVELS",
     "SOURCES",
     "TASK_TYPE_AFFINITY",
+    "WRITE_WHITELIST_CONFIG_ID",
     "AnyNode",
     "AttentionNode",
+    "ConfidenceBaseline",
+    "ConfidenceDynamics",
+    "ConfidenceModel",
+    "ConflictFinding",
+    "ConflictKind",
+    "ConflictQueue",
+    "ConflictResolution",
     "EdgeTypeName",
     "EvolutionNode",
     "EvolutionPoint",
     "HistoryNode",
     "IdentityNode",
     "MemoryConflictError",
+    "MemoryConflictProposal",
     "MemoryEdge",
     "MemoryError",
     "MemoryGraph",
     "MemoryNode",
     "MemoryNotFoundError",
+    "MemoryPolicyStore",
     "MemoryReader",
     "MemorySlice",
     "MemorySliceResult",
@@ -92,10 +145,15 @@ __all__ = [
     "RevisionEntry",
     "SliceQuery",
     "ThesisNode",
+    "WriteDecision",
+    "WritePolicy",
     "check_node_id",
+    "checked_baseline",
+    "checked_dynamics",
     "checked_edge",
     "checked_node",
     "edge_key",
+    "new_change_id",
     "new_node_id",
     "node_text",
     "parse_node",

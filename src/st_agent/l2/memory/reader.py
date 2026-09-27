@@ -23,6 +23,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from st_agent.contracts.result_envelope import ResultEnvelope
+from st_agent.l2.memory.confidence import ConfidenceModel
 from st_agent.l2.memory.graph import MemoryGraph
 from st_agent.l2.memory.models import NODE_TYPES, MemoryEdge, MemoryNode, node_text
 
@@ -85,6 +86,11 @@ class MemorySlice(BaseModel):
     as_of: datetime
     """该切片的时间锚点（取节点 ``updated_at``；见任务 `A2`）。"""
     confidence: float
+    """**有效**置信度（§5：基线封顶 + 时间衰减 + 被引用时重估后的值）——消费方
+    按它调整表述强度。"""
+    base_confidence: float
+    """节点**存储**的置信度（写入时刻的记录）——与 ``confidence`` 并置使衰减可见、
+    可追溯（§5「可解释」）。"""
     source: str
     """``user_stated`` / ``inferred``——消费方据此区分用户自述与推断。"""
     edges: tuple[MemoryEdge, ...] = ()
@@ -106,9 +112,16 @@ class MemorySliceResult(BaseModel):
 class MemoryReader:
     """记忆图谱的读取面（04 §3.1；只读，不落盘）。"""
 
-    def __init__(self, graph: MemoryGraph, *, now: datetime | None = None) -> None:
+    def __init__(
+        self,
+        graph: MemoryGraph,
+        *,
+        now: datetime | None = None,
+        confidence: ConfidenceModel | None = None,
+    ) -> None:
         self._graph = graph
         self._fixed_now = now
+        self._confidence = (ConfidenceModel(graph) if confidence is None else confidence)
 
     # ───────────────────────── 查询（唯一取数入口） ─────────────────────────
 
@@ -121,7 +134,7 @@ class MemoryReader:
 
         tokens = _tokens(spec.topic)
         ranked = sorted(
-            (_to_slice(n, self._graph, moment) for n in candidates),
+            (_to_slice(n, self._graph, self._confidence, moment) for n in candidates),
             key=lambda s: (-_score(s, tokens, moment), s.node.memory_node_id),
         )
         ordered = _order(ranked, spec.view)
@@ -176,11 +189,17 @@ def _score(slice_: MemorySlice, tokens: tuple[str, ...], now: datetime) -> float
     )
 
 
-def _to_slice(node: MemoryNode, graph: MemoryGraph, moment: datetime) -> MemorySlice:
+def _to_slice(
+    node: MemoryNode,
+    graph: MemoryGraph,
+    confidence: ConfidenceModel,
+    moment: datetime,
+) -> MemorySlice:
     return MemorySlice(
         node=node,
         as_of=node.updated_at,
-        confidence=node.confidence,
+        confidence=confidence.effective(node, now=moment),
+        base_confidence=node.confidence,
         source=node.source,
         edges=graph.edges_of(node.memory_node_id),
     )

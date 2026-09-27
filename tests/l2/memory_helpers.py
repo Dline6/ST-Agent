@@ -58,6 +58,12 @@ def node(kind: str = "thesis", **over: Any) -> MemoryNode:
     return checked_node(**fields)
 
 
+def inferred(kind: str = "thesis", **over: Any) -> MemoryNode:
+    """构造一个**推断类**节点（``source=inferred`` + ``provenance.trace_id``，§1 不变量要求）。"""
+    over.setdefault("provenance", {"trace_id": TRACE_ID})
+    return node(kind, source="inferred", **over)
+
+
 def edge(edge_type: str, source_id: str, target_id: str, at: datetime = NOW) -> MemoryEdge:
     """构造一条边。"""
     return checked_edge(edge_type=edge_type, source_id=source_id, target_id=target_id,

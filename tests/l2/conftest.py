@@ -6,9 +6,16 @@ from pathlib import Path
 
 import pytest
 
-from memory_helpers import PASS
+from memory_helpers import NOW, PASS
 from st_agent.l0.storage import Store
-from st_agent.l2.memory import MemoryGraph, MemoryReader, MemoryWriter
+from st_agent.l2.memory import (
+    ConfidenceModel,
+    ConflictQueue,
+    MemoryGraph,
+    MemoryReader,
+    MemoryWriter,
+    WritePolicy,
+)
 
 
 @pytest.fixture()
@@ -34,3 +41,18 @@ def writer(graph: MemoryGraph) -> MemoryWriter:
 @pytest.fixture()
 def reader(graph: MemoryGraph) -> MemoryReader:
     return MemoryReader(graph)
+
+
+@pytest.fixture()
+def policy(store: Store) -> WritePolicy:
+    return WritePolicy(store, now=lambda: NOW)
+
+
+@pytest.fixture()
+def queue(graph: MemoryGraph, writer: MemoryWriter, policy: WritePolicy) -> ConflictQueue:
+    return ConflictQueue(graph, writer, policy, now=lambda: NOW)
+
+
+@pytest.fixture()
+def confidence(graph: MemoryGraph) -> ConfidenceModel:
+    return ConfidenceModel(graph, now=lambda: NOW)

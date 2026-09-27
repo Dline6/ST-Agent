@@ -50,6 +50,12 @@ class MemoryGraph:
     def __init__(self, store) -> None:
         self._store = store
 
+    @property
+    def store(self):
+        """底层 ``Store`` 句柄（**L2 子系统内部**使用：策略条目 / 冲突提案与图同源，
+        故读写面不再各自接受一个 store 参数而漏接同一个根目录）。"""
+        return self._store
+
     # ───────────────────────── 路径 ─────────────────────────
 
     @staticmethod
