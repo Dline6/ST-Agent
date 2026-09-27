@@ -12,6 +12,8 @@
 - 上交所每日交易信息：**定宽文本**，分节标题即上榜原因，``证券代码:`` 头 +
   ``买入/卖出营业部名称`` 块（T-L0-012）
 - 同花顺热榜：``data.stock_list``，行字段为 ``order/rate/tag``
+- 上证e互动全市场流：**HTML 片段**，每条一个 ``div.m_feed_item``（``type=10`` 多类
+  ``m_question``、无回答块）；翻到末页给 ``m_feed_note``「此时没有更多内容」（T-L0-013）
 - 东财数据中心查询：``filter`` 含 ``<`` / ``>``，**必须 urlencode**（否则 400）
 """
 
@@ -26,6 +28,7 @@ from st_agent.l0.info.errors import InfoValidationError
 from st_agent.l0.info.fetch import (
     HttpInfoFetcher,
     _pythonish_list,  # noqa: PLC2701 - 测试内部工具的行为
+    _sse_order_key,  # noqa: PLC2701
     _szse_drill_params,  # noqa: PLC2701
     parse_announcement_em,
     parse_announcement_szse,
@@ -34,6 +37,7 @@ from st_agent.l0.info.fetch import (
     parse_dragon_tiger_szse,
     parse_dragon_tiger_szse_detail,
     parse_sentiment_hot_ths,
+    parse_sentiment_qa_sse,
     parse_shareholder_num_em,
 )
 
@@ -142,6 +146,58 @@ EM_HOLDER = {"result": {"data": [{
     "HOLDER_NUM": 17520, "HOLDER_NUM_CHANGE": 17510,
     "HOLDER_NUM_RATIO": 175100.0, "AVG_FREE_SHARES": None,
 }]}}
+
+# 上证e互动全市场流（T-L0-013）——**HTML 片段**，非 JSON。逐条复刻 2026-09-27 实测形状。
+SSE_FEED_ANSWERED = (
+    '<div class="m_feed_item" id="item-1790517">'
+    '<div class="m_feed_line"></div>'
+    '<div class="m_feed_detail m_qa_detail">'
+    '<div class="m_feed_face"><a rel="face" uid="120236" href="user.do?uid=120236"'
+    ' title="投资者_1522820429000"><img src="inv.png"></a><p>投资者_x</p></div>'
+    '<div class="m_feed_cnt "><div class="m_feed_info">'
+    '<div class="ask_ico index_ico"></div></div>'
+    '<div class="m_feed_txt" id="m_feed_txt-1790517">'
+    "<a href='user.do?uid=1800' >:中国交建(601800)</a>董秘您好，请问回款情况如何？"
+    '</div><div class="m_feed_media"></div>'
+    '<div class="m_feed_func"><div class="m_feed_from">'
+    '<span>2026年09月24日 14:24</span><em>来自</em>'
+    '<a href="javascript:;">Android</a></div></div></div></div>'
+    '<div class="m_feed_detail m_qa">'
+    '<div class="a_tit"><em class="S_line1_c">◆</em></div>'
+    '<div class="m_feed_face"><a class="ansface" rel="tag" uid="1800"'
+    ' href="user.do?uid=1800" title="中国交建"><img src="co.png"></a>'
+    '<p>中国交建</p></div>'
+    '<div class="m_feed_cnt"><div class="m_feed_info">'
+    '<div class="index_ico answer_ico"></div></div>'
+    '<div class="m_feed_txt" id="m_feed_txt-1790517">'
+    '您好，公司持续强化项目回款管理。</div>'
+    '<div class="m_feed_media"></div></div>'
+    '<div class="m_feed_func top10"><div class="m_feed_handle">'
+    '<a href="javascript:love(1790517);" id="love-1790517"><em></em></a></div>'
+    '<div class="m_feed_from"><span>2026年09月24日 18:28</span><em>来自</em>'
+    '<a href="javascript:;">网站</a></div></div></div>'
+)
+
+SSE_FEED_QUESTION = (
+    '<div class="m_feed_item m_question" id="item-1792556">'
+    '<div class="m_feed_line"></div>'
+    '<div class="m_feed_detail">'
+    '<div class="m_feed_face"><a rel="face" uid="308936" href="user.do?uid=308936"'
+    ' title="投资者_y"><img src="inv.png"></a><p>投资者_y</p></div>'
+    '<div class="m_feed_cnt "><div class="m_feed_info">'
+    '<div class="ask_ico index_ico"></div></div>'
+    '<div class="m_feed_txt" id="m_feed_txt-1792556">'
+    "<a href='user.do?uid=30908' >:华友钴业(603799)</a>本次回购期限到10月19日，"
+    '请问是否有计划在剩余时间加快回购？</div>'
+    '<div class="m_feed_media"></div>'
+    '<div class="m_feed_func clearfix"><div class="m_feed_from">'
+    '<span>2026年09月24日 18:18</span><em>来自</em>'
+    '<a href="javascript:;">IOS</a></div></div></div></div>'
+)
+
+SSE_FEED_END = ('<div class="center">'
+                '<a href="javascript:;" class="m_feed_note">此时没有更多内容</a>'
+                '</div>')
 
 
 class TestAnnouncementParsers:
@@ -455,13 +511,77 @@ class TestUrlEncodingRegression:
         assert "stock_type=a" in url and "list_type=normal" in url
 
 
-class TestUnverifiedSourcesFailLoudly:
-    """舆情问答两源是「按公司」接口——**显式报缺口**，不返回空结果冒充。"""
+class TestSentimentQaSseFullMarket:
+    """上证e互动**全市场流**（T-L0-013）——原「按公司、须先定位 ``uid``」已作废。"""
 
-    @pytest.mark.parametrize("task_key", [
-        "info_sentiment_qa_irm", "info_sentiment_qa_sse"])
-    def test_per_company_sources_report_gap(self, task_key):
-        from st_agent.l0.info.errors import InfoValidationError
+    def test_answered_item_maps_every_field(self):
+        rows = parse_sentiment_qa_sse(SSE_FEED_ANSWERED)
+        assert len(rows) == 1
+        row = rows[0]
+        assert row["code"] == "601800"  # 源码原样——归一（sh.601800）在引擎侧
+        assert row["market"] == "sh"    # 显式标沪市（5xx / 1xx 号段会被误判成深市）
+        assert row["question"] == "董秘您好，请问回款情况如何？"  # 「:名称(代码)」已摘除
+        assert row["answer"] == "您好，公司持续强化项目回款管理。"
+        assert row["answerer"] == "中国交建"
+        assert row["ask_time"] == "2026-09-24 14:24"
+        assert row["answer_time"] == "2026-09-24 18:28"
 
+    def test_unanswered_question_is_a_legal_row(self):
+        """``type=10`` 没有回答块——未回复是**合法态**（非缺失）。"""
+        rows = parse_sentiment_qa_sse(SSE_FEED_QUESTION)
+        assert len(rows) == 1
+        assert rows[0]["answer"] is None and rows[0]["answerer"] is None
+        assert rows[0]["answer_time"] is None
+        assert rows[0]["ask_time"] == "2026-09-24 18:18"
+
+    def test_order_key_is_reply_time_for_answered_feed(self):
+        """翻页停止判据依**回复时间**——``ask_time`` 不单调，不能当游标。"""
+        answered = parse_sentiment_qa_sse(SSE_FEED_ANSWERED)[0]
+        asked = parse_sentiment_qa_sse(SSE_FEED_QUESTION)[0]
+        assert _sse_order_key("11", answered) == "2026-09-24 18:28"
+        assert _sse_order_key("10", asked) == "2026-09-24 18:18"
+
+    def test_end_of_window_marker_is_not_a_structure_change(self):
+        """源端「此时没有更多内容」＝可见窗口耗尽，**不是**结构变更。"""
+        assert parse_sentiment_qa_sse(SSE_FEED_END) == ()
+
+    def test_structural_change_fails_loudly(self):
+        with pytest.raises(InfoValidationError, match="m_feed_note"):
+            parse_sentiment_qa_sse("<html>请先登录</html>")
+
+    def test_missing_stock_anchor_fails_loudly(self):
+        broken = SSE_FEED_ANSWERED.replace(":中国交建(601800)</a>", "</a>")
+        with pytest.raises(InfoValidationError, match="锚点"):
+            parse_sentiment_qa_sse(broken)
+
+    def test_fetcher_pulls_both_feeds_from_fullmarket_endpoint(self, monkeypatch):
+        """原「按公司」登记已作废：改走 ``feeds.do``，且 ``type=10`` / ``11`` 两流都拉。"""
+        seen: list[str] = []
+
+        class _Resp:
+            def __enter__(self): return self
+            def __exit__(self, *exc): return False
+            def read(self): return SSE_FEED_END.encode("utf-8")
+
+        def _fake_urlopen(request, timeout=None):
+            seen.append(request.full_url)
+            return _Resp()
+
+        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+        rows = HttpInfoFetcher().fetch_task(
+            "info_sentiment_qa_sse", ("2026-09-01", "2026-09-30"))
+        assert rows == {"sentiment_qa": ()}
+        assert len(seen) == 2  # 两流各一页即遇末页标记 → 停
+        assert all("sns.sseinfo.com/ajax/feeds.do" in url for url in seen)
+        assert any("type=10" in url for url in seen)
+        assert any("type=11" in url for url in seen)
+        assert "pageSize=50" in seen[0]
+
+
+class TestIrmStillReportsGap:
+    """深市互动易**仍**无全市场流——显式报缺口，不返回空结果冒充（D-037）。"""
+
+    def test_per_company_source_reports_gap(self):
         with pytest.raises(InfoValidationError, match="按公司"):
-            HttpInfoFetcher().fetch_task(task_key, ("2026-09-01", "2026-09-27"))
+            HttpInfoFetcher().fetch_task(
+                "info_sentiment_qa_irm", ("2026-09-01", "2026-09-27"))
