@@ -3,6 +3,15 @@
 公共认知 Bundle 6 个 + 主动服务 Bundle 6 个 = 12 个。种子为 ``register``
 kwargs（不含 skill_id：版本拼接触发 A1 规则）；幂等写入由
 ``ensure_official_pack`` 保证（已存在即跳过，不静默覆盖）。
+
+**官方 Pack 一律声明 ``permissions=()``**（``T-L1-009.3``）：[01 §10] 的权限模型
+管的是**该能力自身发起**的文件 / 网络 / 命令行为（运行时越界即拦截），而官方
+执行器只经**注入**的取数面（``market_query`` 等）消费数据、从不调用沙箱的三类
+出口。早先的 12 条声明（``local_read:<data/cache/**>`` / ``net_access:<*.baostock.com>``）
+既拦不住任何东西，又照样触发 ``SkillRunner`` 的「声明未批准即拒绝」硬门，使
+调度与试跑对官方 Skill 恒失败；且其中 `local_read` 与 [D-031] ③（读 ``data_cache``
+内的缓存数据**不是** ``local_read`` 的范围）相抵。清空后官方 Pack 无需批准即可
+执行，第三方导入物仍走完整的「声明 → 逐项批准」（[09 §3]）。
 """
 
 from __future__ import annotations
@@ -28,7 +37,7 @@ OFFICIAL_PACK: tuple[dict, ...] = (
          output_schema={"type": "object", "properties": {"diff": {"type": "object"}}},
          parameters=(_param("exchange", "enum", "all", "目标交易所范围",
                             choices=("all", "sh", "sz", "bj")),),
-         dependencies=(), permissions=("net_access:<*.baostock.com>",),
+         dependencies=(), permissions=(),
          offline_level="degraded", version_policy=_FOLLOW, source=_OFFICIAL),
     dict(base="sk_delisting_risk_scan", name="退市风险扫描",
          description="识别退市高危信号，输出触发原因与证据引用",
@@ -38,7 +47,7 @@ OFFICIAL_PACK: tuple[dict, ...] = (
          parameters=(_param("threshold", "number", 0.8, "触发阈值",
                             min_value=0.0, max_value=1.0),),
          dependencies=("sk_st_list_sync_v1.0",),
-         permissions=("local_read:<data/cache/**>",),
+         permissions=(),
          offline_level="full", version_policy=_FOLLOW, source=_OFFICIAL),
     dict(base="sk_unhat_eligibility_check", name="摘帽条件评估",
          description="动态评估摘帽条件满足情况，输出条件清单与满足度",
@@ -47,7 +56,7 @@ OFFICIAL_PACK: tuple[dict, ...] = (
          output_schema={"type": "object", "properties": {"conditions": {"type": "array"}}},
          parameters=(_param("fiscal_years", "integer", 2, "考察财年数",
                             min_value=1, max_value=5),),
-         dependencies=(), permissions=("local_read:<data/cache/**>",),
+         dependencies=(), permissions=(),
          offline_level="full", version_policy=_FOLLOW, source=_OFFICIAL),
     dict(base="sk_sector_heatmap", name="板块热力图",
          description="行业属性标记与板块热力图数据输出，附风险评级",
@@ -56,7 +65,7 @@ OFFICIAL_PACK: tuple[dict, ...] = (
          output_schema={"type": "object", "properties": {"heatmap": {"type": "object"}}},
          parameters=(_param("top_n", "integer", 20, "返回板块数量",
                             min_value=1, max_value=100),),
-         dependencies=(), permissions=("local_read:<data/cache/**>",),
+         dependencies=(), permissions=(),
          offline_level="full", version_policy=_FOLLOW, source=_OFFICIAL),
     dict(base="sk_sentiment_flow_analysis", name="情绪资金流向分析",
          description="情绪与资金流向的中性化分析，输出高换手与高热度预警",
@@ -65,7 +74,7 @@ OFFICIAL_PACK: tuple[dict, ...] = (
          output_schema={"type": "object", "properties": {"warnings": {"type": "array"}}},
          parameters=(_param("window_days", "integer", 20, "统计窗口天数",
                             min_value=5, max_value=120),),
-         dependencies=(), permissions=("local_read:<data/cache/**>",),
+         dependencies=(), permissions=(),
          offline_level="full", version_policy=_FOLLOW, source=_OFFICIAL),
     dict(base="sk_fundamental_screening", name="基本面筛选",
          description="基本面筛选与安全边际评估，输出机构优选池",
@@ -74,7 +83,7 @@ OFFICIAL_PACK: tuple[dict, ...] = (
          output_schema={"type": "object", "properties": {"pool": {"type": "array"}}},
          parameters=(_param("margin", "number", 0.3, "安全边际下限",
                             min_value=0.0, max_value=1.0),),
-         dependencies=(), permissions=("local_read:<data/cache/**>",),
+         dependencies=(), permissions=(),
          offline_level="full", version_policy=_FOLLOW, source=_OFFICIAL),
     # ── 主动服务 Bundle ──
     dict(base="sk_stock_watch", name="多标的盯盘",
@@ -86,7 +95,7 @@ OFFICIAL_PACK: tuple[dict, ...] = (
                             min_value=5, max_value=1440),
                      _param("keywords", "string", "",
                             "关键词（逗号或顿号分隔；留空则不评估该条件）")),
-         dependencies=(), permissions=("net_access:<*.baostock.com>",),
+         dependencies=(), permissions=(),
          offline_level="degraded", version_policy=_FOLLOW, source=_OFFICIAL),
     dict(base="sk_data_aggregate", name="数据聚合",
          description="数据聚合输出，形态含表格卡与趋势图与简报",
@@ -95,7 +104,7 @@ OFFICIAL_PACK: tuple[dict, ...] = (
          output_schema={"type": "object", "properties": {"cards": {"type": "array"}}},
          parameters=(_param("format", "enum", "brief", "输出形态",
                             choices=("table", "trend", "brief")),),
-         dependencies=(), permissions=("local_read:<data/cache/**>",),
+         dependencies=(), permissions=(),
          offline_level="full", version_policy=_FOLLOW, source=_OFFICIAL),
     dict(base="sk_risk_alert", name="风险预警",
          description="风险预警输出，维度含退市倒计时与流动性枯竭",
@@ -105,7 +114,7 @@ OFFICIAL_PACK: tuple[dict, ...] = (
          parameters=(_param("lookahead_days", "integer", 30, "前瞻天数",
                             min_value=1, max_value=365),),
          dependencies=("sk_delisting_risk_scan_v1.0",),
-         permissions=("local_read:<data/cache/**>",),
+         permissions=(),
          offline_level="full", version_policy=_FOLLOW, source=_OFFICIAL),
     dict(base="sk_opportunity_mine", name="机会挖掘",
          description="机会挖掘输出，经风格与板块偏好过滤，复用公共认知输出",
@@ -115,7 +124,7 @@ OFFICIAL_PACK: tuple[dict, ...] = (
          parameters=(_param("max_results", "integer", 20, "返回候选数量",
                             min_value=1, max_value=200),),
          dependencies=("sk_fundamental_screening_v1.0",),
-         permissions=("local_read:<data/cache/**>",),
+         permissions=(),
          offline_level="full", version_policy=_FOLLOW, source=_OFFICIAL),
     dict(base="sk_portfolio_stress_test", name="组合压力测试",
          description="组合压力测试，规则化情景推演输出",
@@ -124,7 +133,7 @@ OFFICIAL_PACK: tuple[dict, ...] = (
          output_schema={"type": "object", "properties": {"scenarios": {"type": "array"}}},
          parameters=(_param("shock", "number", 0.2, "冲击幅度",
                             min_value=0.0, max_value=1.0),),
-         dependencies=(), permissions=("local_read:<data/cache/**>",),
+         dependencies=(), permissions=(),
          offline_level="full", version_policy=_FOLLOW, source=_OFFICIAL),
     dict(base="sk_strategy_design", name="策略设计回测",
          description="策略设计与回测，链路含选股与信号与策略与回测",
@@ -134,7 +143,7 @@ OFFICIAL_PACK: tuple[dict, ...] = (
          parameters=(_param("lookback_years", "integer", 3, "回测年限",
                             min_value=1, max_value=10),),
          dependencies=("sk_data_aggregate_v1.0",),
-         permissions=("local_read:<data/cache/**>",),
+         permissions=(),
          offline_level="full", version_policy=_FOLLOW, source=_OFFICIAL),
 )
 

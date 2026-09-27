@@ -16,6 +16,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from st_agent.contracts.permissions import PermissionApproval
+from st_agent.contracts.permissions import PermissionDecision as McpPermissionDecision
 from st_agent.contracts.registry_types import validate_permissions
 from st_agent.l1.mcp.errors import McpValidationError
 from st_agent.l1.mcp.ids import check_remote_url, check_server_id
@@ -32,8 +34,6 @@ __all__ = [
 
 McpTransportKind = Literal["stdio", "remote"]
 """传输种类：``stdio`` 本地子进程 / ``remote`` HTTP-SSE（03 §5.1）。"""
-
-McpPermissionDecision = Literal["pending", "approved", "rejected"]
 
 DATA_EGRESS_RISK_TEXT = "远程 MCP Server：请求与数据经 L0 出网网关离开本机并留审计记录"
 """远程 Server 的数据外发风险标注（固定中性措辞；03 §5.1「数据会离开本机」）。"""
@@ -127,24 +127,4 @@ class ConnectionTestResult(BaseModel):
             raise McpValidationError("连接测试失败必须给出可读原因（失败显式化）")
         if self.ok and not self.server_name.strip():
             raise McpValidationError("连接测试成功必须带回 Server 名（GWT-1）")
-        return self
-
-
-class PermissionApproval(BaseModel):
-    """一条权限声明的批准状态（GWT-5；01 §10 逐项批准）。"""
-
-    model_config = ConfigDict(frozen=True)
-
-    permission: str = Field(min_length=1)
-    decision: McpPermissionDecision
-    decided_at: datetime | None = None
-
-    @model_validator(mode="after")
-    def _shape(self) -> "PermissionApproval":
-        if self.decision == "pending" and self.decided_at is not None:
-            raise McpValidationError("pending 权限不得带 decided_at")
-        if self.decision != "pending" and self.decided_at is None:
-            raise McpValidationError("已决权限必须带 decided_at（逐项批准留痕）")
-        if self.decided_at is not None and self.decided_at.tzinfo is None:
-            raise McpValidationError("decided_at 必须带时区语义（01 §8）")
         return self

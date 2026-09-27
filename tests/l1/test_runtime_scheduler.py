@@ -119,9 +119,30 @@ class TestGwt2OnlineFlipCatchUp:
 
 
 class TestGwt3PermissionsNotAssumed:
+    DECLARER = "sk_decl_gate_v1.0"
+    DECLARER_BASE = "sk_decl_gate"
+    DECLARER_PERM = "net_access:<*.declared.example>"
+
+    def _declare(self, rt: L1Runtime) -> None:
+        """自建一个**声明了权限**的定时目标。
+
+        官方 Pack 自 `T-L1-009.3` 起 `permissions=()`（取数全经注入面），
+        故本组用例不再能借它验证权限门。
+        """
+        rt.skills.register(
+            self.DECLARER_BASE, version="1.0", name="声明权限的定时目标",
+            description="声明了一条权限的定时目标",
+            parameters=(dict(name="frequency_minutes", type="integer", default=5,
+                             min_value=5, max_value=1440, description="执行频率分钟数"),),
+            permissions=(self.DECLARER_PERM,), offline_level="none",
+        )
+        rt.runner.register_executor(self.DECLARER, lambda ctx, params: ResultEnvelope.ok({}))
+
     def test_declared_permissions_are_not_auto_granted(self, runtime: L1Runtime):
-        """未提供权限来源 → 空集 → 声明了 net_access 的定时执行被拦（01 §10）。"""
-        run = runtime.scheduler.trigger(STOCK_WATCH, now=NOW)
+        """未提供权限来源 → 账本为空 → 声明了权限的定时执行被拦（01 §10）。"""
+        self._declare(runtime)
+
+        run = runtime.scheduler.trigger(self.DECLARER, now=NOW)
 
         assert run.status == "failed"
         assert run.envelope is not None
@@ -129,14 +150,15 @@ class TestGwt3PermissionsNotAssumed:
 
     def test_injected_permission_source_unlocks_the_run(self, store: Store):
         class _Approving:
-            """常量权限来源替身：把 stock-watch 声明的 net_access 视为已批准。"""
+            """常量权限来源替身：把该目标声明的权限视为已批准。"""
 
             def approved_for(self, target) -> tuple[str, ...]:
-                return ("net_access:<*.baostock.com>",)
+                return (TestGwt3PermissionsNotAssumed.DECLARER_PERM,)
 
         rt = build_l1_runtime(store, market_query=_FakeMarketQuery(),
                               permissions=_Approving())
+        self._declare(rt)
 
-        run = rt.scheduler.trigger(STOCK_WATCH, now=NOW)
+        run = rt.scheduler.trigger(self.DECLARER, now=NOW)
 
         assert run.status == "ok"

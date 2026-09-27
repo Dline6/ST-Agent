@@ -125,8 +125,17 @@ class TestGwt3EndToEndRun:
         assert runtime.outputs.is_registered(outcome.skill_run_id)
 
     def test_undeclared_permissions_are_not_auto_granted(self, runtime: L1Runtime):
-        # 不传 approved_permissions → 声明了 net_access 的 Skill 被拦（01 §10）
-        outcome = runtime.runner.run(TARGET, initiator="runtime-test", purpose="装配自检")
+        # 官方 Pack 自 T-L1-009.3 起不声明权限，故另注册一个声明了权限的 Skill
+        declaring = "sk_l1_declares_v1.0"
+        runtime.skills.register(
+            "sk_l1_declares", version="1.0", name="声明权限的装配样例",
+            description="声明了一条权限的装配样例",
+            permissions=("net_access:<*.declared.example>",), offline_level="none",
+        )
+        runtime.runner.register_executor(declaring, lambda ctx, params: ResultEnvelope.ok({}))
+
+        # 不传 approved_permissions → 该 Skill 被拦（01 §10）
+        outcome = runtime.runner.run(declaring, initiator="runtime-test", purpose="装配自检")
 
         assert outcome.envelope.status == "validation_failed"
 

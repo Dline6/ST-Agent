@@ -211,16 +211,38 @@ class TestGwt4DependencyFailed:
 
 
 class TestPermissionGate:
+    DECLARING = "sk_pipeline_declares_v1.0"
+
+    def _register_declaring(self, runner, registry) -> str:
+        """注册一个**声明了权限**的 Skill。
+
+        官方 Pack 自 `T-L1-009.3` 起不再声明权限（其取数全经注入面），
+        故「声明不自动放行」这一条须由自建 Skill 承载。
+        """
+        registry.register(
+            "sk_pipeline_declares", version="1.0", name="声明权限的流水线样例",
+            description="声明了一条权限的流水线样例",
+            permissions=("local_read:<data/pipeline/**>",),
+        )
+        runner.register_executor(self.DECLARING, ok_executor("x"))
+        return self.DECLARING
+
     def test_unapproved_blocked(self, runner, registry):
-        runner.register_executor(UNHAT, ok_executor("x"))
-        out = runner.run(UNHAT, {}, approved_permissions=())
+        skill_id = self._register_declaring(runner, registry)
+        out = runner.run(skill_id, {}, approved_permissions=())
         assert out.envelope.status == "validation_failed"
         assert "权限" in (out.envelope.reason or "")
 
     def test_approved_passes(self, runner, registry):
+        skill_id = self._register_declaring(runner, registry)
+        out = runner.run(skill_id, {},
+                         approved_permissions=registry.get(skill_id).permissions)
+        assert out.envelope.status == "ok"
+
+    def test_official_pack_needs_no_approval(self, runner, registry):
+        """官方 Skill 声明为空 → 不传批准也放行（`T-L1-009.3`）。"""
         runner.register_executor(UNHAT, ok_executor("x"))
-        out = runner.run(UNHAT, {},
-                         approved_permissions=approved_of(registry, UNHAT))
+        out = runner.run(UNHAT, {}, approved_permissions=())
         assert out.envelope.status == "ok"
 
     def test_unregistered_skill_rejected(self, runner):

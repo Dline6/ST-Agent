@@ -21,8 +21,10 @@ from st_agent.contracts.registry_types import SemVer
 from st_agent.l1.skills.errors import SkillValidationError
 
 __all__ = [
+    "SKILL_BASE_PATTERN",
     "SKILL_ID_PATTERN",
     "base_of",
+    "check_skill_base",
     "check_skill_id",
     "parse_skill_id",
     "skill_id_for",
@@ -30,6 +32,25 @@ __all__ = [
 
 SKILL_ID_PATTERN = re.compile(r"^(sk_[a-z0-9][a-z0-9_.\-]{0,60})_v(\d+)\.(\d+)$")
 """注册名拼接规则的机器可读副本（A1 验证口径）。"""
+
+SKILL_BASE_PATTERN = re.compile(r"^sk_[a-z0-9][a-z0-9_.\-]{0,60}$")
+"""注册名（base）形态；与 ``SKILL_ID_PATTERN`` 的第 1 组同源（用例断言二者一致）。"""
+
+
+def check_skill_base(value: str) -> str:
+    """校验注册名（base）形态（非法 → ``SkillValidationError``）。
+
+    ``base`` 是**能力身份**（不含版本），Skill 侧批准账本按它归集——
+    批准随能力跨版本存活（``T-L1-009.1``）。
+    """
+    if not isinstance(value, str) or not SKILL_BASE_PATTERN.match(value):
+        raise SkillValidationError(
+            f"非法 Skill base {value!r}（须为 sk_ + 小写注册名，如 "
+            "sk_unhat_eligibility_check）"
+        )
+    if len(value) > 128:
+        raise SkillValidationError(f"Skill base 超长（≤128）：{value!r}")
+    return value
 
 
 def check_skill_id(value: str) -> str:
