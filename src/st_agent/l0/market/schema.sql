@@ -367,7 +367,7 @@ CREATE TABLE dragon_tiger_seat (
   code       TEXT NOT NULL REFERENCES security(code),
   trade_date TEXT NOT NULL,
   side       TEXT NOT NULL CHECK (side IN ('buy','sell')),
-  rank       INTEGER NOT NULL,                -- 席位排名（1 起；东财给 TOP5，官方给全量明细）
+  rank       INTEGER NOT NULL,                -- 席位排名（1 起；实测东财与两条官方源均为买卖各前 5 名）
   seat_name  TEXT NOT NULL,                   -- 营业部 / 机构名称
   buy_amount REAL,
   sell_amount REAL,

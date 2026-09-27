@@ -5,10 +5,18 @@
 | 域 | 主源 | 备胎 / 并行 | 口径 |
 |---|---|---|---|
 | 公告 | 巨潮（**覆盖全市**） | 深交所官方（**仅深市**）· 东财（**仅沪市**） | **权威源优先**；备胎按**覆盖分片**，`coverage` 列显式标注 |
-| 龙虎榜 | 东财（上榜记录） | 深交所官方（**仅深市**，亦为上榜记录） | **按实体分两表**；席位明细**暂无已验证源**（官方明细端点未验证） |
+| 龙虎榜 | 东财（上榜记录） | 深交所官方（**仅深市**）· 上交所官方（**仅沪市**） | **按实体分两表**；**席位明细以官方为主**——深交所 `1842_detal`、上交所每日交易信息（见下） |
 | 股东户数 | 东财 | **无**（不可用即 `unavailable`） | **单源**——A / B / C 在此退化为同一结果 |
 | 舆情问答 | **双市并行互补**：互动易（深市）+ 上证e互动（沪市） | —— | 非主备：同语义、按市场分片，故**同表**、`market` 列标注 |
 | 热度榜 | 同花顺热榜（+ 东财人气榜作并列榜单） | —— | **易腐**数据，独立实体与契约 |
+
+**席位明细的两条官方路径**（2026-09-27 实测；原「暂无已验证源」已作废）：
+
+- 深交所：上榜记录的 ``bz`` 字段**内嵌明细表契约**
+  （``CATALOGID=1842_detal&TABKEY=tab1,tab2&DQRQ=&ZQDM=&ZBDM=``），须**逐条钻取**，
+  且 ``ZBDM`` 随上榜原因变（实测 ``0901`` / ``0902`` / ``0921`` / ``1001``）。
+- 上交所：``infodisplay/showTradePublicFile.do`` 的每日交易信息（**定宽文本**），
+  上榜记录与营业部买卖席位同在；非交易日/未披露时 ``fileContents`` 为空数组。
 
 **一任务可写多表**：`table_name` 记主表，`tables` 记该任务写到的**全部**表
 （龙虎榜的上榜记录与席位明细同源同次抓取，拆成两条任务只会重复抓取）。
@@ -92,6 +100,8 @@ INFO_SOURCES: tuple[InfoSource, ...] = (
                "https://www.cninfo.com.cn", ("www.cninfo.com.cn",)),
     InfoSource("szse", "深圳证券交易所",
                "https://www.szse.cn", ("www.szse.cn",)),
+    InfoSource("sse", "上海证券交易所",
+               "https://www.sse.com.cn", ("query.sse.com.cn", "www.sse.com.cn")),
     InfoSource("eastmoney", "东方财富",
                "https://datacenter-web.eastmoney.com",
                ("datacenter-web.eastmoney.com", "push2his.eastmoney.com",
@@ -137,12 +147,17 @@ INFO_TASKS: tuple[InfoTask, ...] = (
              "eastmoney", "incremental", "每交易日盘后", "all", "primary",
              ("dragon_tiger", "dragon_tiger_seat"),
              watermark_desc="最近已拉交易日"),
-    # 官方端点实测（2026-09-27）只给**上榜记录**、且仅深市；席位明细须另调
-    # CATALOGID=1842_detal（未验证）——见 T-L0-010 遗留册。
+    # 官方席位明细（2026-09-27 实测）：深交所由 1842_xxpl 行内 bz 自带的契约钻取
+    # 1842_detal；上交所走每日交易信息（定宽文本）。两者**同源同次抓取**，故
+    # 上榜记录与席位由同一条任务写入两表——拆成两条只会重复抓取。
     InfoTask("info_dragon_tiger_szse", "dragon_tiger", "dragon_tiger",
-             "szse", "incremental", "每交易日盘后（仅深市；上榜记录兜底）",
-             "sz", "backup",
+             "szse", "incremental", "每交易日盘后（仅深市；上榜记录 + 席位兜底）",
+             "sz", "backup", ("dragon_tiger", "dragon_tiger_seat"),
              watermark_desc="最近已拉交易日（深市）"),
+    InfoTask("info_dragon_tiger_sse", "dragon_tiger", "dragon_tiger",
+             "sse", "incremental", "每交易日盘后（仅沪市；上榜记录 + 席位兜底）",
+             "sh", "backup", ("dragon_tiger", "dragon_tiger_seat"),
+             watermark_desc="最近已拉交易日（沪市）"),
     # ── 股东户数域：单源无备胎 ──
     InfoTask("info_shareholder_num_em", "shareholder_num", "shareholder_num",
              "eastmoney", "upsert_window", "每周（季频数据，重拉最近 8 个季度）",

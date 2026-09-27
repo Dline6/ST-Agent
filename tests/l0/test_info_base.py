@@ -265,15 +265,18 @@ class TestCodeNormalization:
 
 class TestSetupRegistration:
     def test_sources_and_tasks_registered(self, db, sync_factory):
+        from st_agent.l0.info import INFO_TASKS
+
         sync_factory(FakeInfoFetcher({}))
         sources = [r["source_id"] for r in
                    db.query("SELECT source_id FROM data_source").data["rows"]]
         assert "baostock" in sources  # 既有源不被破坏
-        assert {"cninfo", "szse", "eastmoney",
+        assert {"cninfo", "szse", "sse", "eastmoney",
                 "cninfo_irm", "sse_e", "ths"} <= set(sources)
         env = db.query("SELECT count(*) AS n FROM sync_state"
                        " WHERE task_key LIKE 'info_%'")
-        assert env.data["rows"][0]["n"] == 9
+        # 与注册表对账，不写死数字——注册表增删任务时本断言随动（口径：setup 落全量）
+        assert env.data["rows"][0]["n"] == len(INFO_TASKS)
 
     def test_setup_idempotent(self, sync_factory):
         sync = sync_factory(FakeInfoFetcher({}))
