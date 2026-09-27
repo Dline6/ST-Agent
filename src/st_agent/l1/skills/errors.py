@@ -1,7 +1,7 @@
 """Skill 注册表错误类型（03 §1；失败显式化，01 §5）。
 
 - 配置面（fail-fast 异常）：``SkillNotFoundError`` / ``SkillExistsError`` /
-  ``SkillValidationError``
+  ``SkillValidationError`` / ``SkillPermissionError``
 - 执行面（运行时失败一律走 ``ResultEnvelope``，由 T-L1-001.2 承载，不抛异常）
 """
 
@@ -9,6 +9,7 @@ __all__ = [
     "SkillError",
     "SkillExistsError",
     "SkillNotFoundError",
+    "SkillPermissionError",
     "SkillValidationError",
 ]
 
@@ -27,3 +28,7 @@ class SkillExistsError(SkillError):
 
 class SkillValidationError(SkillError, ValueError):
     """Skill 标识 / 参数 / 版本 / 命名 / 权限等配置项非法。"""
+
+
+class SkillPermissionError(SkillError):
+    """权限操作非法（未声明的权限不得批准 / 拒绝；01 §10 逐项批准）。"""

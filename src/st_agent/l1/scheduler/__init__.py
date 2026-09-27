@@ -39,7 +39,7 @@ from st_agent.l1.scheduler.policy import (
     OfflineCatchUp,
     SchedulerPolicy,
 )
-from st_agent.l1.scheduler.scheduler import DEFAULT_POLL_SECONDS, Scheduler
+from st_agent.l1.scheduler.scheduler import DEFAULT_POLL_SECONDS, Scheduler, skill_of
 
 __all__ = [
     "CHANGE_PREFIX",
@@ -68,4 +68,5 @@ __all__ = [
     "TargetKind",
     "check_aware",
     "check_target_id",
+    "skill_of",
 ]

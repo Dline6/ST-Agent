@@ -49,6 +49,13 @@ from st_agent.contracts.capability_types import (
     Provenance,
     SkillDescriptor,
 )
+from st_agent.contracts.permissions import (
+    DECISION_LABELS,
+    PERMISSION_KINDS,
+    PermissionApproval,
+    PermissionDecision,
+    describe_permission,
+)
 from st_agent.contracts.neutrality import (
     NeutralityFinding,
     NeutralityGuard,
@@ -92,6 +99,7 @@ __all__ = [
     "ContractViolation",
     "DataAnchor",
     "DatasetSnapshotId",
+    "DECISION_LABELS",
     "DeliveryId",
     "DIALECT_KEYWORDS",
     "EnvelopeStatus",
@@ -112,7 +120,10 @@ __all__ = [
     "PanelField",
     "ParameterSpec",
     "PayloadCheck",
+    "PERMISSION_KINDS",
     "PermissionAction",
+    "PermissionApproval",
+    "PermissionDecision",
     "PlatformEvent",
     "PlatformId",
     "Provenance",
@@ -136,6 +147,7 @@ __all__ = [
     "check_link",
     "check_payload",
     "default_rulepack",
+    "describe_permission",
     "digest_of",
     "parse_permission",
     "validate_permissions",

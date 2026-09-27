@@ -43,10 +43,14 @@ stories: [PRD Story 2 — Skills Runtime, Story 6 — Skill Studio, Story 8 — 
 - Skill 执行在受限环境内进行：文件访问限于声明的 `local_read` 范围、网络限于声明的 `net_access` 模式、命令执行需 `exec_command` 审批
 - 运行时行为越界 → 拦截 + `BehaviorViolation` 事件（01 §11）+ 警示「这个 Skill 行为异常」+ 提供禁用选项
 - 沙箱是 [09-生态](09-生态与分享.md) 导入第三方 Skill 的恶意行为拦截基础
+- **权限声明只覆盖 Skill 自身发起的这三类出口**（[01 §10](01-平台共享契约.md) 的语义范围）：经**注入的取数面**消费数据（如官方 Pack 的 `market_query`、L0 的文档取数面）不经这些出口，故**不声明权限**——官方 Pack 的 12 个 Skill 一律 `permissions=()`（同批已有用例锁死：声明为空时既不触发「未批准」硬门，也不削弱沙箱——空声明的会话语义是**更严**，越界一律拒）。
+- **Skill 侧的「声明 → 逐项批准」落点**：批准态落 `config` 分区 `skill-permissions/<base>.json`，**键为 base**（能力身份，批准随能力跨版本存活；声明变化经 `declare` 对账）。与 MCP Server 侧的 `mcp-permission/<server_id>.json` **共用同一份簿记实现**（键形态与前缀不同，语义不各造一套）。无人值守的执行（定时调度、L5 投递）经注入的 `PermissionSource` 取「已批准」；**空账本即空集**，交沙箱 fail-closed——组合根只**读**这一事实、从不造它。
 
 ## 2. 官方 Skill Pack
 
 首次安装即内置，无需下载。两 Bundle（名称沿用 PRD，Skill 清单为产品承诺的最小集，可增不可缺）：
+
+> **权限声明**：本 Pack 的 12 个 Skill 一律 `permissions=()`——它们只经**注入的取数面**消费数据，自身不发文件 / 网络 / 命令行为，故按 [01 §10](01-平台共享契约.md) 的语义范围**无权限可声明**（见 §1.5）。因此官方 Pack **无需逐项批准**即可执行；「声明 → 逐项批准」的落点在**导入物**（[09 §3](09-生态与分享.md)）与 MCP Server（§5.1）上。
 
 ### 2.1 公共认知 Bundle
 

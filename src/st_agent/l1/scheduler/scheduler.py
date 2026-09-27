@@ -75,7 +75,7 @@ from st_agent.l1.scheduler.policy import (
 from st_agent.l1.workflow.composite import composite_skill_id
 from st_agent.l1.workflow.models import WorkflowSchedule
 
-__all__ = ["DEFAULT_POLL_SECONDS", "Scheduler"]
+__all__ = ["DEFAULT_POLL_SECONDS", "Scheduler", "skill_of"]
 
 _PASSIVE_MODES = ("manual", "event")
 """不进入自动到期集的触发方式。"""
@@ -87,6 +87,18 @@ _OK_ENVELOPE_STATUSES = ("ok", "empty")
 """视为「跑成了」的信封状态（``empty`` 是合法结论，不算失败）。"""
 
 _PURPOSE = "定时调度触发"
+
+
+def skill_of(target: ScheduleTarget) -> str:
+    """目标**实际执行**的 Skill——工作流取其复合 Skill（03 §3.2）。
+
+    执行侧（:meth:`Scheduler._perform`）与批准侧（``PermissionSource`` 的实现）
+    **共用本函数**：否则「批准的对象」与「执行的对象」各解析一套会静默漂移
+    （``T-L1-009.2`` 假设 A3）。
+    """
+    if target.kind == "workflow":
+        return composite_skill_id(target.target_id)
+    return target.target_id
 
 
 class Scheduler:
@@ -469,10 +481,8 @@ class Scheduler:
         return spec
 
     def _skill_of(self, target: ScheduleTarget) -> str:
-        """目标实际执行的 Skill——工作流取其**复合 Skill**（03 §3.2）。"""
-        if target.kind == "workflow":
-            return composite_skill_id(target.target_id)
-        return target.target_id
+        """目标实际执行的 Skill（口径见模块级 :func:`skill_of`）。"""
+        return skill_of(target)
 
     def _descriptor(self, skill_id: str):
         """该 Skill 的描述体（未注册 → ``None``）。"""

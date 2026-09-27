@@ -43,12 +43,20 @@ from st_agent.l1.runner.runner import SkillRunner
 from st_agent.l1.sandbox.provider_hosts import ProviderHostRegistry
 from st_agent.l1.sandbox.sandbox import SkillSandbox
 from st_agent.l1.scheduler.models import ScheduledRun
-from st_agent.l1.scheduler.scheduler import Scheduler
+from st_agent.l1.scheduler.scheduler import Scheduler, skill_of
+from st_agent.l1.skills.ids import base_of
 from st_agent.l1.skills.official.install import install_official_pack
+from st_agent.l1.skills.permissions import SkillPermissionBook
 from st_agent.l1.skills.registry import SkillRegistry
 from st_agent.l1.workflow.store import WorkflowStore
 
-__all__ = ["L1Runtime", "VaultEnvResolver", "build_l1_runtime", "open_runtime"]
+__all__ = [
+    "L1Runtime",
+    "SkillPermissionSource",
+    "VaultEnvResolver",
+    "build_l1_runtime",
+    "open_runtime",
+]
 
 
 class VaultEnvResolver:
@@ -73,6 +81,61 @@ class VaultEnvResolver:
 
     def __call__(self, name: str) -> str:
         return self._vault.use(name, self._initiator, self._purpose)
+
+
+class SkillPermissionSource:
+    """调度执行的权限来源：由批准账本供给「已批准」，**不造**这一事实（``T-L1-009.2``）。
+
+    实现 :class:`~st_agent.l1.scheduler.models.PermissionSource`（鸭子类型），
+    组合根把它作为 ``Scheduler`` 的缺省权限来源。空账本 → 空集，仍交沙箱
+    fail-closed（「声明 ≠ 批准」的口径不破）。
+
+    目标到**实际执行的 Skill** 的解析复用
+    :func:`~st_agent.l1.scheduler.scheduler.skill_of`（与 ``Scheduler`` 同源），
+    故「批准的对象」与「执行的对象」恒为同一个。
+
+    账本归属：
+
+    - **MCP 派生 Skill**（其权限声明即所属 Server 的声明）→ 委托
+      ``McpPermissionBook``：该事实在 MCP 侧已存在，不另存第二份；
+    - **其余**（官方 / 自建 / 复合）→ ``SkillPermissionBook``，键为 **base**
+      （能力身份；复合 Skill 取**独立批准**，不继承成员的批准态）。
+    """
+
+    def __init__(
+        self,
+        *,
+        skills: SkillPermissionBook,
+        mcp: McpPermissionBook | None = None,
+        mcp_servers=None,
+        mcp_mapper=None,
+    ) -> None:
+        self._skills = skills
+        self._mcp = mcp
+        self._mcp_servers = mcp_servers
+        self._mcp_mapper = mcp_mapper
+
+    def approved_for(self, target) -> tuple[str, ...]:
+        """该目标本次执行已获批准的权限声明集（无 → 空元组）。"""
+        base = base_of(skill_of(target))
+        server_id = self._server_of(base)
+        if server_id is not None and self._mcp is not None:
+            return self._mcp.approved_permissions(server_id)
+        return self._skills.approved_permissions(base)
+
+    def _server_of(self, base: str) -> str | None:
+        """该 base 若由某 MCP Server 的 tool 派生而来，返其 ``server_id``。
+
+        反查走公开面（``list_servers`` × ``mappings``），不给 done 模块加 API；
+        派生 Skill 的 ``skill_id`` 由 ``(server, tool)`` 确定性派生，故 base 可比对。
+        """
+        if self._mcp_servers is None or self._mcp_mapper is None:
+            return None
+        for record in self._mcp_servers.list_servers():
+            for mapping in self._mcp_mapper.mappings(record.server_id):
+                if base_of(mapping.skill_id) == base:
+                    return record.server_id
+        return None
 
 
 @dataclass(frozen=True)
@@ -107,6 +170,7 @@ class L1Runtime:
     mcp_permissions: McpPermissionBook
     mcp_mapper: McpSkillMapper
     mcp_machine: McpHubStateMachine
+    skill_permissions: SkillPermissionBook
     scheduler: Scheduler
 
     def remove_mcp_server(self, server_id: str, *, trace_id: str | None = None) -> None:
@@ -169,10 +233,12 @@ def build_l1_runtime(
     :param mcp_env_resolver: MCP ``env_refs`` 的取值器；缺省用
         :class:`VaultEnvResolver`（环境变量名即凭据标识，经凭据库取值并留痕）
     :param permissions: 调度执行的权限来源（``PermissionSource`` 鸭子类型，
-        ``approved_for(target) -> tuple[str, ...]``）。缺省 ``None`` 即**空集**——
-        组合根不造「已批准」这一事实（``D-039`` 已否决「取声明即视为已批准」），
-        需要声明的定时执行由流水线拦成 ``validation_failed``；Skill 侧持久化批准面
-        的缺失见 [L1 册 `D1`](../../项目管理/遗留问题/L1-遗留问题.md)
+        ``approved_for(target) -> tuple[str, ...]``）。缺省 ``None`` → 用组合根自建的
+        :class:`SkillPermissionSource`（读 ``SkillPermissionBook`` 与
+        ``McpPermissionBook``）；**账本为空即空集**，需要声明的定时执行由流水线拦成
+        ``validation_failed``——组合根只**读**「已批准」这一事实、从不**造**它
+        （``D-039`` 已否决「取声明即视为已批准」）。``T-L1-009`` 之前该事实无落点
+        （L1 册 `D1`）
     :param online: 初始在线态（断网时经 ``L1Runtime.set_online`` 翻转）
     """
     gateway = EgressGateway(store, sender=sender, online=online)
@@ -219,9 +285,21 @@ def build_l1_runtime(
     mapper = McpSkillMapper(store, servers=mcp_servers, skills=skills)
     machine = McpHubStateMachine(store, servers=mcp_servers, skills=skills, sandbox=sandbox)
 
+    skill_permissions = SkillPermissionBook(store)
+    permission_source = (
+        permissions
+        if permissions is not None
+        else SkillPermissionSource(
+            skills=skill_permissions,
+            mcp=mcp_servers.permissions,
+            mcp_servers=mcp_servers,
+            mcp_mapper=mapper,
+        )
+    )
+
     scheduler = Scheduler(
         store, workflows=workflows, skills=skills, sandbox=sandbox,
-        runner=runner, permissions=permissions, gateway=gateway,
+        runner=runner, permissions=permission_source, gateway=gateway,
     )
 
     return L1Runtime(
@@ -240,6 +318,7 @@ def build_l1_runtime(
         mcp_permissions=mcp_servers.permissions,
         mcp_mapper=mapper,
         mcp_machine=machine,
+        skill_permissions=skill_permissions,
         scheduler=scheduler,
     )
 
