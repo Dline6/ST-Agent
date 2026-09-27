@@ -768,6 +768,25 @@ class McpHubStateMachine:
         with self._lock:
             return tuple(self._calls.get(sid, ()))
 
+    # ───────────────────────── 移除回收（03 §5.2 的移除序列） ─────────────
+
+    def recycle_server(self, server_id: str) -> bool:
+        """回收该 Server 的生命周期**当前态记录**（对位 ``McpSkillMapper.recycle_server``）。
+
+        只删 ``config/mcp-lifecycle/<server_id>.json``：Server 被移除后当前态不再
+        有意义（``state_of`` 只对已注册 Server 成立），留着即成孤儿。``execution_log``
+        的状态转移与通知留痕**不动**（append-only 审计）。
+
+        由组合根的移除序列调用（`T-L1-006`）——``McpSkillMapper.recycle_server`` 的
+        范围不含本条，两者是移除序列里的两步。返回是否确有一条被移除。
+        """
+        sid = check_server_id(server_id)
+        path = self._state_path(sid)
+        if path not in self._store.list_files("config"):
+            return False
+        self._store.delete("config", path)
+        return True
+
     # ───────────────────────── 内部工具 ─────────────────────────
 
     def _register_call(self, call: ActiveCall) -> None:
