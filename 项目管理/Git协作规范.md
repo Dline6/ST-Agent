@@ -153,7 +153,7 @@ main ──────────●──────────●───
 |---|---|
 | ③ Task 建任务文件 | `git checkout -b <type>/<T-ID>-<slug> main` |
 | ⑤ Implement | 分支上多次 commit（WIP 允许，但 squash 后 main 只留一条干净记录） |
-| ⑥ Verify & Log | 跑 `python tools/verify_docs.py --strict` + `python tools/render_ledger.py render` → 账本与日志变化一起 commit |
+| ⑥ Verify & Log | 按范围跑 `pytest`（集成关卡必全量，见 [工作流.md「测试分层」](工作流.md)）+ `python tools/verify_docs.py --strict` + `python tools/render_ledger.py render` → 账本与日志变化一起 commit |
 | ⑦ Sync（若涉及） | 同分支续 commit 或新分支 |
 | 合入 | PR → `gh pr merge <n> --auto --squash --delete-branch`（CI 绿即自动合入）→ `render_ledger.py archive`（若里程碑满员）→ 单独 chore commit |
 
@@ -252,10 +252,12 @@ repos:
 
 ### 5.2 PR 合入 gate（solo 也走 PR）
 
-**机器强制部分**（[`.github/workflows/ci.yml`](../.github/workflows/ci.yml)，push 与 PR 均触发；建议在仓库设置里勾选分支保护的「Require status checks to pass」，这样 `main` 始终绿不再依赖自觉）：
+**机器强制部分**（[`.github/workflows/ci.yml`](../.github/workflows/ci.yml)，`push → main`、`pull_request → main` 与手动 dispatch 触发；仓库 ruleset `main-require-ci` 要求必检 `check`，故 `main` 始终绿不再依赖自觉）：
 
-1. `python 项目管理/tools/verify_docs.py --strict` 通过——0 断链 / 0 悬空依赖 / 0 环 / 账本同步 / 无过期措辞 / 假设·接口面·集成关卡完整。
-2. `python -m pytest` 全绿（默认排除 `live` 标记；含里程碑集成关卡用例）。
+1. `python 项目管理/tools/verify_docs.py --strict` 通过——0 断链 / 0 悬空依赖 / 0 环 / 账本同步 / 无过期措辞 / 假设·接口面·集成关卡完整。**任何变更都跑，含文档-only**。
+2. `python -m pytest` ——**按变更范围分层**（口径见 [工作流.md「测试分层」](工作流.md)，由 `ci.yml` 自动判定）：文档-only **跳过**；代码 PR 按层映射（`src/st_agent/contracts/**` 或 `pyproject.toml` 变更即全量）；`push → main` 全量兜底。
+
+> **为什么文档-only 仍触发 workflow**：`check` 是 ruleset `main-require-ci` 要求的必检 context，而被路径过滤跳过的 workflow **不报状态**——若用 `paths-ignore` 跳过整个 workflow，必检会永远 pending、**auto-merge 卡死**。故实现只能是 `check` 照跑（只跑 `verify_docs`，几秒），在 job 内条件跳过 `pytest` 步骤。改 CI 触发条件时务必守住这条。
 
 **人工 / Agent 自查部分**（CI 判不了语义）：
 
@@ -270,6 +272,7 @@ repos:
 
 - [ ] `.gitignore` 无误追踪（`git status` 里无 `.db` / `.env` / `__pycache__` / 密钥文件）
 - [ ] `verify_docs.py --strict` 绿
+- [ ] 按变更范围跑过测试（映射见 [工作流.md「测试分层」](工作流.md)；**集成关卡任务必须全量**）
 - [ ] 若改了任务状态：跑过 `render_ledger.py render`，账本无 diff 未提交
 - [ ] 执行日志有对应条目（done 任务含验证行）
 - [ ] Commit message 包含 `Task:` trailer 且格式合法
@@ -367,6 +370,8 @@ git config log.date iso8601          # git log 显示带时区的 ISO 时间
 | 推分支并建 PR | `git push -u origin <branch>` → 在远端创建 PR → `gh pr merge <n> --auto --squash --delete-branch` |
 | 确认账本同步 | `python tools/render_ledger.py render` → `git diff --stat` 看账本有无变化 |
 | 看 CI 结果 | GitHub 仓库 Actions 页 / PR 页的 checks（PR gate 机器部分，见 §5.2） |
+| 跑测试（按变更范围） | `python -m pytest tests/contracts tests/test_layering.py tests/test_tools.py tests/l1`（改哪层换哪个目录，见 [工作流.md「测试分层」](工作流.md)） |
+| 跑全量测试（集成关卡） | `python -m pytest` |
 | 跑真实网络用例 | `python -m pytest -m live`（默认被 `addopts` 排除，不进 CI） |
 | 打里程碑 tag | 归档完成 → `git tag -a "M0-foundation" -m "..."` → push |
 | 回溯某任务所有 commit | `git log --all --grep "Task: T-L0-005"` |

@@ -1,21 +1,75 @@
 name: CI
 
 # 把 Git协作规范 §5.2 的 PR gate 从「人工自觉」变成「机器强制」：
-# 文档一致性（verify_docs --strict）+ 全量测试（默认排除 live 标记）。
+#   文档一致性（verify_docs --strict）——**每次必跑**；
+#   测试（pytest）——按变更范围分层（见 工作流.md §测试分层）：
+#     文档-only           → 跳过 pytest
+#     代码 PR             → 按层映射（契约/打包变更即全量）
+#     push → main / 手动  → 全量兜底
+#
+# 为什么文档-only 还触发本 workflow：job 名 `check` 是 ruleset `main-require-ci`
+# 要求的必检 context，而被路径过滤跳过的 workflow **不报状态**——用 paths-ignore
+# 整个跳过会让必检永远 pending、auto-merge 卡死。故只能在 job 内条件跳过步骤。
 on:
   push:
+    branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch: # 手动触发 = 强制全量
 
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # 判定变更范围需要 diff 基线
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - name: 判定变更范围
+        id: scope
+        run: |
+          set -euo pipefail
+          # core.quotepath=false：否则非 ASCII 路径（`项目管理/tools/...`）会被八进制转义，下面的匹配失效
+          GIT="git -c core.quotepath=false"
+          event="${{ github.event_name }}"
+          if [ "$event" = "workflow_dispatch" ]; then
+            changed="__ALL__"
+          elif [ "$event" = "push" ]; then
+            before="${{ github.event.before }}"
+            case "$before" in
+              "" | 0000000000000000000000000000000000000000) changed="__ALL__" ;;
+              *) changed=$($GIT diff --name-only "$before" "${{ github.sha }}") ;;
+            esac
+          else
+            changed=$($GIT diff --name-only "${{ github.event.pull_request.base.sha }}" HEAD)
+          fi
+
+          # 无代码变更（纯文档/账本/日志）→ 只跑 verify_docs，不跑 pytest
+          if ! printf '%s\n' "$changed" | grep -qE '^(__ALL__|src/|tests/|pyproject\.toml|项目管理/tools/)'; then
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if printf '%s\n' "$changed" | grep -qE '^__ALL__' || [ "$event" = "push" ]; then
+            targets="tests" # 主干：全量兜底
+          elif printf '%s\n' "$changed" | grep -qE '^(src/st_agent/contracts/|pyproject\.toml)'; then
+            targets="tests" # 契约与打包是跨层共享面 → 全量
+          else
+            # 跨层廉价套件随层一起跑（锁层间依赖方向与工具行为，单层测试覆盖不到）
+            targets="tests/contracts tests/test_layering.py tests/test_tools.py"
+            if printf '%s\n' "$changed" | grep -qE '^(src/st_agent/l0/|tests/l0/)'; then
+              targets="$targets tests/l0"
+            fi
+            if printf '%s\n' "$changed" | grep -qE '^(src/st_agent/l1/|tests/l1/)'; then
+              targets="$targets tests/l1"
+            fi
+          fi
+          echo "run=true" >> "$GITHUB_OUTPUT"
+          echo "targets=$targets" >> "$GITHUB_OUTPUT"
       - name: 安装依赖
+        if: steps.scope.outputs.run == 'true'
         # 装包本身（顺带验证打包配置可用）；baostock 是联网可选依赖（[market] extra），
         # 其缺失路径本身有测试覆盖（tests/l0/test_market.py::TestLiveFetcherOffline），故不装。
         run: |
@@ -24,4 +78,5 @@ jobs:
       - name: 文档一致性自检
         run: python 项目管理/tools/verify_docs.py --strict
       - name: 测试
-        run: python -m pytest
+        if: steps.scope.outputs.run == 'true'
+        run: python -m pytest ${{ steps.scope.outputs.targets }}
