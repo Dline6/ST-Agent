@@ -63,7 +63,7 @@ stories: [PRD Story 2 — Skills Runtime, Story 6 — Skill Studio, Story 8 — 
 
 | Skill | 职责 |
 | --- | --- |
-| `stock-watch` | 多标的盯盘：关键词/财报日/异动/换手率触发条件可配 |
+| `stock-watch` | 多标的盯盘：关键词/财报日/异动/换手率触发条件可配。**关键词**条件读 L0 信息面的**公告域**（回看窗口 30 日，由声明参数 `keywords` 提供词表）；公告域数据面未就绪或未提供关键词时，该条件**显式列入 `unevaluated_conditions` 并写明原因**，不假装通过（见 [02 §5](02-L0-本地优先基座.md) 与 [D-029](../../项目管理/决策日志.md)） |
 | `data-aggregate` | 数据聚合：表格卡/趋势图/简报输出 |
 | `risk-alert` | 风险预警：退市倒计时/流动性枯竭等维度可扩展 |
 | `opportunity-mine` | 机会挖掘：风格 + 板块偏好过滤，复用公共认知输出 |

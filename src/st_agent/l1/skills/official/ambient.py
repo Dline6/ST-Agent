@@ -129,16 +129,65 @@ _WATCH_SQL = (
     " FROM v_k_line_latest k ORDER BY k.code"
 )
 
+KEYWORD_LOOKBACK_DAYS = 30
+"""关键词条件在公告域的**回看窗口**（自然日）——盯盘看的是「近期有无相关披露」。"""
+
+_ANNOUNCEMENT_PRESENT_SQL = (
+    "SELECT COUNT(*) AS n FROM sqlite_master"
+    " WHERE type = 'table' AND name = 'announcement'"
+)
+"""公告域数据面是否就绪（信息面机制未落地 / 尚未同步时该表不存在）。"""
+
+
+def _split_keywords(raw: Any) -> tuple[str, ...]:
+    """关键词参数 → 词元组（中英文逗号 / 顿号 / 空白皆可分隔；去重保序）。"""
+    if not raw:
+        return ()
+    text = str(raw).replace("，", ",").replace("、", ",")
+    out: list[str] = []
+    for token in text.split(","):
+        token = token.strip()
+        if token and token not in out:
+            out.append(token)
+    return tuple(out)
+
 
 @stopping_factory
 def _stock_watch(source, ctx, params) -> ResultEnvelope:
-    got = fetch_rows(source, _WATCH_SQL)
+    keywords = _split_keywords(params.get("keywords"))
+    has_announcement = bool(
+        fetch_rows(source, _ANNOUNCEMENT_PRESENT_SQL).rows[0]["n"]
+    )
+    evaluate_keywords = bool(keywords) and has_announcement
+    if evaluate_keywords:
+        sql = _WATCH_SQL.replace(
+            " FROM v_k_line_latest k ORDER BY k.code",
+            ", (SELECT COUNT(*) FROM announcement a"
+            "   WHERE a.code = k.code"
+            f"   AND a.pub_date >= date(k.trade_date, '-{KEYWORD_LOOKBACK_DAYS} day')"
+            "   AND (" + " OR ".join("a.title LIKE ?" for _ in keywords)
+            + ")) AS keyword_n"
+            " FROM v_k_line_latest k ORDER BY k.code",
+        )
+        got = fetch_rows(source, sql, tuple(f"%{k}%" for k in keywords))
+    else:
+        got = fetch_rows(source, _WATCH_SQL)
     if not got.rows:
         return empty_envelope("本地缓存无最新日线数据", as_of=got.as_of)
     triggered: list[dict[str, Any]] = []
     for row in got.rows:
         date = row["trade_date"]
         pct_chg, turn = row.get("pct_chg"), row.get("turn")
+        if evaluate_keywords:
+            hits = int(row.get("keyword_n") or 0)
+            if hits:
+                triggered.append({
+                    "code": row["code"], "condition": "关键词",
+                    "detail": (
+                        f"{date} 近 {KEYWORD_LOOKBACK_DAYS} 日有 {hits} 条匹配公告"
+                        f"（关键词：{'、'.join(keywords)}）"
+                    ),
+                })
         if pct_chg is not None and abs(float(pct_chg)) >= PRICE_MOVE_ALERT:
             triggered.append({
                 "code": row["code"], "condition": "异动",
@@ -159,17 +208,31 @@ def _stock_watch(source, ctx, params) -> ResultEnvelope:
                     f"定期报告 {int(row.get('report_n') or 0)} 条）"
                 ),
             })
+    conditions = ["异动", "换手率", "财报日"]
+    unevaluated: list[str] = []
+    reasons: dict[str, str] = {}
+    if evaluate_keywords:
+        conditions.append("关键词")
+    else:
+        unevaluated.append("关键词")
+        reasons["关键词"] = (
+            "未提供关键词参数，该条件不评估" if not keywords
+            else "公告域数据面未就绪（本地缓存无 announcement 表），该条件不评估"
+        )
     if not triggered:
         return empty_envelope(
-            f"最新交易日 {got.rows[0]['trade_date']} 无标的触发盯盘条件（异动 / 换手率 / 财报日）",
+            f"最新交易日 {got.rows[0]['trade_date']} 无标的触发盯盘条件"
+            f"（{' / '.join(conditions)}）",
             as_of=got.as_of,
         )
     return ok_envelope(
         {
             "triggered": triggered,
             "frequency_minutes": int(params["frequency_minutes"]),
-            "conditions": ["异动", "换手率", "财报日"],
-            "unevaluated_conditions": ["关键词"],
+            "conditions": conditions,
+            "unevaluated_conditions": unevaluated,
+            "unevaluated_reasons": reasons,
+            "keywords": list(keywords),
         },
         as_of=got.as_of,
         evidence_refs=evidence_of(source),

@@ -124,7 +124,7 @@ class TestGwt3ParamEffective:
         raw = json.loads(
             runner._store.get("execution_log",
                               f"{RUN_PREFIX}{out.skill_run_id}.json").decode("utf-8"))
-        assert raw["params"] == {"frequency_minutes": 30}
+        assert raw["params"] == {"frequency_minutes": 30, "keywords": ""}
 
     def test_call_time_bad_value_rejected_not_executed(self, runner, registry):
         called: list = []

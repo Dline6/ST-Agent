@@ -44,6 +44,9 @@ EXPECTED_TABLES = {
     "macro_loan_rate", "macro_money_supply_month", "macro_money_supply_year",
     "macro_reserve_ratio", "performance_express", "profit_forecast",
     "security", "stock_industry", "sync_state", "trade_calendar",
+    # T-L0-010 信息面：元数据扩展 + 四域表组（7 张）
+    "indicator_source_map", "announcement", "dragon_tiger",
+    "dragon_tiger_seat", "shareholder_num", "sentiment_qa", "sentiment_hot",
 }
 EXPECTED_VIEWS = {"v_k_line_daily_hfq", "v_k_line_daily_qfq",
                   "v_k_line_latest", "v_st_universe"}

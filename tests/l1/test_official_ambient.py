@@ -438,3 +438,107 @@ class TestPackComplete:
 
     def test_cognition_and_ambient_tables_are_disjoint(self):
         assert not set(cognition.EXECUTORS) & set(ambient.EXECUTORS)
+
+
+# ───────────────────────── L1 册 `C1` 收口：关键词条件获得评估路径 ─────────────────────────
+
+
+class TestC1KeywordCondition:
+    """[L1 册 `C1`](../../项目管理/遗留问题/L1-遗留问题.md) 的收口验收。
+
+    `C1` 的原始形态：`stock-watch` 的「关键词」盯盘条件**无数据面**——本地缓存
+    没有公告域表，故执行器只能以 `unevaluated_conditions: ["关键词"]` 显式标注跳过。
+    `T-L0-010.2` 交付公告域后，该条件**可评估**；下列用例是其机器可查证据。
+    """
+
+    TITLE = "关于回购公司股份的公告"
+
+    @staticmethod
+    def _seed_announcement(db, *, code: str = "sh.600001",
+                           title: str = "关于回购公司股份的公告",
+                           pub_date: str | None = None,
+                           source: str = "cninfo") -> str:
+        """直接灌一条公告（本条件只读 `title` 与 `pub_date`）。"""
+        from st_agent.l0.info import digest_id
+
+        pub_date = pub_date or DATES[-1]
+        ann_id = digest_id("ann", code, title, pub_date)
+        with db.transact() as con:
+            con.execute("INSERT OR IGNORE INTO data_source(source_id, name, manual_ref)"
+                        " VALUES (?, ?, NULL)", (source, source))
+            con.execute(
+                "INSERT OR REPLACE INTO announcement(announcement_id, code, title,"
+                " pub_date, file_path, coverage, source_id)"
+                " VALUES (?, ?, ?, ?, NULL, 'all', ?)",
+                (ann_id, code, title, pub_date, source),
+            )
+            con.commit()
+        return ann_id
+
+    def test_keyword_triggers_when_announcement_matches(self, db, registry, runner):
+        self._seed_announcement(db)
+        out = _run(registry, runner, "sk_stock_watch",
+                   {"frequency_minutes": 60, "keywords": "回购"})
+        assert out.envelope.status == "ok"
+        hits = [t for t in out.envelope.data["triggered"] if t["condition"] == "关键词"]
+        assert hits and hits[0]["code"] == "sh.600001"
+        assert "回购" in hits[0]["detail"]
+
+    def test_keyword_is_no_longer_unevaluated(self, db, registry, runner):
+        """**收口判据**：有关键词且公告域就绪 → 「关键词」**不再**出现在未评估清单。"""
+        self._seed_announcement(db)
+        out = _run(registry, runner, "sk_stock_watch",
+                   {"frequency_minutes": 60, "keywords": "回购"})
+        assert "关键词" not in out.envelope.data["unevaluated_conditions"]
+        assert "关键词" in out.envelope.data["conditions"]
+
+    def test_keyword_unevaluated_without_param(self, registry, runner):
+        """未提供关键词 → 条件仍不评估，且**写明原因**（不静默）。"""
+        out = _run(registry, runner, "sk_stock_watch", {"frequency_minutes": 60})
+        assert "关键词" in out.envelope.data["unevaluated_conditions"]
+        assert "未提供关键词" in out.envelope.data["unevaluated_reasons"]["关键词"]
+
+    def test_keyword_unevaluated_when_announcement_domain_absent(
+            self, db, registry, runner):
+        """公告域数据面未就绪 → 不评估，且原因指向数据面（而非假装通过）。"""
+        with db.transact() as con:
+            con.execute("DROP TABLE announcement")
+            con.commit()
+        out = _run(registry, runner, "sk_stock_watch",
+                   {"frequency_minutes": 60, "keywords": "回购"})
+        assert out.envelope.status == "ok"
+        assert "关键词" in out.envelope.data["unevaluated_conditions"]
+        assert "数据面未就绪" in out.envelope.data["unevaluated_reasons"]["关键词"]
+
+    def test_lookback_window_excludes_stale_announcements(self, db, registry, runner):
+        """回看窗口生效：远超窗口的旧公告不触发（盯盘看的是「近期」披露）。"""
+        far_past = (date.fromisoformat(DATES[-1]) - timedelta(days=120)).isoformat()
+        self._seed_announcement(db, pub_date=far_past)
+        out = _run(registry, runner, "sk_stock_watch",
+                   {"frequency_minutes": 60, "keywords": "回购"})
+        assert [t for t in out.envelope.data["triggered"]
+                if t["condition"] == "关键词"] == []
+
+    def test_keyword_accepts_chinese_separators(self, db, registry, runner):
+        self._seed_announcement(db, title="关于回购与减持计划的公告")
+        for raw in ("回购，减持", "回购、减持", "回购, 减持"):
+            out = _run(registry, runner, "sk_stock_watch",
+                       {"frequency_minutes": 60, "keywords": raw})
+            assert [t for t in out.envelope.data["triggered"]
+                    if t["condition"] == "关键词"], raw
+
+    def test_keyword_output_passes_neutrality(self, db, registry, runner):
+        from st_agent.contracts.neutrality import NeutralityGuard
+
+        self._seed_announcement(db)
+        out = _run(registry, runner, "sk_stock_watch",
+                   {"frequency_minutes": 60, "keywords": "回购"})
+        verdict = NeutralityGuard().check_output(
+            json.dumps(out.envelope.data, ensure_ascii=False))
+        assert verdict.passed, [f.matched for f in verdict.findings]
+
+    def test_keyword_param_declared_in_seed(self, registry):
+        """关键词须是**声明参数**（双通道改参的前提），而非隐式输入。"""
+        descriptor = registry.get_latest("sk_stock_watch")
+        names = {p.name for p in descriptor.parameters}
+        assert {"frequency_minutes", "keywords"} <= names

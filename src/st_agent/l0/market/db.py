@@ -97,6 +97,11 @@ class MarketDb:
     def __init__(self, store) -> None:
         self._store = store
 
+    @property
+    def store(self):
+        """底层 ``Store`` 句柄（文本面 / 审计面需要与库同分区的出入口）。"""
+        return self._store
+
     # ───────────────────────── 建库与状态 ─────────────────────────
 
     def exists(self) -> bool:

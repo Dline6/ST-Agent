@@ -16,7 +16,8 @@ consumed_by: [story-10]
 ## 功能描述
 
 MCP Hub 是一个本地 MCP Client，允许用户挂载任意 MCP Server（本地进程或远程 URL）：
-- **官方 MCP Server**：产品自带一批（交易所公告、行情、龙虎榜、股东数据、舆情）
+- **官方数据源**：产品自带的行情 / 财务 / 公告 / 龙虎榜 / 股东 / 舆情等数据，**由 L0 数据源网关直抓并落本地缓存**（[story-05](story-05-local-first.md)），**不经** MCP 通道采集
+- **官方 MCP 暴露面**：产品自带一批 MCP Server，把上述**已缓存的**数据按 MCP tool 暴露出去（**读侧适配器**——不出网、不采集、不写库），供统一挂载面消费；交付可**延后**，采集不依赖它（见 [D-029](../../项目管理/决策日志.md)）
 - **用户自建 MCP Server**：小林可以把自己写的爬虫包装为 MCP Server 挂载
 - **第三方 MCP Server**：社区已有的 MCP Server（如 Notion、Google Sheets、私有 API）可直接挂载
 - **挂载后自动成为 Skill**：任何 MCP Server 提供的 tool 自动注册为 Skill（[story-02](story-02-skills-runtime.md)），可被 Chat / Studio / Deliberation 调用
@@ -45,7 +46,7 @@ MCP Hub 是一个本地 MCP Client，允许用户挂载任意 MCP Server（本�
 - Given 用户禁用某个 MCP Server，When 生效，Then 该 Server 的所有 Skill 立即从可用列表移除，进行中的调用中止
 - Given MCP Server 是远程 HTTP，When 用户添加，Then 明确警示"这是远程 Server，你的数据会离开本机"+ 需要用户显式确认
 - Given 用户查看网络活动，When 打开面板，Then MCP Server 的所有请求都在列表中（Server 名 + 目的 + 数据量）
-- 边缘情况：MCP Server 崩溃 → 明确提示 + 自动重连（可配次数）+ 降级到官方数据源
+- 边缘情况：MCP Server 崩溃 → 明确提示 + 自动重连（可配次数）+ 降级到**官方数据源**（即 [L0 数据源缓存](../技术架构-v2/02-L0-本地优先基座.md) 的既有查询面，措辞对齐 [03 §5.3](../技术架构-v2/03-L1-能力底座-Skills与MCP.md) 的「官方数据源 Skill 兜底」）
 - 边缘情况：MCP Server 提供的 tool 契约变化 → 提示用户重新映射
 
 ## 设计触点
