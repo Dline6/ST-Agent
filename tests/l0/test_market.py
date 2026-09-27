@@ -6,17 +6,21 @@ GWT 对照（任务文件 5 条）：
 - GWT-3 抓取经网关与清洗口径：唯一出口 data_fetch/baostock；清洗三规则；
   只落 adjustflag=3；复权经视图推导
 - GWT-4 新鲜度自检与降级：freshness 非空 → unavailable + 最后更新；
-  snapshot_id 锚定水位组合；as_of 按域取截止
+  snapshot_id 合 01 §1 形态（水位组合的确定性摘要，T-L0-011）；as_of 按域取截止
 - GWT-5 开关与完整性：禁用 → unavailable；校验失败 → partial + last_error
   且不回滚；全盘无行内容明文泄漏（审计只记字节数）
 """
 
 from __future__ import annotations
 
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
+from st_agent.contracts import DataAnchor, EvidenceRef
+from st_agent.contracts.identifiers import digest_id
 from st_agent.l0.market import (
     BaoStockSync,
     FetchError,
@@ -350,7 +354,7 @@ class TestGwt2Watermark:
             "SELECT watermark, last_status FROM sync_state WHERE task_key='bs_k_daily'")
         row = state.data["rows"][0]
         assert row["watermark"] == "2024-01-03" and row["last_status"] == "ok"
-        assert "bs_k_daily:2024-01-03@" in sync.dataset_snapshot()
+        assert "bs_k_daily:2024-01-03@" in db.snapshot_components()
 
     def test_minute_disabled_by_default(self, rig):
         _, _, sync, _ = rig
@@ -536,11 +540,45 @@ class TestGwt4Freshness:
         with pytest.raises(MarketValidationError, match="未知数据域"):
             sync.freshness_verdict("nope")
 
-    def test_snapshot_anchors_watermarks(self, rig):
-        _, _, sync, _ = rig
+    def test_snapshot_id_is_contract_form_under_full_table(self, rig):
+        """GWT-1（E3 收口）：满任务表（20 条 ``sync_state``）下 ID 仍合 01 §1 形态、
+        可直接进证据引用与数据锚点——修复前此处是约 350 字符的 ``snap|k:w@t|…``。"""
+        db, _, sync, _ = rig
         snap = sync.dataset_snapshot()
-        assert snap.startswith("snap|")
-        assert "bs_calendar" in snap
+        assert re.fullmatch(r"snap_[0-9a-f]{20}", snap)      # DatasetSnapshotId 形态
+        assert len(snap) <= 128                              # 越界面（实测 25）
+        assert EvidenceRef(kind="dataset_snapshot_id", ref=snap).ref == snap
+        anchor = DataAnchor(
+            dataset_snapshot_id=snap, domain="kline",
+            as_of=datetime(2026, 9, 27, tzinfo=timezone.utc),
+        )
+        assert anchor.dataset_snapshot_id == snap
+        assert snap == db.snapshot_id()
+
+    def test_snapshot_components_is_the_digest_input(self, rig):
+        """GWT-2：可读组合串即摘要输入——对它复算同一摘要得回同一 ID（可复核）。"""
+        db, _, _, _ = rig
+        components = db.snapshot_components()
+        assert "bs_calendar:-@-" in components               # 未同步任务如实呈现，不缩略
+        assert digest_id("snap", components) == db.snapshot_id()
+
+    def test_snapshot_id_tracks_watermarks(self, rig):
+        """GWT-2：同水位同名（确定）；换任一水位即换名。"""
+        db, _, sync, _ = rig
+        before = db.snapshot_id()
+        assert db.snapshot_id() == before                    # 同态稳定
+        sync.run_task("bs_calendar")
+        after = db.snapshot_id()
+        assert after != before
+        assert re.fullmatch(r"snap_[0-9a-f]{20}", after)
+
+    def test_snapshot_id_without_db_rejected(self, store: Store):
+        """未建库 → 显式拒绝（既有的 ``MarketValidationError`` 语义不变）。"""
+        db = MarketDb(store)
+        with pytest.raises(MarketValidationError):
+            db.snapshot_id()
+        with pytest.raises(MarketValidationError):
+            db.snapshot_components()
 
 
 # ───────────────────────── GWT-5 开关与完整性 ─────────────────────────

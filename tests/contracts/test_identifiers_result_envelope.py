@@ -1,6 +1,8 @@
 """T-SC-001.1 测试：01-平台共享契约 §1 标识体系 + §5 ResultEnvelope。"""
 
+import re
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
@@ -27,6 +29,7 @@ from st_agent.contracts import (
     StockId,
     TraceId,
 )
+from st_agent.contracts.identifiers import digest_id
 
 TZ = timezone.utc
 
@@ -99,6 +102,35 @@ class TestSection1Identifiers:
         """ID_REGISTRY 是 §1 表的完整机器可读副本（14 类）。"""
         assert len(ID_KINDS) == 14
         assert set(ID_KINDS) == set(ID_REGISTRY) == set(ID_ALIASES)
+
+
+# ───────────────────────── §1 确定性摘要 ID（T-L0-011） ─────────────────────────
+
+
+class TestDigestId:
+    """GWT-5（T-L0-011）：``announcement_id`` / ``dataset_snapshot_id`` 共用的**唯一**
+    确定性摘要实现（D-030 / D-031 / D-033）——全仓不得有第二份副本。"""
+
+    def test_deterministic_and_bounded(self):
+        first = digest_id("ann", "sh.600000", "标题", "2026-09-20")
+        assert first == digest_id("ann", "sh.600000", "标题", "2026-09-20")   # 确定性
+        assert first != digest_id("ann", "sh.600000", "另一标题", "2026-09-20")
+        assert re.fullmatch(r"ann_[0-9a-f]{20}", first)                      # 恒 24 字符
+        assert len(first) <= 128                                             # 远低于 ref 上限
+
+    def test_empty_and_missing_parts_tolerated(self):
+        """快照 ID 以「无水位」起步（``snap_...``），空成分不得炸。"""
+        assert re.fullmatch(r"snap_[0-9a-f]{20}", digest_id("snap"))
+        assert re.fullmatch(r"snap_[0-9a-f]{20}", digest_id("snap", ""))
+        assert digest_id("snap", "") == digest_id("snap")
+
+    def test_single_recipe_in_repo(self):
+        """只有一个 ``<前缀>_<sha256 前 20 位>`` 实现（本轮由 L0 的 ``info/sync.py`` 迁入）。"""
+        root = Path(__file__).resolve().parents[2] / "src" / "st_agent"
+        offenders = [p.relative_to(root).as_posix() for p in root.rglob("*.py")
+                     if "hexdigest()[:20]" in p.read_text(encoding="utf-8")
+                     and p.name != "identifiers.py"]
+        assert offenders == []
 
 
 # ───────────────────────── §5 ResultEnvelope ─────────────────────────

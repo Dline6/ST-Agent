@@ -3,7 +3,8 @@
 """verify_docs.py — ST Agent 文档一致性一键自检（stdlib only）
 
 复用 render_ledger 的解析逻辑，跑五项检查并给出 PASS/FAIL：
-  1. 断链      全项目 .md 相对链接（先剔除围栏代码块与行内代码，避免示例路径误报）
+  1. 断链      全项目 .md 相对链接（先剔除围栏代码块与行内代码，避免示例路径误报；
+               跳过 .git 与 gitignored 的 tmp/ temp/ 草稿目录）
   2. 依赖图    从 tasks/*.md 反构：悬空依赖 / 环 / 就绪集（队首）
   3. 账本同步  当前 任务账本.md 与 build_ledger() 生成结果比对（忽略时间戳行）
   4. 过期措辞  运营文档里是否残留重构前的旧关键词（警告，不判失败）
@@ -38,6 +39,10 @@ def strip_code(txt):
     txt = re.sub(r'`[^`\n]*`', '', txt)                   # 行内
     return txt
 
+# 断链扫描跳过的目录：版本库元数据 + [Git协作规范 §2](Git协作规范.md) 明列的临时脚手架
+# （tmp/ temp/ 内的草稿 .md 指向外部文件、且永不入库，不该卡住收工 gate）
+SKIP_DIRS = {'.git', 'tmp', 'temp'}
+
 def link_target(t):
     t = t.strip().strip('"')
     if not t or t.startswith(('#', 'http', 'mailto:', 'data:', 'tel:')): return None
@@ -47,7 +52,7 @@ def link_target(t):
 def check_links():
     broken = []; cnt = 0; md = 0
     for dp, ds, fs in os.walk(ROOT):
-        ds[:] = [d for d in ds if d != '.git']
+        ds[:] = [d for d in ds if d not in SKIP_DIRS]
         for fn in fs:
             if not fn.endswith('.md'): continue
             md += 1; full = os.path.join(dp, fn)

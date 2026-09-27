@@ -10,12 +10,12 @@ GWT 对照（任务文件 5 条）：
 
 from __future__ import annotations
 
-import hashlib
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
+from st_agent.contracts import ContractViolation
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.l0.storage import Store
 from st_agent.l1.runner import SkillRunner
@@ -44,7 +44,8 @@ def _stamp() -> datetime:
 class FakeSource:
     """取数源（鸭子类型）：``query`` 恒返回同一信封，另记调用流水供断言。"""
 
-    def __init__(self, envelope: ResultEnvelope, snapshot: str | None = "snap|k:1@T") -> None:
+    def __init__(self, envelope: ResultEnvelope,
+                 snapshot: str | None = "snap_0123456789abcdef0123") -> None:
         self.envelope = envelope
         self._snapshot = snapshot
         self.calls: list[tuple[str, tuple]] = []
@@ -268,15 +269,22 @@ class TestSourceShapeAndEvidence:
         assert not isinstance(object(), MarketQuerySource)
 
     def test_snapshot_ref_is_bounded_and_deterministic(self):
-        first = snapshot_ref(FakeSource(ResultEnvelope.empty("x"), snapshot="snap|a:1@T"))
-        second = snapshot_ref(FakeSource(ResultEnvelope.empty("x"), snapshot="snap|a:1@T"))
-        other = snapshot_ref(FakeSource(ResultEnvelope.empty("x"), snapshot="snap|a:2@T"))
-        assert first is not None and second is not None and other is not None
-        assert first == second
-        assert first != other
+        """GWT-3（T-L0-011）：**直取** L0 的 ID——L0 已产出契约形态（有界、确定性），
+        L1 不再二次摘要；同值 → 同引用。"""
+        snap = "snap_0123456789abcdef0123"
+        first = snapshot_ref(FakeSource(ResultEnvelope.empty("x"), snapshot=snap))
+        second = snapshot_ref(FakeSource(ResultEnvelope.empty("x"), snapshot=snap))
+        assert first is not None and second is not None
+        assert first == second                                  # 同值 → 同引用
         assert first.kind == "dataset_snapshot_id"
-        assert first.ref == "snap_" + hashlib.sha256("snap|a:1@T".encode()).hexdigest()[:20]
-        assert len(first.ref) <= 128
+        assert first.ref == snap                                # 原样透出，无二次加工
+        assert len(first.ref) <= 128                            # 契约形态天然有界
+
+    def test_snapshot_ref_rejects_non_contract_form(self):
+        """GWT-4：源给的水位串不合 01 §1 形态 → 显式拒绝，不静默摘要、不放行越界串。"""
+        bad = FakeSource(ResultEnvelope.empty("x"), snapshot="snap|k:1@T")
+        with pytest.raises(ContractViolation, match="snap_"):
+            snapshot_ref(bad)
 
     def test_snapshot_ref_none_without_provider(self):
         class Bare:

@@ -21,8 +21,10 @@
   ``empty``，库缺失/表缺失走 ``unavailable`` 标注最后更新）
 - ``freshness``：05 文档统一自检 SQL（``sync_state`` 非 ok 行）
 - ``as_of``：按数据域取实际截止时间（行情域 ``max(trade_date)`` 等）
-- ``snapshot_id``：读取时各任务 ``(task_key, watermark, last_success_at)``
-  组合（02 §5「不另行维护快照登记表」）
+- ``snapshot_id`` / ``snapshot_components``：读取时各任务
+  ``(task_key, watermark, last_success_at)`` 组合（02 §5「不另行维护快照
+  登记表」）——前者为其**确定性摘要**（01 §1 ``dataset_snapshot_id`` 形态），
+  后者是可读原文（摘要输入）
 """
 
 from __future__ import annotations
@@ -37,6 +39,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Any
 
+from st_agent.contracts.identifiers import digest_id
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.l0.market.errors import MarketValidationError
 
@@ -221,16 +224,29 @@ class MarketDb:
         return row[0] if row else None
 
     def snapshot_id(self) -> str:
-        """读取时水位组合（``task_key: watermark @ last_success_at`` 拼接；
-        02 §5「不另行维护快照登记表」）。"""
+        """数据快照 ID（01 §1 ``dataset_snapshot_id``：形态 ``snap_<20 位十六进制>``）。
+
+        取各任务水位的**确定性摘要**——同水位 → 同 ID、换任一水位 → 换 ID，可复核；
+        长度有界（恒 25 字符，远低于 ``EvidenceRef.ref`` 与 ``DataAnchor`` 的 128
+        上限），消费方可**直取**本值作证据引用 / 数据锚点，无需二次加工。摘要输入
+        的原文见 :meth:`snapshot_components`。
+        """
+        return digest_id("snap", self.snapshot_components())
+
+    def snapshot_components(self) -> str:
+        """可读水位组合串（逐任务 ``task_key: watermark @ last_success_at`` 拼接）。
+
+        :meth:`snapshot_id` 的**摘要输入**。02 §5「不另行维护快照登记表」——快照
+        锚定于 ``sync_state`` 现状，本方法只如实呈现（不做判定、不缩略），故给定
+        ID 可由本串复算出（「可解释」的落地面）。
+        """
         if not self.exists():
             raise MarketValidationError("本地市场数据库尚未建立，无水位可锚定")
         with self._readonly() as con:
             rows = con.execute(
                 "SELECT task_key, watermark, last_success_at FROM sync_state ORDER BY task_key"
             ).fetchall()
-        parts = [f"{k}:{w or '-'}@{t or '-'}" for k, w, t in rows]
-        return "snap|" + "|".join(parts)
+        return "|".join(f"{k}:{w or '-'}@{t or '-'}" for k, w, t in rows)
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

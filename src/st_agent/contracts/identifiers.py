@@ -13,6 +13,9 @@
   但其标识**独立于** ``trace_id``（两者是不同实体）
 - 其余 12 类由本机产生（``generate()``：``<prefix>_<uuid4 前 20 位>``），
   无中心分配方，与本地优先原则一致
+- 其中 ``announcement_id`` 与 ``dataset_snapshot_id`` 的形态是**确定性摘要**
+  （``<prefix>_<sha256 前 20 位十六进制>``，业务键稳定 → ID 稳定）而非随机
+  uuid4——两者共用 :func:`digest_id`，全平台只此一份实现
 
 实现约定（④ 对齐确认，决策记执行日志）：
 - 每类 ID 是一个 frozen pydantic 值对象（``value`` + ``id_kind`` 判别字段），
@@ -25,9 +28,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 import uuid
-from typing import ClassVar
+from typing import Any, ClassVar
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
@@ -53,12 +57,27 @@ __all__ = [
     "StockId",
     "TraceId",
     "TrialId",
+    "digest_id",
 ]
 
 
 def new_id(prefix: str) -> str:
     """按契约生成一个本机产生的 ID 字符串：``<prefix>_<uuid4hex 前 20 位>``。"""
     return f"{prefix}_{uuid.uuid4().hex[:20]}"
+
+
+def digest_id(prefix: str, *parts: Any) -> str:
+    """**确定性摘要**标识（01 §1：跨源的同一实体得同一 ID，长度有界）。
+
+    形如 ``ann_1f3c…``（前缀 + 20 位十六进制，恒 24 字符）——远低于
+    ``EvidenceRef.ref`` 的 128 上限，且**不沿用源方 ID**（D-030 / D-031 / D-033）。
+
+    适用于 01 §1 中以「确定性摘要」定形态的 ID——``announcement_id``（业务键＝
+    代码 + 标题 + 披露日期）、``dataset_snapshot_id``（水位组合）；随机 ID 走
+    :meth:`PlatformId.generate`。全平台只此一份实现，不另造副本。
+    """
+    raw = "\u0001".join(str(p or "").strip() for p in parts)
+    return f"{prefix}_{hashlib.sha256(raw.encode('utf-8')).hexdigest()[:20]}"
 
 
 class PlatformId(BaseModel):
