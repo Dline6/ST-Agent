@@ -38,6 +38,7 @@ from st_agent.l0.info.fetch import (
     parse_dragon_tiger_szse_detail,
     parse_sentiment_hot_ths,
     parse_sentiment_qa_sse,
+    parse_shareholder_num_cninfo,
     parse_shareholder_num_em,
 )
 
@@ -143,9 +144,18 @@ THS_HOT = {"data": {"stock_list": [{
 
 EM_HOLDER = {"result": {"data": [{
     "SECURITY_CODE": "301686", "END_DATE": "2026-09-22 00:00:00",
-    "HOLDER_NUM": 17520, "HOLDER_NUM_CHANGE": 17510,
-    "HOLDER_NUM_RATIO": 175100.0, "AVG_FREE_SHARES": None,
+    "HOLDER_NUM": 17520, "PRE_HOLDER_NUM": 21870, "HOLDER_NUM_CHANGE": -4350,
+    "HOLDER_NUM_RATIO": -19.89, "AVG_HOLD_NUM": 12345.6,
+    "TOTAL_A_SHARES": 216234912,
 }]}}
+
+# 巨潮数据中心股东户数（T-L0-014）——**匿名列名** F001N…，2026-09-27 实测形状。
+# 值取 002054 @2025-06-30 的实测行（人均持股 × 户数 ≈ A 股总股本，见任务 A3）。
+CNINFO_HOLDER = {"total": 1, "count": 1, "resultcode": 200, "records": [{
+    "SECCODE": "002054", "SECNAME": "德美化工", "ENDDATE": "2025-06-30",
+    "F001N": 22406, "F002N": 26479, "F003N": -15.38,
+    "F004N": 21517, "F005N": 18207, "F006N": 18.18,
+}]}
 
 # 上证e互动全市场流（T-L0-013）——**HTML 片段**，非 JSON。逐条复刻 2026-09-27 实测形状。
 SSE_FEED_ANSWERED = (
@@ -444,7 +454,81 @@ class TestSentimentAndShareholderParsers:
         assert rows[0]["code"] == "sz.301686"
         assert rows[0]["stat_date"] == "2026-09-22"
         assert rows[0]["holder_num"] == 17520
-        assert rows[0]["avg_shares"] is None
+        assert rows[0]["change_num"] == -4350
+        # 键名校正（T-L0-014）：真实载荷只有 AVG_HOLD_NUM，原读的 AVG_FREE_SHARES
+        # 不存在 → 该列曾恒 None
+        assert rows[0]["avg_shares"] == 12345.6
+
+    def test_cninfo_shareholder_real_shape(self):
+        rows = parse_shareholder_num_cninfo(CNINFO_HOLDER)
+        assert len(rows) == 1
+        assert rows[0] == {"code": "sz.002054", "stat_date": "2025-06-30",
+                           "holder_num": 22406, "change_num": 22406 - 26479,
+                           "change_ratio": -15.38, "avg_shares": 21517.0}
+
+    def test_cninfo_shareholder_missing_records_raises(self):
+        """``records`` 缺失 = 结构变更（抛错）——不得被读成「无数据」。"""
+        with pytest.raises(InfoValidationError, match="records"):
+            parse_shareholder_num_cninfo({"resultcode": 405, "resultmsg": "错误"})
+
+    def test_cninfo_shareholder_empty_records_is_empty_not_error(self):
+        rows = parse_shareholder_num_cninfo(
+            {"resultcode": 200, "total": 0, "records": []})
+        assert rows == ()
+
+
+def _serve_capturing(monkeypatch, payloads: list[bytes]) -> list[dict]:
+    """同 :func:`_serve`，但连**请求头**一并记下（供断言 ``Accept-Enckey``）。"""
+    queue = list(payloads)
+    seen: list[dict] = []
+
+    def _fake_urlopen(request, timeout=None):
+        seen.append({"url": request.full_url,
+                     "headers": {k.lower(): v for k, v in request.headers.items()}})
+        return _Resp(queue.pop(0) if len(queue) > 1 else queue[0])
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    return seen
+
+
+class TestCninfoShareholderFetcher:
+    """巨潮股东户数抓取器的**请求编排**（季末迭代 / 鉴权头），不联网。"""
+
+    WINDOW = ("2024-09-27", "2026-09-27")
+
+    def test_iterates_quarter_ends_in_window(self, monkeypatch):
+        seen = _serve_capturing(monkeypatch, [json.dumps(CNINFO_HOLDER).encode()])
+        rows = HttpInfoFetcher().fetch_task("info_shareholder_num_cninfo", self.WINDOW)
+        assert len(seen) == 8, [s["url"] for s in seen]
+        assert "rdate=20240930" in seen[0]["url"]      # 窗口内第一个季末
+        assert "rdate=20260630" in seen[-1]["url"]     # 窗口内最后一个季末
+        assert "20260930" not in " ".join(s["url"] for s in seen)  # 超出上界不请求
+        assert len(rows["shareholder_num"]) == 8       # 每期 1 行（载荷重复供给）
+
+    def test_sends_enckey_and_keeps_default_headers(self, monkeypatch):
+        seen = _serve_capturing(monkeypatch, [json.dumps(CNINFO_HOLDER).encode()])
+        HttpInfoFetcher().fetch_task("info_shareholder_num_cninfo", self.WINDOW)
+        headers = seen[0]["headers"]
+        assert headers["accept-enckey"]                      # 鉴权头在位
+        assert headers["user-agent"]                         # 缺省 UA 未被挤掉
+        assert headers["referer"] == "https://webapi.cninfo.com.cn/"
+
+    def test_enckey_is_timestamped_aes_cbc(self):
+        """Enckey ＝ 当前时间的 AES-128-CBC（单块、随时间变、同秒确定）。"""
+        import base64 as _b64
+
+        from st_agent.l0.info.fetch import _cninfo_enckey  # noqa: PLC2701
+
+        first = _cninfo_enckey(1_700_000_000)
+        assert len(_b64.b64decode(first)) == 16
+        assert first == _cninfo_enckey(1_700_000_000)        # 同秒同值（可复核）
+        assert first != _cninfo_enckey(1_700_000_001)        # 明文含时间 → 密文变
+
+    def test_missing_records_raises(self, monkeypatch):
+        _serve(monkeypatch, [b'{"resultcode": 405}'])
+        with pytest.raises(InfoValidationError, match="records"):
+            HttpInfoFetcher().fetch_task(
+                "info_shareholder_num_cninfo", self.WINDOW)
 
 
 class TestUrlEncodingRegression:
