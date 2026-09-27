@@ -126,7 +126,9 @@ GRANDFATHERED_NO_ASSUME = {
     "T-L0-001", "T-L0-002", "T-L0-003", "T-L0-004", "T-L0-005", "T-L0-005.1",
 }
 ASSUME_HEAD = re.compile(r"^##\s*假设与前提", re.M)
-ASSUME_PLACEHOLDER = re.compile(r"暂无|待.{0,6}对齐|待补|（④ 对齐时补")
+# 占位判据只认模板的几种形态。**不含裸「待补」**——它是领域词（离线待补偿的到期点、
+# 补跑与跳过），拿它当占位标记会把正常实填的节误判（2026-09-27 由 T-L1-005.3 撞出）。
+ASSUME_PLACEHOLDER = re.compile(r"暂无|待.{0,6}对齐|待补全|（④ 对齐时补")
 
 def _check_task_section(head_rx, placeholder_rx, label, exempt):
     """doing/blocked/done 叶子任务的 `## <label>` 节是否实填（父任务与豁免清单跳过）。"""
@@ -156,7 +158,7 @@ def check_assumptions():
 # 豁免清单同日清空：机制落地前已 done 的 15 个叶子任务已全部追补接口面
 # （T-SC-001 为父任务本就跳过；假设节的历史豁免见 GRANDFATHERED_NO_ASSUME，那批未追补）。
 IFACE_HEAD = re.compile(r"^##\s*接口面", re.M)
-IFACE_PLACEHOLDER = re.compile(r"暂无|待.{0,6}对齐|待补|（④ 对齐时补")
+IFACE_PLACEHOLDER = re.compile(r"暂无|待.{0,6}对齐|待补全|（④ 对齐时补")
 GRANDFATHERED_NO_IFACE: set[str] = set()
 
 def check_interfaces():
