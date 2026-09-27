@@ -28,10 +28,19 @@ from st_agent.contracts import (
     SkillRunId,
     StockId,
     TraceId,
+    TrialId,
 )
 from st_agent.contracts.identifiers import digest_id
 
 TZ = timezone.utc
+
+LOCALLY_GENERATED = (SkillId, SkillRunId, MemoryNodeId, TraceId, SignalId,
+                     DeliveryId, FeedbackId, ChangeId, LensId, TrialId)
+"""**本机产生的 10 类**：`generate()` 返回新的全局唯一 ID（`<prefix>_<uuid4 前 20 位>`）。"""
+
+NOT_LOCALLY_GENERATED = (StockId, FlowId, AnnouncementId, DatasetSnapshotId)
+"""**不由本机产生的 4 类**：`generate()` 须被拒绝——映射产生（`stock_id`）/ 拼接产生
+（`flow_id`）/ 确定性摘要（`announcement_id` / `dataset_snapshot_id`，T-SC-002）。"""
 
 
 # ───────────────────────── §1 标识体系 ─────────────────────────
@@ -40,20 +49,14 @@ TZ = timezone.utc
 class TestSection1Identifiers:
     """GWT-1：任一上层模块引用标识，均来自契约定义、全局唯一、生成后不可变。"""
 
-    @pytest.mark.parametrize("typ", [
-        AnnouncementId, DatasetSnapshotId, SkillId, SkillRunId, MemoryNodeId,
-        TraceId, SignalId, DeliveryId, FeedbackId, ChangeId, LensId,
-    ])
+    @pytest.mark.parametrize("typ", LOCALLY_GENERATED)
     def test_generate_produces_valid_unique_ids(self, typ):
         a, b = typ.generate(), typ.generate()
         assert a.value != b.value                      # 全局唯一（uuid4）
         assert a.id_kind in ID_KINDS                   # 契约 §1 登记过的类型
         assert ID_ALIASES[a.id_kind] is typ
 
-    @pytest.mark.parametrize("typ", [
-        AnnouncementId, DatasetSnapshotId, SkillId, SkillRunId, MemoryNodeId,
-        TraceId, SignalId, DeliveryId, FeedbackId, ChangeId, LensId,
-    ])
+    @pytest.mark.parametrize("typ", LOCALLY_GENERATED)
     def test_immutable_after_creation(self, typ):
         """生成后不可变（§1 首句）。"""
         tid = typ.generate()
@@ -69,10 +72,23 @@ class TestSection1Identifiers:
         with pytest.raises(ValidationError):
             StockId.of("sh.60000")          # 位数不足
 
-    def test_stock_id_not_locally_generated(self):
-        """stock_id 由 L0 按交易所代码映射产生，本地随机生成须被拒绝。"""
-        with pytest.raises(ContractViolation, match="security"):
-            StockId.generate()
+    @pytest.mark.parametrize("typ, hint", [
+        (StockId, "security"),           # 由 L0 按交易所代码映射产生
+        (FlowId, "flow_id_for"),         # 由 L1 按「注册名 + 版本」拼接产生
+        (AnnouncementId, "digest_id"),   # 由 L0 按业务键的确定性摘要产生
+        (DatasetSnapshotId, "snapshot_id"),  # 由 L0 按同步水位的确定性摘要产生
+    ])
+    def test_not_locally_generated_types_reject_generate(self, typ, hint):
+        """01 §1：这 4 类的形态由产生方决定，随机产出即让形态与幂等/可复核性失效——
+        拒绝说明须**可操作**（点名产生方或其构造路径）。"""
+        with pytest.raises(ContractViolation, match=hint):
+            typ.generate()
+
+    def test_generation_partition_covers_all_kinds(self):
+        """产出面二分且不漏：本机产生 10 类 + 拒绝 4 类 = §1 的 14 类。"""
+        both = LOCALLY_GENERATED + NOT_LOCALLY_GENERATED
+        assert {t.id_kind for t in both} == set(ID_KINDS)
+        assert len(both) == len(ID_KINDS) == 14
 
     def test_kind_mismatch_rejected_at_source(self):
         """用 A 类型的 of() 校验 B 类的字符串 → 格式校验拦截（防串用第一道闸）。"""
@@ -92,11 +108,6 @@ class TestSection1Identifiers:
         for bad in ("wf_daily_brief", "daily_brief_v1.0", "sk_x_v1.0", "wf__v1.0"):
             with pytest.raises(ValidationError):
                 FlowId.of(bad)
-
-    def test_flow_id_not_locally_generated(self):
-        """flow_id 由 L1 按注册名 + 版本拼接（workflow/ids.py），本地随机生成须被拒绝。"""
-        with pytest.raises(ContractViolation, match="flow_id_for"):
-            FlowId.generate()
 
     def test_registry_covers_contract_table(self):
         """ID_REGISTRY 是 §1 表的完整机器可读副本（14 类）。"""
