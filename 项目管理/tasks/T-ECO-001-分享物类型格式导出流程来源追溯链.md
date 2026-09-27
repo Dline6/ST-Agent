@@ -3,9 +3,9 @@ id: T-ECO-001
 title: 分享物类型/格式 + 导出流程 + 来源追溯链
 story: ../../docs/PRD-v2-Agent/story-10-skill-sharing.md
 arch_link: "[09 §1·§2·§5](../../docs/技术架构-v2/09-生态与分享.md)"
-priority: P2
+priority: P1
 milestone: M4
-depends_on: [T-L1-001, T-L1-003]
+depends_on: [T-L1-001, T-L1-003, T-L2-001, T-L4-001]
 status: todo
 decisions: []
 ---
@@ -27,4 +27,5 @@ decisions: []
 - Story（What）：[skill-sharing](../../docs/PRD-v2-Agent/story-10-skill-sharing.md)
 
 ## 备注
+`depends_on` 含 `T-L2-001`（`.stmem` 的节点/边模型与读写接口）与 `T-L4-001`（`.stlens` 的 Lens 定义）——二者是 [09 §1](../../docs/技术架构-v2/09-生态与分享.md) 四类分享物其中两类的**本体来源**；缺了它们本任务只能建出 `.stskill`/`.stflow`，与标题「分享物类型/格式」（四类同构容器）不符。见 决策日志 D-043。
 实现细节不写此处，留给代码 / commit / 执行日志。

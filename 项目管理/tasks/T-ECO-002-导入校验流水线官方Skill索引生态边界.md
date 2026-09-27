@@ -3,7 +3,7 @@ id: T-ECO-002
 title: 导入校验流水线 + 官方 Skill 索引 + 生态边界
 story: ../../docs/PRD-v2-Agent/story-10-skill-sharing.md
 arch_link: "[09 §3·§4·§6](../../docs/技术架构-v2/09-生态与分享.md)"
-priority: P2
+priority: P1
 milestone: M4
 depends_on: [T-ECO-001, T-L1-002]
 status: todo

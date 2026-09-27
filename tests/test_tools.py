@@ -3,7 +3,8 @@
 覆盖三处此前无测试的实现细节：
 - ``render_ledger.serialize`` 回写任务文件时**不得丢字段**（未知键与空值键原样保留）——
   派生父状态会重写任务文件，丢字段属静默数据损坏；
-- ``T-INT-*`` 集成关卡层被 ID_RE / layer_of / LAYER_ORDER 识别；
+- ``T-INT-*`` 集成关卡层被 ID_RE / layer_of / LAYER_ORDER 识别，且 `ready_sort_key`
+  在同优先级内把关卡排到队首（2026-09-27 调度规则校正）；
 - ``verify_docs`` 的三项新检查（接口面完整、集成关卡覆盖、遗留销账）与 `gate: skip` 例外；
 - ``verify_docs`` 的断链扫描跳过 ``.git`` 与 gitignored 的 ``tmp/`` ``temp/`` 草稿目录
   （2026-09-27 加固）。
@@ -82,7 +83,28 @@ def test_int_layer_recognized():
     assert rl.ID_RE.match("T-INT-001")
     assert rl.layer_of("T-INT-003") == "INT"
     assert "INT" in rl.LAYER_ORDER
-    assert rl.LAYER_ORDER["INT"] == len(rl.LAYERS) - 1   # 排序最后 → 集成关卡天然最后就绪
+    assert rl.LAYER_ORDER["INT"] == len(rl.LAYERS) - 1   # 层表置末（账本分区顺序），但就绪集排序不看它
+
+
+def test_ready_sort_gate_first_within_priority():
+    """就绪集同优先级下 T-INT-* 取队首（工作流「调度规则」§2）。"""
+    gate = {"id": "T-INT-001", "priority": "P0"}
+    l2   = {"id": "T-L2-001",  "priority": "P0"}
+    l4   = {"id": "T-L4-001",  "priority": "P0"}
+    eco  = {"id": "T-ECO-001", "priority": "P1"}
+    l5   = {"id": "T-L5-001",  "priority": "P1"}
+    # 关卡先于同优先级的普通任务；关卡之后层号序仍生效
+    assert rl.ready_sort_key(gate) < rl.ready_sort_key(l2) < rl.ready_sort_key(l4)
+    # 优先级仍是首键：P0 关卡先于一切 P1
+    assert rl.ready_sort_key(gate) < rl.ready_sort_key(eco)
+    # 同优先级内按层号；ECO 已置于 L4 之后，故先于 L5
+    assert rl.ready_sort_key(eco) < rl.ready_sort_key(l5)
+
+
+def test_eco_layer_sits_after_l4():
+    """ECO 层置于 L4 之后、L5 之前（决策日志 D-044）；INT 仍居末。"""
+    assert rl.LAYER_ORDER["L4"] < rl.LAYER_ORDER["ECO"] < rl.LAYER_ORDER["L5"] < rl.LAYER_ORDER["L6"]
+    assert rl.LAYER_ORDER["INT"] == len(rl.LAYERS) - 1
 
 
 # ───────────────────────── 检查 6：接口面 ─────────────────────────
