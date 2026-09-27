@@ -10,6 +10,9 @@
 
 端点知识移植自开源项目 ``simonlin1212/a-stock-data``（Apache-2.0，**取知识不取
 依赖**），并按 2026-09-27 的**真实探测**校正了三处与原文不符之处（见各解析件注释）。
+同日**复核**（T-L0-012）又补齐两处：深交所席位明细走 ``1842_detal``（契约由
+``1842_xxpl`` 行内 ``bz`` 自带）、沪市官方走上交所每日交易信息（**定宽文本**）
+——原记「席位明细暂无已验证源」与「沪市官方未接入」均已作废。
 
 **出网纪律**：一切请求经 L0 出网网关（02 §6）——本层只做「发一次请求并返回
 载荷」，审计与限流在网关侧。**查询参数一律经 ``urlencode``**：东财的 ``filter``
@@ -19,6 +22,7 @@
 from __future__ import annotations
 
 import json
+import re
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -38,7 +42,9 @@ __all__ = [
     "parse_announcement_em",
     "parse_announcement_szse",
     "parse_dragon_tiger_em",
+    "parse_dragon_tiger_sse",
     "parse_dragon_tiger_szse",
+    "parse_dragon_tiger_szse_detail",
     "parse_sentiment_hot_ths",
     "parse_sentiment_qa_irm",
     "parse_shareholder_num_em",
@@ -267,11 +273,12 @@ def parse_dragon_tiger_szse(payload: Any) -> InfoRows:
 
     真实形状（2026-09-27 实测）：顶层是**列表** ``[{data, error, metadata}]``；
     行字段为 ``dqrq``（日期）/ ``zqdm``（代码）/ ``zqjc``（名称）/ ``cjje``（成交额）/
-    ``plyy``（上榜原因）。
+    ``plyy``（上榜原因）/ ``bz``（内嵌明细表钻取链接）。
 
-    ⚠️ **该端点给的是上榜记录，不含营业部席位**——席位明细须另调
-    ``CATALOGID=1842_detal``（本轮未验证）。故本解析件**不产出**
-    ``dragon_tiger_seat`` 行；`T-L0-010` 遗留册已登记该缺口。
+    ⚠️ 该端点**只给上榜记录**；席位明细在**另一跳**——每行的 ``bz`` 里带着
+    ``CATALOGID=1842_detal&…&DQRQ=&ZQDM=&ZBDM=``，须由抓取器逐条钻取后再交给
+    :func:`parse_dragon_tiger_szse_detail`。故本解析件**不产出**
+    ``dragon_tiger_seat`` 行（那是钻取件的产物）。
     """
     tables = payload if isinstance(payload, list) else [payload]
     merged: dict[tuple[str, str], dict] = {}
@@ -294,6 +301,178 @@ def parse_dragon_tiger_szse(payload: Any) -> InfoRows:
             if amount is not None and row["net_amount"] is None:
                 row["net_amount"] = amount
     return {"dragon_tiger": tuple(merged.values()), "dragon_tiger_seat": ()}
+
+
+def _szse_table_rows(payload: Any) -> list[dict]:
+    """``ShowReport/data`` 响应 → 行列表（顶层实测为**列表**，元素含 ``data``）。"""
+    if isinstance(payload, list):
+        blocks = payload
+    elif isinstance(payload, dict):
+        blocks = [payload]
+    else:
+        raise InfoValidationError(
+            f"深交所 ShowReport 载荷形态不符：期望列表或字典，得到 {type(payload).__name__}")
+    rows: list[dict] = []
+    for block in blocks:
+        if isinstance(block, dict):
+            rows.extend(r for r in (block.get("data") or []) if isinstance(r, dict))
+    return rows
+
+
+def _szse_drill_params(markup: Any) -> dict[str, str]:
+    """从 ``1842_xxpl`` 行的 ``bz`` 里解出**明细表调用参数**。
+
+    实测形态（2026-07-10）：``bz`` 是一段 HTML，其中
+    ``a-param='/ShowReport/data?SHOWTYPE=JSON&CATALOGID=1842_detal&TABKEY=tab1,tab2&DQRQ=…&ZQDM=…&ZBDM=…'``
+    ——**端点与参数由源端自带**，故不得硬编码（``ZBDM`` 随上榜原因变）。
+    解不出时返回空字典（该行没有钻取入口）。
+    """
+    text = _text(markup) or ""
+    match = re.search(r"a-param=['\"]([^'\"]+)['\"]", text)
+    if not match:
+        return {}
+    query = match.group(1).partition("?")[2]
+    return dict(urllib.parse.parse_qsl(query, keep_blank_values=True))
+
+
+_SEAT_SIDES = {"买": "buy", "卖": "sell"}
+
+
+def _seat_key(label: Any) -> tuple[str, int] | None:
+    """``mmlb``（如 ``买1`` / ``卖3``）→ ``(side, rank)``；认不出返回 ``None``。"""
+    text = _text(label) or ""
+    side = _SEAT_SIDES.get(text[:1])
+    rank = _int(text[1:])
+    if side is None or not rank:
+        return None
+    return (side, rank)
+
+
+def parse_dragon_tiger_szse_detail(payload: Any, *, code: str,
+                                   trade_date: str) -> tuple[dict, ...]:
+    """深交所 ``1842_detal``（``TABKEY=tab1,tab2``）→ **席位明细**行。
+
+    实测形态（2026-07-10）：顶层是**列表**，``tab1`` 给该
+    (证券, 日期, 上榜原因) 的明细表头，**``tab2`` 给营业部席位**——字段
+    ``mmlb``（``买1`` … ``卖5``）/ ``zsmc``（会员营业部名称）/
+    ``mrje``（买入金额，元）/ ``mcje``（卖出金额，元）。
+
+    按 ``metadata.tabkey == 'tab2'`` 定位席位块：**缺该块即结构变更**（抛错），
+    而**该块存在但为空**是「这只标的当日没有席位明细」的正常情形（返回空元组）。
+    """
+    blocks = payload if isinstance(payload, list) else [payload]
+    for block in blocks:
+        if not isinstance(block, dict):
+            continue
+        if str((block.get("metadata") or {}).get("tabkey")) != "tab2":
+            continue
+        seats: list[dict] = []
+        for row in (block.get("data") or []):
+            if not isinstance(row, dict):
+                continue
+            key = _seat_key(row.get("mmlb"))
+            if key is None:
+                raise InfoValidationError(
+                    f"深交所席位明细的 mmlb 认不出买卖方向：{row.get('mmlb')!r}")
+            side, rank = key
+            buy, sell = _num(row.get("mrje")), _num(row.get("mcje"))
+            name = _text(row.get("zsmc"))
+            if not name:
+                raise InfoValidationError(
+                    f"深交所席位明细缺少 zsmc（营业部名称）：{row!r}")
+            seats.append({
+                "code": to_stock_id(code, "sz"), "trade_date": trade_date,
+                "side": side, "rank": rank, "seat_name": name,
+                "buy_amount": buy, "sell_amount": sell,
+                "net_amount": None if buy is None or sell is None else buy - sell,
+            })
+        return tuple(seats)
+    raise InfoValidationError(
+        f"深交所席位明细载荷里没有 tab2 块（{code} {trade_date}）——"
+        "端点结构可能已变（期望 metadata.tabkey = 'tab2'）")
+
+
+# ───────────────────────── 纯解析：上交所每日交易信息 ─────────────────────────
+
+_SSE_SECTION = re.compile(r"^\s*[一二三四五六七八九十]+、")
+_SSE_STOCK_HEADER = re.compile(r"证券代码[:：]\s*(\d{6})")
+_SSE_TABLE_ROW = re.compile(r"^\s*\(\d+\)\s+(\d{6})\s")
+_SSE_SEAT_ROW = re.compile(r"^\s*\((\d+)\)\s+(.+)\s+([\d,]+\.\d{2})\s*$")
+_SSE_BUY_HEADER = re.compile(r"买入营业部名称")
+_SSE_SELL_HEADER = re.compile(r"卖出营业部名称")
+
+
+def parse_dragon_tiger_sse(lines, *, trade_date: str) -> InfoRows:
+    """上交所「每日交易信息」（**定宽文本**）→ ``{上榜记录, 席位明细}``。
+
+    实测形态（2026-07-10，510 行）：分节标题即**上榜原因**（``一、…`` 到 ``十四、…``）；
+    每只有明细的证券出现 ``证券代码: 600664 … 证券简称: …`` 头，其后是
+    ``买入营业部名称: … 累计买入金额(元):`` 与 ``卖出营业部名称: … 累计卖出金额(元):``
+    两个块，席位列形如 ``(1) 某某证券营业部   124048015.00``。
+
+    上榜记录取**两处**：明细块的 ``证券代码:`` 头，以及「前五只证券」节的
+    ``(N) 600664 …`` 表行——两者同键（``code`` + 节标题为原因），由引擎按业务键合并。
+
+    行的 ``market`` 显式标 ``sh``：沪市代码段含 ``5xx`` / ``1xx``（ETF / 可转债），
+    靠号段推断会把 ``1xx`` 误判为深市（[D-032](../../../../项目管理/决策日志.md) 的
+    不误标原则）。
+    """
+    tops: dict[str, dict] = {}
+    seats: dict[tuple[str, str, int], dict] = {}
+    section, side, code = "", None, ""
+    for line in lines or ():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if _SSE_SECTION.match(line):
+            section = _SSE_SECTION.sub("", stripped).rstrip(":：")
+            side, code = None, ""
+            continue
+        header = _SSE_STOCK_HEADER.search(line)
+        if header:
+            code, side = header.group(1), None
+            tops.setdefault(code, _sse_top(code, trade_date, section))
+            continue
+        if _SSE_BUY_HEADER.match(stripped):
+            side = "buy"
+            continue
+        if _SSE_SELL_HEADER.match(stripped):
+            side = "sell"
+            continue
+        table_row = _SSE_TABLE_ROW.match(line)
+        if table_row:
+            found = table_row.group(1)
+            tops.setdefault(found, _sse_top(found, trade_date, section))
+            continue
+        if side is None or not code:
+            continue
+        seat_row = _SSE_SEAT_ROW.match(line)
+        if not seat_row:
+            continue
+        rank = _int(seat_row.group(1))
+        name = _text(seat_row.group(2))
+        amount = _num(seat_row.group(3))
+        if not rank or not name:
+            raise InfoValidationError(f"上交所席位列解析不出排名或名称：{line!r}")
+        seats.setdefault((code, side, rank), {
+            "code": code, "trade_date": trade_date, "side": side, "rank": rank,
+            "seat_name": name, "market": "sh",
+            "buy_amount": amount if side == "buy" else None,
+            "sell_amount": amount if side == "sell" else None,
+            "net_amount": None,
+        })
+    if lines and not section:
+        raise InfoValidationError(
+            "上交所每日交易信息里没有「一、…」分节标题——页面结构可能已变")
+    return {"dragon_tiger": tuple(tops.values()),
+            "dragon_tiger_seat": tuple(seats.values())}
+
+
+def _sse_top(code: str, trade_date: str, section: str) -> dict:
+    """上交所上榜记录行（金额列语义与净值不同，**不臆造**，留空）。"""
+    return {"code": code, "trade_date": trade_date, "market": "sh",
+            "reasons": section or None, "net_amount": None, "buy_amount": None,
+            "sell_amount": None, "turnover": None}
 
 
 # ───────────────────────── 纯解析：股东户数 ─────────────────────────
@@ -367,6 +546,18 @@ def parse_sentiment_hot_ths(payload: dict) -> tuple[dict, ...]:
 # ───────────────────────── 真实抓取（CI 不联网） ─────────────────────────
 
 _DATACENTER = "https://datacenter-web.eastmoney.com/api/data/v1/get"
+
+_SZSE_SHOWREPORT = "https://www.szse.cn/api/report/ShowReport/data"
+_SZSE_REFERER = "https://www.szse.cn/disclosure/supervision/dealinfo/index.html"
+_SZSE_PAGE_SIZE = 10
+"""深交所 ``ShowReport`` 的分页步长——**实测固定 10**（``PAGESIZE`` 被忽略）。"""
+
+_SZSE_MAX_PAGES = 50
+"""翻页上限：源端分页行为若变化，宁可少拉也不要无限翻。"""
+
+_SSE_TRADE_PUBLIC = "https://query.sse.com.cn/infodisplay/showTradePublicFile.do"
+_SSE_REFERER = "https://www.sse.com.cn/disclosure/diclosure/public/"
+"""上交所每日交易信息（路径里的 ``diclosure`` 是**源端原文拼写**，不可「纠正」）。"""
 
 
 class HttpInfoFetcher:
@@ -485,13 +676,56 @@ class HttpInfoFetcher:
         return parse_dragon_tiger_em(payload)
 
     def _fetch_info_dragon_tiger_szse(self, window: tuple[str, str]) -> InfoRows:
-        payload = self._request(
-            "https://www.szse.cn/api/report/ShowReport/data",
-            params={"SHOWTYPE": "JSON", "CATALOGID": "1842_xxpl", "TABKEY": "tab1",
-                    "txtStart": window[0], "txtEnd": window[1], "random": "0.9"},
-            referer="https://www.szse.cn/disclosure/supervision/dealinfo/index.html",
-        )
-        return parse_dragon_tiger_szse(payload)
+        """深交所官方：``1842_xxpl``（上榜记录，**须翻页**）→ 逐条钻取 ``1842_detal`` 取席位。
+
+        明细分两跳、且**由源端自带契约驱动**：每条上榜记录的 ``bz`` 里内嵌
+        ``CATALOGID=1842_detal&…&DQRQ=&ZQDM=&ZBDM=``，``ZBDM`` 随上榜原因变
+        （实测 ``0901`` / ``0902`` / ``0921`` / ``1001``），故不得硬编码。
+        """
+        day = window[0]
+        raw_rows: list[dict] = []
+        for page in range(1, _SZSE_MAX_PAGES + 1):
+            payload = self._request(_SZSE_SHOWREPORT, params={
+                "SHOWTYPE": "JSON", "CATALOGID": "1842_xxpl", "TABKEY": "tab1",
+                "txtStart": day, "txtEnd": window[1], "PAGENO": str(page),
+                "random": "0.9",
+            }, referer=_SZSE_REFERER)
+            page_rows = _szse_table_rows(payload)
+            raw_rows.extend(page_rows)
+            if len(page_rows) < _SZSE_PAGE_SIZE:
+                break
+        tops = parse_dragon_tiger_szse({"data": raw_rows})["dragon_tiger"]
+        seats: list[dict] = []
+        for row in raw_rows:
+            params = _szse_drill_params(row.get("bz"))
+            if not params.get("ZQDM"):
+                continue
+            detail = self._request(_SZSE_SHOWREPORT, params={
+                "SHOWTYPE": "JSON",
+                "CATALOGID": params.get("CATALOGID") or "1842_detal",
+                "TABKEY": params.get("TABKEY") or "tab1,tab2",
+                "DQRQ": params.get("DQRQ") or day,
+                "ZQDM": params["ZQDM"], "ZBDM": params.get("ZBDM", ""),
+                "random": "0.9",
+            }, referer=_SZSE_REFERER)
+            seats.extend(parse_dragon_tiger_szse_detail(
+                detail, code=params["ZQDM"], trade_date=params.get("DQRQ") or day))
+        return {"dragon_tiger": tops, "dragon_tiger_seat": tuple(seats)}
+
+    def _fetch_info_dragon_tiger_sse(self, window: tuple[str, str]) -> InfoRows:
+        """上交所官方每日交易信息（零鉴权）→ 上榜记录 + 营业部席位。
+
+        ``fileContents`` **缺失**是结构变更（抛错）；**存在但为空**是该日无披露
+        （非交易日 / 尚未发布）——两者必须分开，否则「源挂了」会被读成「没数据」。
+        """
+        payload = self._request(_SSE_TRADE_PUBLIC, params={
+            "jsonCallBack": "cb", "isPagination": "false", "dateTx": window[0],
+        }, referer=_SSE_REFERER)
+        if not isinstance(payload, dict) or "fileContents" not in payload:
+            raise InfoValidationError(
+                "上交所每日交易信息载荷缺少 fileContents——页面结构可能已变")
+        lines = tuple(str(x) for x in (payload.get("fileContents") or []))
+        return parse_dragon_tiger_sse(lines, trade_date=window[0])
 
     # ── 股东户数 ──
 

@@ -7,23 +7,32 @@
 - 东财公告：``data.list[].codes`` 是**字典列表**（非分隔字符串）
 - 深交所公告：``secCode`` 是**字符串化的 Python 列表**（``"['002670']"``）
 - 深交所龙虎榜：顶层是**列表**，行字段为 ``dqrq/zqdm/plyy/cjje``
+- 深交所席位明细：``1842_xxpl`` 行内 ``bz`` **自带明细表契约**；``1842_detal`` 的
+  ``tab2`` 块给 ``mmlb/zsmc/mrje/mcje``（T-L0-012）
+- 上交所每日交易信息：**定宽文本**，分节标题即上榜原因，``证券代码:`` 头 +
+  ``买入/卖出营业部名称`` 块（T-L0-012）
 - 同花顺热榜：``data.stock_list``，行字段为 ``order/rate/tag``
 - 东财数据中心查询：``filter`` 含 ``<`` / ``>``，**必须 urlencode**（否则 400）
 """
 
 from __future__ import annotations
 
+import json
 import urllib.parse
 
 import pytest
 
+from st_agent.l0.info.errors import InfoValidationError
 from st_agent.l0.info.fetch import (
     HttpInfoFetcher,
     _pythonish_list,  # noqa: PLC2701 - 测试内部工具的行为
+    _szse_drill_params,  # noqa: PLC2701
     parse_announcement_em,
     parse_announcement_szse,
     parse_dragon_tiger_em,
+    parse_dragon_tiger_sse,
     parse_dragon_tiger_szse,
+    parse_dragon_tiger_szse_detail,
     parse_sentiment_hot_ths,
     parse_shareholder_num_em,
 )
@@ -68,7 +77,59 @@ EM_LHB = {"result": {"data": [{
 SZSE_LHB = [{"data": [{
     "dqrq": "2026-09-24", "zqdm": "000504", "zqjc": "南华生物",
     "cjje": "15.25", "cjsl": "11,519.71", "plyy": "日价格涨幅达到20.83%",
+    "bz": ("<a href='javascript:void(0);' a-back=1 a-param='/ShowReport/data?"
+           "SHOWTYPE=JSON&CATALOGID=1842_detal&TABKEY=tab1,tab2&DQRQ=2026-09-24"
+           "&ZQDM=000504&ZBDM=0902'>查看详情</a>"),
 }], "error": "", "metadata": {}}]
+
+SZSE_DETAIL = [
+    {"data": [{
+        "dqrq": "2026-07-10", "ycqj": "无", "zqjc": "国华退&nbsp;(000004)",
+        "cjsl": "3,630,589 份/股", "cjje": "1,667,187 元", "plyy": "退市整理期",
+    }], "error": "", "metadata": {"tabkey": "tab1", "name": "交易公开信息明细表"}},
+    {"data": [
+        {"mmlb": "买1", "zsmc": "爱建证券有限责任公司深圳分公司",
+         "mrje": "802,800", "mcje": "0"},
+        {"mmlb": "买2", "zsmc": "中信证券股份有限公司杭州环城北路证券营业部",
+         "mrje": "118,702", "mcje": "460"},
+        {"mmlb": "卖1", "zsmc": "东方财富证券股份有限公司拉萨东城区江苏大道证券营业部",
+         "mrje": "0", "mcje": "91,300"},
+    ], "error": "", "metadata": {"tabkey": "tab2"}},
+]
+
+#: 上交所每日交易信息（定宽文本）——按 2026-07-10 真实排版**缩小**（2 只标的、2 节）
+SSE_TEXT = (
+    "    上海证券交易所每日交易信息",
+    "",
+    "    交易日期:2026年07月10日",
+    "",
+    "一、有价格涨跌幅限制的日收盘价格涨幅偏离值达到7%的前五只证券:",
+    " 1、A股",
+    "        证券代码      证券简称      偏离值%        成交量        成交金额(万元)",
+    "    (1)  600664      哈药股份      11.13%       100032231           33687.45",
+    "    (2)  600821      金开新能      11.09%        93625745           55509.15",
+    "",
+    "      证券代码: 600664                                            证券简称: 哈药股份",
+    "      -----------------------------------------------------------------------------------",
+    "      买入营业部名称:                                            累计买入金额(元):",
+    "  (1) 国泰海通证券股份有限公司南京太平南路证券营业部              124048015.00",
+    "  (2) 华鑫证券有限责任公司绍兴胜利东路证券营业部                   14792278.00",
+    "",
+    "      卖出营业部名称:                                            累计卖出金额(元):",
+    "  (1) 平安证券股份有限公司深圳深南大道证券营业部                   26712035.40",
+    "",
+    "      证券代码: 600821                                            证券简称: 金开新能",
+    "      -----------------------------------------------------------------------------------",
+    "      买入营业部名称:                                            累计买入金额(元):",
+    "  (1) 中国银河证券股份有限公司合肥分公司                           89553480.00",
+    "",
+    "      卖出营业部名称:                                            累计卖出金额(元):",
+    "  (1) 沪股通专用                                                  19781145.02",
+    "",
+    "五、无价格涨跌幅限制首个交易日的证券:",
+    " 1、A股",
+    "",
+)
 
 THS_HOT = {"data": {"stock_list": [{
     "market": 33, "code": "000592", "rate": "99767.0", "rise_and_fall": 10.0251,
@@ -144,13 +205,174 @@ class TestDragonTigerParsers:
         assert rows[0]["reasons"] == "日价格涨幅达到20.83%"
 
     def test_szse_yields_no_seats(self):
-        """该端点**不含席位**——不产出 `dragon_tiger_seat` 行（缺口已登记遗留册）。"""
+        """``1842_xxpl`` 本体**不含席位**——不产出 `dragon_tiger_seat` 行。
+
+        席位在**另一跳**：抓取器按该行 ``bz`` 自带的契约钻取 ``1842_detal``，
+        再交 :func:`parse_dragon_tiger_szse_detail`（见 `TestSzseSeatDrillDown`）。
+        """
         assert parse_dragon_tiger_szse(SZSE_LHB)["dragon_tiger_seat"] == ()
 
     def test_szse_tolerates_dict_payload(self):
         """兼容单表返回（非列表）的形态。"""
         rows = parse_dragon_tiger_szse(SZSE_LHB[0])["dragon_tiger"]
         assert len(rows) == 1
+
+
+class TestSzseSeatDrillDown:
+    """T-L0-012 · F2：席位明细走 ``bz`` 自带的契约钻取 ``1842_detal``。"""
+
+    def test_drill_params_come_from_the_payload(self):
+        """回归：契约**由源端携带**——``ZBDM`` 随上榜原因变，不得硬编码。"""
+        params = _szse_drill_params(SZSE_LHB[0]["data"][0]["bz"])
+        assert params["CATALOGID"] == "1842_detal"
+        assert params["TABKEY"] == "tab1,tab2"
+        assert params["DQRQ"] == "2026-09-24"
+        assert params["ZQDM"] == "000504"
+        assert params["ZBDM"] == "0902"
+
+    @pytest.mark.parametrize("markup", [None, "", "无链接", "<a href='x'>查看</a>"])
+    def test_drill_params_absent_returns_empty(self, markup):
+        assert _szse_drill_params(markup) == {}
+
+    def test_detail_yields_seats_with_side_and_rank(self):
+        seats = parse_dragon_tiger_szse_detail(
+            SZSE_DETAIL, code="000004", trade_date="2026-07-10")
+        assert len(seats) == 3
+        first = seats[0]
+        assert (first["code"], first["side"], first["rank"]) == ("sz.000004", "buy", 1)
+        assert first["seat_name"] == "爱建证券有限责任公司深圳分公司"
+        assert first["buy_amount"] == 802800.0
+        assert first["sell_amount"] == 0.0
+        assert first["net_amount"] == 802800.0
+        assert seats[1]["net_amount"] == 118702.0 - 460.0
+        assert seats[2]["side"] == "sell" and seats[2]["rank"] == 1
+
+    def test_detail_without_tab2_block_is_a_structure_change(self):
+        """缺 ``tab2`` 块 = 结构变更 → 抛错；**不**静默返回空（GWT-4）。"""
+        with pytest.raises(InfoValidationError, match="tab2"):
+            parse_dragon_tiger_szse_detail(
+                [{"data": [{"dqrq": "x"}], "metadata": {"tabkey": "tab1"}}],
+                code="000004", trade_date="2026-07-10")
+
+    def test_detail_with_empty_tab2_is_not_an_error(self):
+        """``tab2`` 存在但无席位行 = 该标的当日无明细 → 空元组，不抛错。"""
+        assert parse_dragon_tiger_szse_detail(
+            [{"data": [], "metadata": {"tabkey": "tab2"}}],
+            code="000004", trade_date="2026-07-10") == ()
+
+
+class TestSseDailyDisclosure:
+    """T-L0-012 · F3：上交所每日交易信息（定宽文本）→ 上榜记录 + 营业部席位。"""
+
+    def _rows(self):
+        return parse_dragon_tiger_sse(SSE_TEXT, trade_date="2026-07-10")
+
+    def test_tops_from_both_anchors_deduped(self):
+        """上榜记录来自 ``证券代码:`` 头与 ``(N) 代码`` 表行——同键去重。"""
+        tops = self._rows()["dragon_tiger"]
+        assert [r["code"] for r in tops] == ["600664", "600821"]
+        assert tops[0]["reasons"] == "有价格涨跌幅限制的日收盘价格涨幅偏离值达到7%的前五只证券"
+        assert tops[0]["trade_date"] == "2026-07-10"
+
+    def test_market_is_explicitly_sh(self):
+        """沪市含 ``1xx`` / ``5xx`` 段——显式标 ``sh``，不靠号段推断（D-032）。"""
+        rows = self._rows()
+        assert {r["market"] for r in rows["dragon_tiger"]} == {"sh"}
+        assert {r["market"] for r in rows["dragon_tiger_seat"]} == {"sh"}
+
+    def test_seats_with_side_rank_name_amount(self):
+        seats = {(r["code"], r["side"], r["rank"]): r
+                 for r in self._rows()["dragon_tiger_seat"]}
+        assert len(seats) == 5
+        buy1 = seats[("600664", "buy", 1)]
+        assert buy1["seat_name"] == "国泰海通证券股份有限公司南京太平南路证券营业部"
+        assert buy1["buy_amount"] == 124048015.0 and buy1["sell_amount"] is None
+        sell1 = seats[("600821", "sell", 1)]
+        assert sell1["seat_name"] == "沪股通专用"
+        assert sell1["sell_amount"] == 19781145.02 and sell1["buy_amount"] is None
+
+    def test_empty_disclosure_is_not_an_error(self):
+        """非交易日 / 未披露 → 空 ``fileContents``：空结果，**不**抛错。"""
+        rows = parse_dragon_tiger_sse((), trade_date="2026-09-25")
+        assert rows == {"dragon_tiger": (), "dragon_tiger_seat": ()}
+
+    def test_text_without_any_section_is_a_structure_change(self):
+        """有正文却无「一、…」分节标题 = 排版变了 → 抛错（GWT-4）。"""
+        with pytest.raises(InfoValidationError, match="分节标题"):
+            parse_dragon_tiger_sse(("随便一段没有分节的文字",), trade_date="2026-07-10")
+
+
+class _Resp:
+    def __init__(self, body: bytes) -> None:
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self) -> bytes:
+        return self._body
+
+
+def _serve(monkeypatch, payloads: list[bytes]) -> list[str]:
+    """按序供给载荷（**用尽后重复最后一个**），返回被请求的 URL 列表。"""
+    queue = list(payloads)
+    seen: list[str] = []
+
+    def _fake_urlopen(request, timeout=None):
+        seen.append(request.full_url)
+        return _Resp(queue.pop(0) if len(queue) > 1 else queue[0])
+
+    monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
+    return seen
+
+
+def _xxpl_page(codes: list[str], day: str = "2026-09-24") -> bytes:
+    rows = [{"dqrq": day, "zqdm": code, "zqjc": f"股{code}", "cjje": "1.0",
+             "cjsl": "1.0", "plyy": "原因",
+             "bz": (f"<a a-param='/ShowReport/data?SHOWTYPE=JSON&CATALOGID=1842_detal"
+                    f"&TABKEY=tab1,tab2&DQRQ={day}&ZQDM={code}&ZBDM=0902'>查看</a>")}
+            for code in codes]
+    return json.dumps([{"data": rows, "error": "", "metadata": {}}]).encode()
+
+
+class TestDragonTigerFetchers:
+    """抖动取器的**请求编排**（URL / 翻页 / 钻取），不联网。"""
+
+    def test_szse_pages_until_short_page_then_drills(self, monkeypatch):
+        seen = _serve(monkeypatch, [
+            _xxpl_page([f"00000{i}" for i in range(1, 11)]),  # 满页 → 继续翻
+            _xxpl_page(["000011"]),                            # 不足一页 → 停
+            json.dumps(SZSE_DETAIL).encode(),                  # 钻取载荷（重复供给）
+        ])
+        rows = HttpInfoFetcher().fetch_task(
+            "info_dragon_tiger_szse", ("2026-09-24", "2026-09-24"))
+        assert len(rows["dragon_tiger"]) == 11
+        assert len(rows["dragon_tiger_seat"]) == 3 * 11
+        assert len(seen) == 2 + 11, seen
+        assert "PAGENO=2" in seen[1] and "PAGENO=3" not in " ".join(seen)
+        assert "CATALOGID=1842_detal" in seen[2] and "ZBDM=0902" in seen[2]
+
+    def test_sse_missing_file_contents_raises(self, monkeypatch):
+        _serve(monkeypatch, [b'{"isTradeDate": "false"}'])
+        with pytest.raises(InfoValidationError, match="fileContents"):
+            HttpInfoFetcher().fetch_task(
+                "info_dragon_tiger_sse", ("2026-09-25", "2026-09-25"))
+
+    def test_sse_empty_file_contents_is_empty_not_error(self, monkeypatch):
+        _serve(monkeypatch, [b'{"fileContents": [], "isTradeDate": "false"}'])
+        rows = HttpInfoFetcher().fetch_task(
+            "info_dragon_tiger_sse", ("2026-09-25", "2026-09-25"))
+        assert rows == {"dragon_tiger": (), "dragon_tiger_seat": ()}
+
+    def test_sse_uses_the_document_path_with_original_spelling(self, monkeypatch):
+        seen = _serve(monkeypatch, [b'{"fileContents": []}'])
+        HttpInfoFetcher().fetch_task(
+            "info_dragon_tiger_sse", ("2026-07-10", "2026-07-10"))
+        assert "infodisplay/showTradePublicFile.do" in seen[0]
+        assert "dateTx=2026-07-10" in seen[0]
 
 
 class TestSentimentAndShareholderParsers:

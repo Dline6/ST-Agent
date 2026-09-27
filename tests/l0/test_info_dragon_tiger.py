@@ -1,18 +1,26 @@
-"""T-L0-010.3 测试：龙虎榜域采集与管理。
+"""T-L0-010.3 + T-L0-012 测试：龙虎榜域采集与管理。
 
-GWT 对照（任务文件 4 条）：
+GWT 对照（T-L0-010.3 四条）：
 - GWT-1 **两实体可分**——上榜记录与席位明细各自成表（粒度不同，不是主备）
 - GWT-2 席位的两个源**可辨**——每行带 `source_id`，不冒充单一来源
 - GWT-3 预过滤**不炸批**——全市场批次含未收录代码时批次仍成功
 - GWT-4 **逐日增量**——单日窗口 + 水位为最近已拉交易日
+
+T-L0-012 追加（F2 / F3 收口）：
+- 官方两条席位路径**同任务写两表**（深交所钻取 / 上交所文本）——见
+  `test_info_parsers.py` 的 `TestSzseSeatDrillDown` / `TestSseDailyDisclosure`
+  与 `TestDragonTigerFetchers`；本文件覆盖**源登记与落表**一侧。
 """
 
 from __future__ import annotations
+
+import pytest
 
 from info_helpers import UNMAPPED_CODE, FakeInfoFetcher
 
 EM = "info_dragon_tiger_em"
 SZSE = "info_dragon_tiger_szse"
+SSE = "info_dragon_tiger_sse"
 DAY = "2026-09-25"
 
 
@@ -133,3 +141,39 @@ class TestGwt4DailyIncremental:
         sync_factory(second).run_task(EM, window=(DAY, DAY))
         env = db.query("SELECT trade_date FROM dragon_tiger ORDER BY trade_date")
         assert [r["trade_date"] for r in env.data["rows"]] == ["2026-09-24", DAY]
+
+
+class TestGwt5OfficialSeatSources:
+    """T-L0-012：官方两条席位路径的**源登记与落表**（F2 / F3 收口）。
+
+    抓取侧（``bz`` 契约钻取 / 定宽文本解析）由 `test_info_parsers.py` 覆盖；
+    本类只钉**登记口径**与**落表**——席位与上榜记录**同源同次抓取**，故同一任务
+    须声明写两表，否则 `dragon_tiger_seat` 会没有可判新鲜度的任务（05 的意图）。
+    """
+
+    @pytest.mark.parametrize("task_key,coverage,source_id", [
+        (SZSE, "sz", "szse"), (SSE, "sh", "sse")])
+    def test_official_source_declares_both_tables(self, task_key, coverage, source_id):
+        from st_agent.l0.info import get_info_task
+
+        spec = get_info_task(task_key)
+        assert spec.written_tables == ("dragon_tiger", "dragon_tiger_seat")
+        assert (spec.coverage, spec.role, spec.source_id) == (coverage, "backup", source_id)
+
+    def test_sse_coverage_is_declared_sh(self, db, sync_factory):
+        env = sync_factory(FakeInfoFetcher({
+            SSE: {"dragon_tiger": (_top("600000"),),
+                  "dragon_tiger_seat": (_seat("600000"),)},
+        })).run_task(SSE, window=(DAY, DAY))
+        assert env.data["coverage"] == "sh" and env.data["source"] == "sse"
+        assert env.data["role"] == "backup"
+
+    def test_sse_seats_land_in_the_seat_table(self, db, sync_factory):
+        sync_factory(FakeInfoFetcher({
+            SSE: {"dragon_tiger": (_top("600000"),),
+                  "dragon_tiger_seat": (_seat("600000", seat="某沪市营业部"),)},
+        })).run_task(SSE, window=(DAY, DAY))
+        env = db.query("SELECT code, side, rank, seat_name, source_id"
+                       " FROM dragon_tiger_seat")
+        assert env.data["rows"] == [{"code": "sh.600000", "side": "buy", "rank": 1,
+                                     "seat_name": "某沪市营业部", "source_id": "sse"}]
