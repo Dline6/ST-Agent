@@ -269,7 +269,7 @@ class TestSetupRegistration:
         sources = [r["source_id"] for r in
                    db.query("SELECT source_id FROM data_source").data["rows"]]
         assert "baostock" in sources  # 既有源不被破坏
-        assert {"cninfo", "szse", "eastmoney", "exchange",
+        assert {"cninfo", "szse", "eastmoney",
                 "cninfo_irm", "sse_e", "ths"} <= set(sources)
         env = db.query("SELECT count(*) AS n FROM sync_state"
                        " WHERE task_key LIKE 'info_%'")

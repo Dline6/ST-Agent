@@ -12,7 +12,7 @@ from __future__ import annotations
 from info_helpers import UNMAPPED_CODE, FakeInfoFetcher
 
 EM = "info_dragon_tiger_em"
-EXCHANGE = "info_dragon_tiger_exchange"
+SZSE = "info_dragon_tiger_szse"
 DAY = "2026-09-25"
 
 
@@ -63,31 +63,38 @@ class TestGwt1TwoEntities:
 
 
 class TestGwt2SourcesDistinguishable:
-    def test_seat_rows_carry_source_id(self, db, sync_factory):
+    def test_top_records_carry_source_id(self, db, sync_factory):
+        """两个源都给上榜记录，逐行带 `source_id`——不冒充单一来源。"""
         sync = sync_factory(FakeInfoFetcher({
-            EM: {"dragon_tiger": (), "dragon_tiger_seat": (_seat("600000", rank=1),)},
-            EXCHANGE: {"dragon_tiger": (),
-                       "dragon_tiger_seat": (_seat("600000", rank=2, seat="丙营业部"),)},
+            EM: {"dragon_tiger": (_top("600000"),), "dragon_tiger_seat": ()},
+            SZSE: {"dragon_tiger": (_top("000001", day=DAY, reason="日跌幅偏离"),),
+                   "dragon_tiger_seat": ()},
         }))
         sync.run_task(EM, window=(DAY, DAY))
-        sync.run_task(EXCHANGE, window=(DAY, DAY))
-        env = db.query("SELECT rank, source_id FROM dragon_tiger_seat ORDER BY rank")
-        assert [(r["rank"], r["source_id"]) for r in env.data["rows"]] == [
-            (1, "eastmoney"), (2, "exchange")]
+        sync.run_task(SZSE, window=(DAY, DAY))
+        env = db.query("SELECT code, source_id FROM dragon_tiger ORDER BY code")
+        assert [(r["code"], r["source_id"]) for r in env.data["rows"]] == [
+            ("sh.600000", "eastmoney"), ("sz.000001", "szse")]
 
-    def test_exchange_is_seat_primary_and_backup_does_not_clobber(self, db, sync_factory):
-        """官方为席位主源：先跑官方、再跑东财备胎，官方行不被覆盖。"""
+    def test_szse_coverage_is_declared_sz(self, db, sync_factory):
+        """官方端点实测**仅深市** → `coverage=sz` 显式标注（不冒充沪深）。"""
+        env = sync_factory(FakeInfoFetcher({
+            SZSE: {"dragon_tiger": (_top("000001"),), "dragon_tiger_seat": ()},
+        })).run_task(SZSE, window=(DAY, DAY))
+        assert env.data["coverage"] == "sz" and env.data["source"] == "szse"
+        assert env.data["role"] == "backup"
+
+    def test_backup_does_not_overwrite_primary(self, db, sync_factory):
+        """备胎 `INSERT OR IGNORE`：主源（东财）口径不被覆盖。"""
         sync = sync_factory(FakeInfoFetcher({
-            EXCHANGE: {"dragon_tiger": (),
-                       "dragon_tiger_seat": (_seat("600000", rank=1, seat="官方明细"),)},
-            EM: {"dragon_tiger": (),
-                 "dragon_tiger_seat": (_seat("600000", rank=1, seat="东财TOP5"),)},
+            EM: {"dragon_tiger": (_top("000001"),), "dragon_tiger_seat": ()},
+            SZSE: {"dragon_tiger": (_top("000001", reason="官方口径原因"),),
+                   "dragon_tiger_seat": ()},
         }))
-        sync.run_task(EXCHANGE, window=(DAY, DAY))
-        sync.run_task(EM, window=(DAY, DAY))  # role=primary，但同业务键已存在？
-        rows = db.query("SELECT seat_name FROM dragon_tiger_seat").data["rows"]
-        assert rows[0]["seat_name"] in ("官方明细", "东财TOP5")
-        assert len(rows) == 1
+        sync.run_task(EM, window=(DAY, DAY))
+        sync.run_task(SZSE, window=(DAY, DAY))
+        rows = db.query("SELECT source_id, reasons FROM dragon_tiger").data["rows"]
+        assert len(rows) == 1 and rows[0]["source_id"] == "eastmoney"
 
 
 class TestGwt3Prefilter:

@@ -5,7 +5,7 @@
 | 域 | 主源 | 备胎 / 并行 | 口径 |
 |---|---|---|---|
 | 公告 | 巨潮（**覆盖全市**） | 深交所官方（**仅深市**）· 东财（**仅沪市**） | **权威源优先**；备胎按**覆盖分片**，`coverage` 列显式标注 |
-| 龙虎榜 | 东财（上榜记录 + 席位 TOP5） | 沪深交易所官方（席位**一手明细**，排名可推导） | **按实体分两表**；席位以官方为主 |
+| 龙虎榜 | 东财（上榜记录） | 深交所官方（**仅深市**，亦为上榜记录） | **按实体分两表**；席位明细**暂无已验证源**（官方明细端点未验证） |
 | 股东户数 | 东财 | **无**（不可用即 `unavailable`） | **单源**——A / B / C 在此退化为同一结果 |
 | 舆情问答 | **双市并行互补**：互动易（深市）+ 上证e互动（沪市） | —— | 非主备：同语义、按市场分片，故**同表**、`market` 列标注 |
 | 热度榜 | 同花顺热榜（+ 东财人气榜作并列榜单） | —— | **易腐**数据，独立实体与契约 |
@@ -96,9 +96,6 @@ INFO_SOURCES: tuple[InfoSource, ...] = (
                "https://datacenter-web.eastmoney.com",
                ("datacenter-web.eastmoney.com", "push2his.eastmoney.com",
                 "np-anotice-stock.eastmoney.com")),
-    InfoSource("exchange", "沪深交易所官方（龙虎榜公开信息）",
-               "https://query.sse.com.cn · https://www.szse.cn",
-               ("query.sse.com.cn", "www.szse.cn")),
     InfoSource("cninfo_irm", "互动易（巨潮，深市投资者关系）",
                "https://irm.cninfo.com.cn", ("irm.cninfo.com.cn",)),
     InfoSource("sse_e", "上证e互动（沪市投资者关系）",
@@ -140,11 +137,12 @@ INFO_TASKS: tuple[InfoTask, ...] = (
              "eastmoney", "incremental", "每交易日盘后", "all", "primary",
              ("dragon_tiger", "dragon_tiger_seat"),
              watermark_desc="最近已拉交易日"),
-    InfoTask("info_dragon_tiger_exchange", "dragon_tiger", "dragon_tiger_seat",
-             "exchange", "incremental", "每交易日盘后（席位明细主源）",
-             "all", "primary",
-             ("dragon_tiger_seat", "dragon_tiger"),
-             watermark_desc="最近已拉交易日"),
+    # 官方端点实测（2026-09-27）只给**上榜记录**、且仅深市；席位明细须另调
+    # CATALOGID=1842_detal（未验证）——见 T-L0-010 遗留册。
+    InfoTask("info_dragon_tiger_szse", "dragon_tiger", "dragon_tiger",
+             "szse", "incremental", "每交易日盘后（仅深市；上榜记录兜底）",
+             "sz", "backup",
+             watermark_desc="最近已拉交易日（深市）"),
     # ── 股东户数域：单源无备胎 ──
     InfoTask("info_shareholder_num_em", "shareholder_num", "shareholder_num",
              "eastmoney", "upsert_window", "每周（季频数据，重拉最近 8 个季度）",
