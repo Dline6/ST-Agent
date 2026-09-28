@@ -36,6 +36,12 @@ class SkillRun(BaseModel):
     """关联推理链（01 §4：记录挂到 ``trace_id``）。"""
     params: dict[str, Any] = {}
     """执行时实际使用的完整参数（输入快照）。"""
+    inputs: dict[str, Any] = {}
+    """调用方注入的**对象类输入**快照（T-L1-010.1；01 §2 运行期输入面）。
+
+    只含**被请求的那个 Skill** 的 `inputs`——不沿依赖链下发，故依赖的记录里为 `{}`。
+    与 `params` 并列落盘，「本次用的是哪份用户对象」事后可追溯。
+    """
     upstream: tuple[str, ...] = ()
     """本次实际执行的依赖 skill_id 链（拓扑序）。"""
     envelope: ResultEnvelope

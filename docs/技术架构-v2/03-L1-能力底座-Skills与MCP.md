@@ -22,7 +22,7 @@ stories: [PRD Story 2 — Skills Runtime, Story 6 — Skill Studio, Story 8 — 
 一次 Skill 调用 `skill_run_id` 的标准流水线：
 
 1. **解析**：意图来源（L3 对话 / Studio / Deliberation / 工作流 / 定时调度）→ 匹配 SkillDescriptor
-2. **参数确认**：参数超出合理范围 → `validation_failed`（拦截 + 说明理由，不允许保存）；经对话触发时展示参数确认卡（用户可调或用默认值）
+2. **参数与输入确认**：`parameters` 的标量可配参数超出合理范围 → `validation_failed`（拦截 + 说明理由，不允许保存）；经对话触发时展示参数确认卡（用户可调或用默认值）。**对象类输入**（用户组合 / 风格偏好 / 标的池这类 `ParameterSpec` 承载不了的对象，01 §2 的三条通道之②）由**调用方**经 `inputs` 供给，按描述体 `input_schema` 核验（判定件同上 `contracts.schema_check`）——不合契约 → `validation_failed` + 违规点说明，**执行器不被调用**；`inputs` 只作用于**被请求的那个 Skill**，**不沿依赖链下发**。调用方从何取得该对象（如读 L2 记忆图谱）不在本层职责内——L1 不向上取
 3. **依赖解析**：递归解析 `dependencies`；**DAG 约束**——检测到循环依赖即拒绝（保存工作流与运行时双重检测）；上游失败 → 下游 `dependency_failed`，禁止用错误数据继续
 4. **权限检查**：按 01 §10 权限模型核对本次执行所需权限
 5. **执行与留痕**：执行器产出先经描述体 `output_schema` 核验（01 §2 方言澄清，判定件 `contracts.schema_check`）——不合契约 → `failed` + 违规点说明，**不进入下一步**；合契约则包装 ResultEnvelope；记录 SkillRun（输入快照、输出、耗时、错误、依赖链）并挂到 `trace_id`
@@ -75,6 +75,16 @@ stories: [PRD Story 2 — Skills Runtime, Story 6 — Skill Studio, Story 8 — 
 | `strategy-design` | 策略设计与回测：选股→信号→策略→回测四步链路 |
 
 `strategy-design` 的特殊契约：**信号校验器**必须实现「未来函数」检测——用户设计的信号若依赖未来数据，校验即报错并指出问题；回测口径由用户设定，输出用户口径的回测报告。
+
+**对象类输入的取值面（2026-09-28 定案，[D-056](../../项目管理/决策日志.md)）**：下表三处输入是**对象**，`ParameterSpec` 装不下（01 §2 的三条通道之②），经**运行期 `inputs`** 由**调用方注入**——声明已在各描述体的 `input_schema`：
+
+| Skill | `inputs` 键 | 形态 | 有值时的口径 | 无值时的降级（**可解释默认口径**） |
+| --- | --- | --- | --- | --- |
+| `portfolio-stress-test` | `portfolio` | `object`（`{codes: [stock_id…], source?: str}`） | 只按组合内标的推演，`portfolio_source` 记该对象的 `source` | 本地缓存最新交易日在市标的**等权**，`portfolio_source = "local-cache-equal-weight"` |
+| `opportunity-mine` | `preference` | `object`（`{sectors?: [str…], themes?: [str…], risk?: str, source?: str}`） | 候选按 `sectors`（查 `stock_industry`）/ `themes`（匹配 `reasons`）过滤，`risk` 仅随载荷回显；`preference` 记该对象 | `preference = "none"`（原优选池按分数排序） |
+| `strategy-design` | `universe` | `string`（逗号分隔的 `stock_id` 表，同 `stock-watch` 的 `keywords` 串约定） | 回测窗口**只纳入**该池标的 | 全市场等权（同今）；报告另出 `universe_source` |
+
+**口径**：上表「有值」一栏的数据由**调用方**读 L2 记忆图谱后汇成（记忆侧取值面：`attention.holdings` / `.watchlist` / `.sector_preferences` / `.theme_interests`、`identity.risk_preference`）——L1 **不** import L2、不向上取（[铁律 7](../../项目管理/工程宪法.md)）。取不到相关记忆即**回落默认口径**并**显式标注来源**，**不冒充用户输入**（[D-028](../../项目管理/决策日志.md)）。`strategy-design` 的**信号定义**不走此通道（记忆六类节点无信号定义一类）：其唯一来源仍是上游载荷 `signal_spec`，`report.signal_check` 记其**来源**（提供方 `skill_id` / 未提供）。
 
 ## 3. 工作流模型（Skill Studio 的数据基础）
 

@@ -6,6 +6,11 @@
 - 解析：``match`` 按查询文本匹配 SkillDescriptor（GWT-2 调度匹配口径）
 - 参数确认：``confirm_card`` 返回参数确认卡数据；``run`` 内经
   ``registry.validate_call_params`` 合并默认值（GWT-2/GWT-3/GWT-7）
+- 输入核验（T-L1-010.1 / 01 §2 运行期输入面）：``run(inputs=…)`` 的**对象类
+  输入**（``parameters`` 承载不了的对象）按描述体 ``input_schema`` 核验
+  （``contracts.check_payload``）——不合契约 → ``validation_failed`` +
+  违规点，**执行器不被调用**；``inputs`` 只作用于**被请求的那个 Skill**，
+  不沿依赖链下发
 - 依赖解析：沿描述体 ``dependencies`` 递归执行；成环即拒；缺失即拒；
   上游非 ok/empty → 下游 ``dependency_failed``（GWT-4）
 - 权限检查：描述体声明的权限须逐项在已批准集合内，否则
@@ -83,6 +88,13 @@ class SkillContext(BaseModel):
     purpose: str = ""
     upstream: dict[str, ResultEnvelope] = {}
     """已执行的上游依赖输出（``{skill_id: envelope}``，拓扑序）。"""
+    inputs: dict[str, Any] = {}
+    """**对象类输入**（01 §2 的三条通道之②；缺省 `{}`）。
+
+    由调用方经 ``SkillRunner.run(inputs=…)`` 供给，已过描述体 ``input_schema``
+    核验（不合契约的执行器根本不会跑到）。只作用于**被请求的那个 Skill**，
+    不沿依赖链下发——故本字段不含上游的 ``inputs``。
+    """
     llm: Any = None
     """``LlmClient`` 句柄（无则为 None，执行器须显式处理）。"""
     gateway: Any = None
@@ -189,6 +201,7 @@ class SkillRunner:
         skill_id: str,
         values: Mapping[str, Any] | None = None,
         *,
+        inputs: Mapping[str, Any] | None = None,
         trace: Trace | None = None,
         approved_permissions: tuple[str, ...] | list[str] = (),
         initiator: str = "",
@@ -196,6 +209,12 @@ class SkillRunner:
     ) -> RunOutcome:
         """执行一个 Skill（完整流水线；运行时失败一律走信封，不抛异常）。
 
+        :param values: 声明参数（``parameters``）的取值；缺省即全默认值
+        :param inputs: **对象类输入**（01 §2 的三条通道之②）——``parameters``
+            承载不了的**对象**由调用方经此供给，按描述体 ``input_schema``
+            核验；不合契约 → ``validation_failed`` 且**执行器不被调用**。
+            只作用于本次请求的 Skill，不沿依赖链下发。调用方从何取得该对象
+            （如读 L2 记忆图谱）不属 L1 职责——L1 不向上取
         :param trace: 调用方传入的推理链（None 即新建一条）；
             返回的 ``RunOutcome.trace`` 为追加本次步骤后的新链
         :param approved_permissions: 用户已批准的权限声明集合（A6 逐项核对）
@@ -209,6 +228,7 @@ class SkillRunner:
         envelope, chain, run_id = self._execute(
             skill_id, dict(values or {}), chain, approved,
             initiator=initiator, purpose=purpose, stack=(),
+            inputs=dict(inputs or {}),
         )
         return RunOutcome(
             skill_id=skill_id, skill_run_id=run_id,
@@ -220,7 +240,7 @@ class SkillRunner:
     def _execute(
         self, skill_id: str, values: dict[str, Any], chain: Trace,
         approved: frozenset[str], *, initiator: str, purpose: str,
-        stack: tuple[str, ...],
+        stack: tuple[str, ...], inputs: dict[str, Any],
     ) -> tuple[ResultEnvelope, Trace, str]:
         """递归执行单个 Skill → (信封, 新链, skill_run_id)。"""
         if skill_id in stack:
@@ -244,6 +264,7 @@ class SkillRunner:
             record = checked_skill_run(
                 skill_run_id=run_id, skill_id=skill_id,
                 trace_id=chain.trace_id.value, params=params,
+                inputs=inputs,
                 upstream=upstream, envelope=envelope,
                 duration_ms=duration, started_at=_now(),
             )
@@ -279,6 +300,18 @@ class SkillRunner:
             return finish(
                 ResultEnvelope.validation_failed(f"参数校验失败：{exc}"), (), dict(values))
 
+        # ── 输入核验（T-L1-010.1 / 01 §2 运行期输入面） ──
+        # 对象类输入由调用方经 `inputs` 供给，按描述体 `input_schema` 判（同一步骤
+        # 的参数门；判定件与输出侧同一个 `check_payload`，不另造一套）。
+        if inputs:
+            input_check = check_payload(descriptor.input_schema, inputs)
+            if not input_check.passed:
+                return finish(
+                    ResultEnvelope.validation_failed(
+                        f"Skill {skill_id!r} 输入不合 input_schema（01 §2）："
+                        f"{input_check.describe()}"),
+                    (), dict(values))
+
         # ── 依赖解析（递归；上游失败 → dependency_failed） ──
         upstream: dict[str, ResultEnvelope] = {}
         ordered: list[str] = []
@@ -293,7 +326,7 @@ class SkillRunner:
                 env, chain, _ = self._execute(
                     dep, {}, chain, approved,
                     initiator=initiator, purpose=purpose,
-                    stack=(*stack, skill_id))
+                    stack=(*stack, skill_id), inputs={})
             except CycleDetectedError as exc:
                 return finish(
                     ResultEnvelope.validation_failed(str(exc)),
@@ -334,6 +367,7 @@ class SkillRunner:
             trace_id=chain.trace_id.value,
             initiator=initiator, purpose=purpose,
             upstream=dict(upstream),
+            inputs=dict(inputs),
             llm=(session.guard_llm(self._llm)
                  if session is not None and self._llm is not None else self._llm),
             gateway=(session.guard_gateway(self._gateway)
