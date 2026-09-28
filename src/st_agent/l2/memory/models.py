@@ -28,6 +28,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Annotated, Any, ClassVar, Literal
 
@@ -67,6 +68,7 @@ __all__ = [
     "EvolutionPoint",
     "HistoryNode",
     "IdentityNode",
+    "ImportOrigin",
     "MemoryEdge",
     "MemoryNode",
     "PatternNode",
@@ -113,6 +115,9 @@ TypeName = Literal["identity", "attention", "thesis", "history", "pattern", "evo
 Source = Literal["user_stated", "inferred"]
 PrivacyLevel = Literal["public", "private", "sensitive"]
 EdgeTypeName = Literal["related_to", "evolves_from", "derived_from", "refers_to"]
+
+_CHECKSUM_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+"""导入来源校验和的形态（sha256 十六进制；与 01 §2 的 64 位口径一致）。"""
 
 
 def new_node_id() -> str:
@@ -170,22 +175,67 @@ def _string_leaves(payload: Any) -> list[str]:
     return []
 
 
-class Provenance(BaseModel):
-    """推断依据（§1：``inferred`` 类节点必带 ``trace_id`` 供下钻）。"""
+class ImportOrigin(BaseModel):
+    """导入来源（§1 ``provenance`` 的 ``imported`` 分支）。
+
+    形状与 [01 §2 provenance](../../../src/st_agent/contracts/capability_types.py) /
+    [09 §5 来源追溯链](../../../docs/技术架构-v2/09-生态与分享.md) 同构（四字段同名），
+    但**不复用**契约层那个类——那个属 ``SkillDescriptor``，其 ``imported_at`` 是 ISO
+    字符串、必填性由 Skill 层判；记忆节点需要带时区的 ``datetime`` 与 §1 的构造期不变量。
+    """
 
     model_config = ConfigDict(frozen=True)
 
-    trace_id: Annotated[str, Field(min_length=3, max_length=128)]
-    """产生该推断的推理链锚点（01 §4）。"""
+    sharer: Annotated[str, Field(min_length=1, max_length=128)]
+    """分享者标识（09 §5）。"""
+    imported_at: datetime
+    """导入时刻（本地时区，01 §8）。"""
+    checksum: str
+    """分享文件校验和（sha256 十六进制 64 位，09 §1 manifest；形态由构造期校验）。"""
+    origin_chain: tuple[str, ...] = ()
+    """多次转手的出处链（09 §5 导入历史）。"""
 
-    @field_validator("trace_id")
-    @classmethod
-    def _check_trace(cls, v: str) -> str:
-        try:
-            TraceId.of(v)
-        except ValueError as exc:
-            raise MemoryValidationError(f"provenance.trace_id 非法 {v!r}：{exc}") from exc
-        return v
+    @model_validator(mode="after")
+    def _origin_shape(self) -> "ImportOrigin":
+        _require_tz(self.imported_at, "imported_at")
+        if not _CHECKSUM_PATTERN.match(self.checksum):
+            raise MemoryValidationError(
+                f"checksum 须为 64 位十六进制（sha256），得到 {self.checksum!r}"
+            )
+        return self
+
+
+class Provenance(BaseModel):
+    """可追溯依据（§1：``inferred`` 类节点必带）。
+
+    **二选一**（见 [D-051](../../../项目管理/决策日志.md)）：
+
+    - ``trace_id``——本地推理链锚点（[01 §4](../../../docs/技术架构-v2/01-平台共享契约.md)）；
+      01 §1 登记其产生方为 **L1 调度器**
+    - ``imported``——导入来源（他人陈述）：导入并无本地推理链，故另立一支，不与
+      ``trace_id`` 混用（借用 ``trace_id`` 会让一个并不存在的本地推理链被追责）
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    trace_id: Annotated[str, Field(min_length=3, max_length=128)] | None = None
+    imported: ImportOrigin | None = None
+
+    @model_validator(mode="after")
+    def _exactly_one_origin(self) -> "Provenance":
+        if (self.trace_id is None) == (self.imported is None):
+            raise MemoryValidationError(
+                "provenance 须恰有其一：trace_id（本地推理链）或 imported（导入来源）"
+                "——都缺则推断依据不可追溯，都有则来源不唯一"
+            )
+        if self.trace_id is not None:
+            try:
+                TraceId.of(self.trace_id)
+            except ValueError as exc:
+                raise MemoryValidationError(
+                    f"provenance.trace_id 非法 {self.trace_id!r}：{exc}"
+                ) from exc
+        return self
 
 
 class RevisionEntry(BaseModel):

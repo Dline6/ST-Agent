@@ -11,10 +11,13 @@ from st_agent.l0.storage import Store
 from st_agent.l2.memory import (
     ConfidenceModel,
     ConflictQueue,
+    FragmentImporter,
     MemoryDeleter,
     MemoryGraph,
     MemoryReader,
+    MemoryShare,
     MemoryWriter,
+    OnboardingProtocol,
     WritePolicy,
 )
 
@@ -62,3 +65,18 @@ def confidence(graph: MemoryGraph) -> ConfidenceModel:
 @pytest.fixture()
 def deleter(graph: MemoryGraph) -> MemoryDeleter:
     return MemoryDeleter(graph, now=lambda: NOW)
+
+
+@pytest.fixture()
+def onboarding(graph: MemoryGraph, writer: MemoryWriter) -> OnboardingProtocol:
+    return OnboardingProtocol(graph, writer, now=lambda: NOW)
+
+
+@pytest.fixture()
+def share(graph: MemoryGraph) -> MemoryShare:
+    return MemoryShare(graph)
+
+
+@pytest.fixture()
+def importer(graph: MemoryGraph, writer: MemoryWriter) -> FragmentImporter:
+    return FragmentImporter(graph, writer, now=lambda: NOW)
