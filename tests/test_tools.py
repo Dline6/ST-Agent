@@ -216,6 +216,15 @@ def test_eco_layer_sits_after_l4():
     assert rl.LAYER_ORDER["INT"] == len(rl.LAYERS) - 1
 
 
+def test_ui_layer_sits_between_l3_and_l4():
+    """UI 层（跨层表现层）置于 L3 之后、L4 之前（决策日志 D-060）；INT 仍居末。"""
+    assert rl.ID_RE.match("T-UI-001")
+    assert rl.layer_of("T-UI-001.2") == "UI"
+    assert "UI" in rl.LAYER_ORDER
+    assert rl.LAYER_ORDER["L3"] < rl.LAYER_ORDER["UI"] < rl.LAYER_ORDER["L4"]
+    assert rl.LAYER_ORDER["INT"] == len(rl.LAYERS) - 1
+
+
 # ───────────────────────── archive：移动后改正相对链接 ─────────────────────────
 # 2026-09-27 加固：archive 只做 shutil.move，而任务文件里全是相对链接（`../../docs/`、
 # 邻居任务、`../工作流.md`）——搬深两层即 815 条断链。故 archive 同批改正链接。
