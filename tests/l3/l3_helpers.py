@@ -48,3 +48,9 @@ def node(kind: str = "thesis", **over: Any) -> MemoryNode:
     }
     fields.update(over)
     return checked_node(**fields)
+
+
+def inferred(kind: str = "thesis", **over: Any) -> MemoryNode:
+    """构造一个**推断类**节点（``source=inferred`` + ``provenance.trace_id``；§1 不变量要求）。"""
+    over.setdefault("provenance", {"trace_id": TRACE_ID})
+    return node(kind, source="inferred", **over)

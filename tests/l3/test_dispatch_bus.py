@@ -164,7 +164,7 @@ class TestGwt3PendingRoutes:
     def test_route_table_matches_05_3_1(self) -> None:
         assert tuple(spec.intent for spec in ROUTE_SPECS) == INTENT_KINDS
 
-    @pytest.mark.parametrize("intent", ["analyze", "memory_op", "train"])
+    @pytest.mark.parametrize("intent", ["analyze", "train"])
     def test_pending_route_names_its_owner(self, intent: str) -> None:
         outcome = DispatchBus().dispatch(_card(intent, SKILL))
         assert outcome.envelope.status == "unavailable"
@@ -177,10 +177,11 @@ class TestGwt3PendingRoutes:
         assert outcome.envelope.last_updated_at == NOW
         assert "不代表数据截止时间" in outcome.envelope.reason
 
-    def test_wired_routes_are_query_explain_and_configure(self) -> None:
-        """`configure` 于 2026-09-28 由 T-L3-003.1 接活（原登记 `owner=T-L3-003`）。"""
+    def test_wired_routes_are_query_explain_configure_and_memory_op(self) -> None:
+        """`configure` 由 T-L3-003.1 接活（原登记 `owner=T-L3-003`）；`memory_op` 由
+        T-L3-005.1 接活（原登记 `owner=T-L3-005`）。"""
         assert {s.intent for s in ROUTE_SPECS if s.wired} == {
-            "query", "explain", "configure"
+            "query", "explain", "configure", "memory_op"
         }
 
 

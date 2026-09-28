@@ -209,7 +209,7 @@ ID_REGISTRY: dict[str, tuple[str, str]] = {
     "trace_id": ("一次完整推理链", "L1 调度器创建"),
     "signal_id": ("一条待触达信号", "L5"),
     "delivery_id": ("一次渠道投递", "L5"),
-    "feedback_id": ("一条用户反馈", "L6"),
+    "feedback_id": ("一条用户反馈", "交互层（L3）"),
     "change_id": ("一次配置/演进变更", "配置注册表"),
     "lens_id": ("一个视角定义", "L4"),
     "flow_id": ("一条工作流定义（含版本语义）", "L1"),
