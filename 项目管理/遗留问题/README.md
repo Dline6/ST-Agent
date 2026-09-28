@@ -31,3 +31,4 @@ consumed_by: [编码 Agent, 项目负责人]
 - [L0 · 本地优先基座](L0-遗留问题.md)
 - [L1 · 能力底座 Skills/MCP](L1-遗留问题.md)
 - [L2 · 记忆图谱](L2-遗留问题.md)
+- [L3 · 对话主入口 Chat-as-OS](L3-遗留问题.md)
