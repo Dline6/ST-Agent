@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """verify_docs.py — ST Agent 文档一致性一键自检（stdlib only）
 
-复用 render_ledger 的解析逻辑，跑五项检查并给出 PASS/FAIL：
+复用 render_ledger 的解析逻辑，跑九项检查并给出 PASS/FAIL：
   1. 断链      全项目 .md 相对链接（先剔除围栏代码块与行内代码，避免示例路径误报；
                跳过 .git 与 gitignored 的 tmp/ temp/ 草稿目录）
   2. 依赖图    从 tasks/*.md 反构：悬空依赖 / 环 / 就绪集（队首）
@@ -14,6 +14,8 @@
                （警告；--strict 下判失败）
   8. 遗留销账  遗留问题/*.md 未闭区（「## 已闭」之前）条目的「归属 / 解封条件」所指任务若已全 done，
                说明归属方做完了却没销账（警告；--strict 下判失败）
+  9. 父依赖派生 活跃区父任务的 depends_on 须等于直接 children 的 depends_on 并集
+               （剔掉指向父自身子树的边）；手填漂移即在此暴露（警告；--strict 下判失败）
 
 用法：
   python tools/verify_docs.py            # 只读校验
@@ -235,6 +237,26 @@ def check_legacy_settlement():
                                f"归属/解封条件 {'、'.join(ids)} 已全 done，条目未销账"))
     return issues
 
+# 检查 9：父依赖派生一致（2026-09-28 机制）
+# 「父 depends_on ＝ children 并集去掉指向父自身子树的边」原只写在文档里，工具既不派生也不校验，
+# 于是拆子任务后父该项只能手填——T-L1-005 手填 [T-L1-001]（其子根本不涉 L1-001）即漂移实例。
+# 现由 render_ledger.derive_parent_deps 派生（活跃区），本检查断言活跃区父与其一致。
+# 只查活跃区：归档任务为冻结历史，不追补（同检查 5/6 的历史豁免口径）。
+def check_parent_deps():
+    tasks = rl.scan(rl.TASKS)
+    kids = {}
+    for t in tasks:
+        if t["parent"]: kids.setdefault(t["parent"], []).append(t)
+    byid = {t["id"]: t for t in tasks}
+    issues = []
+    for pid in sorted(kids):
+        if pid not in byid: continue          # 父不在活跃区（已归档）→ 不判
+        want = rl.derive_parent_deps(pid, kids)
+        if set(byid[pid]["depends_on"]) != set(want):
+            issues.append((pid, "父 depends_on 与子叶并集不一致：应为 "
+                           + (", ".join(want) or "[]")))
+    return issues
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8")   # 兼容 Windows GBK 控制台，避免 emoji/中文崩溃
@@ -279,6 +301,10 @@ def main():
     legacy = check_legacy_settlement()
     print(f"[8] 遗留销账  : {len(legacy)} 处")
     for tid, why in legacy: print(f"      ⚠ {tid} {why}"); warn += 1
+
+    pdeps = check_parent_deps()
+    print(f"[9] 父依赖派生: {len(pdeps)} 处")
+    for tid, why in pdeps: print(f"      ⚠ {tid} {why}"); warn += 1
 
     fail = hard_fail + (warn if a.strict else 0)
     print("\n结果：", "PASS ✅" if fail == 0 else f"FAIL ❌（硬失败 {hard_fail}，警告 {warn}{'' if not a.strict else '·strict'}）")

@@ -6,6 +6,8 @@
 - ``T-INT-*`` 集成关卡层被 ID_RE / layer_of / LAYER_ORDER 识别，且 `ready_sort_key`
   在同优先级内把关卡排到队首（2026-09-27 调度规则校正）；
 - ``verify_docs`` 的三项新检查（接口面完整、集成关卡覆盖、遗留销账）与 `gate: skip` 例外；
+- ``render_ledger`` 派生父 ``depends_on``（活跃区、按集合比较、剔父自身子树）与
+  ``verify_docs`` 检查 9（2026-09-28 机制）；
 - ``verify_docs`` 的断链扫描跳过 ``.git`` 与 gitignored 的 ``tmp/`` ``temp/`` 草稿目录
   （2026-09-27 加固）。
 """
@@ -76,6 +78,112 @@ def test_parent_status_rewrite_keeps_lf(tmp_path, monkeypatch):
     text = parent.read_text(encoding="utf-8")
     assert "status: done" in text
     assert b"\r" not in parent.read_bytes()
+
+
+# ───────────────────── 派生父 depends_on（2026-09-28 机制） ─────────────────────
+# 「父 depends_on ＝ children 并集去掉指向父自身子树的边」原只写在文档，工具既不派生也不校验：
+# 拆子任务后父该项只能手填，T-L1-005 手填 [T-L1-001]（其子根本不涉 L1-001）即漂移实例。
+# 现由 derive() 按活跃区重算，规则函数 derive_parent_deps 与 verify_docs 检查 9 共用。
+
+def test_parent_depends_on_derived_from_children_union(tmp_path, monkeypatch):
+    """父 depends_on ＝直接子并集，剔掉指向父自身子树的边（兄弟边 / 父自身）。"""
+    monkeypatch.setattr(rl, "PM", str(tmp_path))
+    p  = tmp_path / "T-L1-001-父.md"
+    c1 = tmp_path / "T-L1-001.1-甲.md"
+    c2 = tmp_path / "T-L1-001.2-乙.md"
+    rl.write_file(str(p), rl.serialize(
+        {"id": "T-L1-001", "title": "父", "status": "todo", "depends_on": "[]", "verify": ""},
+        "## 目标\n父"))
+    rl.write_file(str(c1), rl.serialize(
+        {"id": "T-L1-001.1", "parent": "T-L1-001", "title": "甲", "status": "done",
+         "depends_on": "[T-L0-001, T-L1-001.2]", "verify": ""}, "## 目标\n甲"))    # 兄弟边
+    rl.write_file(str(c2), rl.serialize(
+        {"id": "T-L1-001.2", "parent": "T-L1-001", "title": "乙", "status": "done",
+         "depends_on": "[T-L0-002]", "verify": ""}, "## 目标\n乙"))
+
+    rl.compute_status(rl.scan(str(tmp_path)))
+
+    fm, _ = rl.read_fm(str(p))
+    assert rl.fm_list(fm, "depends_on") == ["T-L0-001", "T-L0-002"]   # 兄弟边剔除，外部并集保留
+    assert "status: done" in p.read_text(encoding="utf-8")            # 状态照样派生
+    assert b"\r" not in p.read_bytes()                                # 写盘仍 LF
+
+
+def test_parent_depends_on_order_only_diff_is_not_written(tmp_path, monkeypatch):
+    """集合相同、仅顺序不同 → 不写盘（顺序属笔误级噪音，不该产生 churn）。"""
+    monkeypatch.setattr(rl, "PM", str(tmp_path))
+    p = tmp_path / "T-L1-002-父.md"
+    c = tmp_path / "T-L1-002.1-子.md"
+    rl.write_file(str(p), rl.serialize(
+        {"id": "T-L1-002", "title": "父", "status": "todo",
+         "depends_on": "[T-L0-002, T-L0-001]", "verify": ""}, "## 目标\n父"))
+    rl.write_file(str(c), rl.serialize(
+        {"id": "T-L1-002.1", "parent": "T-L1-002", "title": "子", "status": "todo",
+         "depends_on": "[T-L0-001, T-L0-002]", "verify": ""}, "## 目标\n子"))
+
+    before = p.read_bytes()
+    rl.compute_status(rl.scan(str(tmp_path)))
+
+    assert p.read_bytes() == before
+
+
+def test_parent_depends_on_never_becomes_self_referential(tmp_path, monkeypatch):
+    """子依赖父自身 → 该边剔除；若把父 id 留在子树外会派生出自我依赖、被依赖图判环。"""
+    monkeypatch.setattr(rl, "PM", str(tmp_path))
+    p = tmp_path / "T-L1-003-父.md"
+    c = tmp_path / "T-L1-003.1-子.md"
+    rl.write_file(str(p), rl.serialize(
+        {"id": "T-L1-003", "title": "父", "status": "todo", "depends_on": "[T-L0-001]", "verify": ""},
+        "## 目标\n父"))
+    rl.write_file(str(c), rl.serialize(
+        {"id": "T-L1-003.1", "parent": "T-L1-003", "title": "子", "status": "todo",
+         "depends_on": "[T-L1-003]", "verify": ""}, "## 目标\n子"))
+
+    rl.compute_status(rl.scan(str(tmp_path)))
+
+    fm, _ = rl.read_fm(str(p))
+    assert rl.fm_list(fm, "depends_on") == []
+
+
+def test_archived_parent_depends_on_is_frozen(tmp_path, monkeypatch):
+    """归档＝冻结历史，不派生 depends_on（同检查 5/6 的历史豁免口径）。"""
+    monkeypatch.setattr(rl, "PM", str(tmp_path))
+    done = tmp_path / "tasks" / "done" / "M0"
+    done.mkdir(parents=True)
+    p = done / "T-L1-004-父.md"
+    c = tmp_path / "T-L1-004.1-子.md"
+    rl.write_file(str(p), rl.serialize(
+        {"id": "T-L1-004", "title": "父", "status": "done", "depends_on": "[T-L0-001]", "verify": ""},
+        "## 目标\n父"))
+    rl.write_file(str(c), rl.serialize(
+        {"id": "T-L1-004.1", "parent": "T-L1-004", "title": "子", "status": "done",
+         "depends_on": "[T-L0-002]", "verify": ""}, "## 目标\n子"))
+
+    rl.compute_status(rl.scan(str(tmp_path)))
+
+    fm, _ = rl.read_fm(str(p))
+    assert rl.fm_list(fm, "depends_on") == ["T-L0-001"]   # 未被并集 [T-L0-002] 覆盖
+
+
+def test_ledger_shows_derived_parent_deps(tmp_path, monkeypatch):
+    """账本渲染读的是 derive() 改过的同一份内存 dict——不同步内存会渲染出旧值。"""
+    tasks = tmp_path / "tasks"
+    tasks.mkdir()
+    for name, val in (("PM", str(tmp_path)), ("TASKS", str(tasks)),
+                      ("DONE", str(tasks / "done")), ("LEDGER", str(tmp_path / "任务账本.md"))):
+        monkeypatch.setattr(rl, name, val)
+    p = tasks / "T-L1-005-父.md"
+    c = tasks / "T-L1-005.1-子.md"
+    rl.write_file(str(p), rl.serialize(
+        {"id": "T-L1-005", "title": "父", "priority": "P0", "milestone": "M0",
+         "status": "todo", "depends_on": "[T-L9-999]", "verify": ""}, "## 目标\n父"))
+    rl.write_file(str(c), rl.serialize(
+        {"id": "T-L1-005.1", "parent": "T-L1-005", "title": "子", "priority": "P0", "milestone": "M0",
+         "status": "done", "depends_on": "[T-L0-002]", "verify": ""}, "## 目标\n子"))
+
+    text, *_ = rl.build_ledger()
+
+    assert "T-L0-002" in text and "T-L9-999" not in text
 
 
 # ───────────────────────── INT 层识别 ─────────────────────────
@@ -338,6 +446,41 @@ def test_legacy_closed_section_and_unborn_task_are_ignored(fake_tasks, tmp_path,
         "\n## 已闭（备查）\n\n"
         "- **A2** 归属 `T-L0-001` 但已闭，不该判\n"))
     assert vd.check_legacy_settlement() == []
+
+
+# ───────────────────────── 检查 9：父依赖派生 ─────────────────────────
+# 活跃区父的 depends_on 须等于直接子并集（去父自身子树）——手填漂移即在此暴露。
+
+def _t(tid, deps, parent=""):
+    return {"id": tid, "status": "done", "parent": parent, "milestone": "M0",
+            "depends_on": deps, "path": f"{tid}.md"}
+
+
+def test_parent_deps_mismatch_is_flagged(fake_tasks):
+    fake_tasks([_t("T-L1-001", []), _t("T-L1-001.1", ["T-L0-001"], "T-L1-001"),
+                _t("T-L1-001.2", ["T-L0-002"], "T-L1-001")], {})
+    assert vd.check_parent_deps() == [
+        ("T-L1-001", "父 depends_on 与子叶并集不一致：应为 T-L0-001, T-L0-002")]
+
+
+def test_parent_deps_consistent_passes(fake_tasks):
+    """集合相同、顺序不同不算漂移。"""
+    fake_tasks([_t("T-L1-002", ["T-L0-002", "T-L0-001"]),
+                _t("T-L1-002.1", ["T-L0-001"], "T-L1-002"),
+                _t("T-L1-002.2", ["T-L0-002"], "T-L1-002")], {})
+    assert vd.check_parent_deps() == []
+
+
+def test_parent_deps_ignores_intra_subtree_edges(fake_tasks):
+    """子依赖兄弟 / 依赖父自身，皆不进父的外部依赖。"""
+    fake_tasks([_t("T-L1-003", []), _t("T-L1-003.1", [], "T-L1-003"),
+                _t("T-L1-003.2", ["T-L1-003.1", "T-L1-003"], "T-L1-003")], {})
+    assert vd.check_parent_deps() == []
+
+
+def test_leaf_without_children_is_not_checked(fake_tasks):
+    fake_tasks([_t("T-L1-004", ["T-L0-001"])], {})
+    assert vd.check_parent_deps() == []
 
 
 # ───────────────────────── 检查 1：断链扫描的目录跳过 ─────────────────────────
