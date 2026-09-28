@@ -69,6 +69,9 @@ jobs:
             if printf '%s\n' "$changed" | grep -qE '^(src/st_agent/l2/|tests/l2/)'; then
               targets="$targets tests/l2"
             fi
+            if printf '%s\n' "$changed" | grep -qE '^(src/st_agent/l3/|tests/l3/)'; then
+              targets="$targets tests/l3"
+            fi
           fi
           echo "run=true" >> "$GITHUB_OUTPUT"
           echo "targets=$targets" >> "$GITHUB_OUTPUT"
