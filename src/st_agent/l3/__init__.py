@@ -4,11 +4,13 @@
 推理链可视化、对话即配置。本包是 L3 的代码根，跨层协作一律经 01-平台共享契约
 （依赖注入 / 事件），只向下依赖（铁律 7）。
 
-已落地的三段（[`T-L3-001`](../../../项目管理/tasks/T-L3-001-会话模型上下文卡片快捷指令.md) 三叶）：
+已落地的五段（[`T-L3-001`](../../../项目管理/tasks/T-L3-001-会话模型上下文卡片快捷指令.md) 三叶 + [`T-L3-002`](../../../项目管理/tasks/T-L3-002-意图理解与澄清协议任务派发总线.md) 两叶）：
 
 - [`chat.session`](chat/session.py)——会话模型（[05 §1](../../../docs/技术架构-v2/05-L3-对话主入口.md)）
 - [`home.card`](home/card.py)——上下文卡片（[05 §2](../../../docs/技术架构-v2/05-L3-对话主入口.md)）
 - [`commands.registry`](commands/registry.py)——快捷指令（[05 §8](../../../docs/技术架构-v2/05-L3-对话主入口.md)）
+- [`intent.protocol`](intent/protocol.py)——意图理解与澄清协议（[05 §3](../../../docs/技术架构-v2/05-L3-对话主入口.md)）
+- [`dispatch.bus`](dispatch/bus.py)——任务派发总线（[05 §4](../../../docs/技术架构-v2/05-L3-对话主入口.md)）
 
 **中性视角（铁律 2）**：本层产出的**生成性文案**须过 [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md)
 ``check_output``；**记忆本体内容**属数据展示、不在 §6 三类对象内（口径见
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 from st_agent.l3.errors import (
     CommandValidationError,
+    IntentValidationError,
     L3Error,
     SessionNotFoundError,
     SessionValidationError,
@@ -26,6 +29,7 @@ from st_agent.l3.errors import (
 
 __all__ = [
     "CommandValidationError",
+    "IntentValidationError",
     "L3Error",
     "SessionNotFoundError",
     "SessionValidationError",

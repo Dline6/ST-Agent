@@ -3,11 +3,14 @@
 分级与 L1 / L2 同构：``L3Error`` 为基类；``SessionValidationError`` 收非法入参
 与损坏记录（fail-fast，不静默补默认）；``SessionNotFoundError`` 收寻址失败
 （按 id 取不到会话）；``CommandValidationError`` 收快捷指令注册被拒
-（命名 / 描述未过 [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md) 中性校验）。
+（命名 / 描述未过 [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md) 中性校验）；
+``IntentValidationError`` 收意图协议被拒（生成文案未过 [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md)
+执行点 2，或确认卡未确认即派发）。
 """
 
 __all__ = [
     "CommandValidationError",
+    "IntentValidationError",
     "L3Error",
     "SessionNotFoundError",
     "SessionValidationError",
@@ -35,3 +38,18 @@ class CommandValidationError(L3Error, ValueError):
     def __init__(self, message: str, *, suggestions: tuple[str, ...] = ()) -> None:
         super().__init__(message)
         self.suggestions = suggestions
+
+
+class IntentValidationError(L3Error, ValueError):
+    """意图协议被拒。
+
+    两类来源：① 生成文案（确认卡条目 / 追问问句 / 方向候选）命中
+    [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md) 执行点 2 ``check_output``
+    ——**阻断渲染**；② 意图确认卡未经用户确认即被派发。
+    ``findings`` 携命中项，供调用方改写而不是盲试。
+    """
+
+    def __init__(self, message: str, *, findings: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.findings = findings
+

@@ -1,0 +1,321 @@
+"""任务派发总线（[05 §4](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+
+意图确认后派发执行：**所有派发产生 `trace_id`**（[01 §4](../../../../docs/技术架构-v2/01-平台共享契约.md)），
+按 [§3.1](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的六类去向路由，结果以
+[01 §5](../../../../docs/技术架构-v2/01-平台共享契约.md) 的 ``ResultEnvelope`` 语义渲染。
+
+**去向与接入态**（假设 A1）：六类去向逐一登记接入态。**尚未接入的去向不得伪造
+执行、也不得静默丢弃**——按 ``unavailable`` 呈现且 `reason` **点名归属任务**
+（同 [`card.py`](../home/card.py)「生产方未接入即 `unavailable` + 点名」的先例）。
+本批只接 ``query``（经注入的 L1 ``SkillRunner``）与 ``explain``（把调用方给的链
+作为载荷返回；**展开渲染**归 [`T-L3-004`](../../../项目管理/tasks/T-L3-004-GenerativeUI推理链可视化.md)）。
+
+**`trace_id` 从哪来**（假设 A2）：[01 §1](../../../../docs/技术架构-v2/01-平台共享契约.md)
+登记其产生方为「L1 调度器」，故 ``query`` 去向的链**由 L1 产**、本层经
+``RunOutcome.trace`` 取用；未接入去向无 Skill 执行，其链为**空链**（01 §4 的五类
+``step_type`` 无「派发」一类，**不伪造步骤**）——链存在、步骤为空，如实反映
+「本次派发没有发生可追溯的动作」。
+
+**LLM 降级**（假设 A4）：真正调 LLM 的在 [`.1`](../intent/protocol.py) 的理解端口，
+总线自身无 LLM 调用。故本模块只规定其**渲染口径**——``unavailable`` 若源于 LLM
+路径（``llm_degraded=True``）则附**中性降级告知**，否则只是普通数据延迟；
+**不依赖 LLM 的去向（``query``）不受牵连**，照常执行。
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from datetime import datetime
+from typing import Any, Literal, get_args
+
+from pydantic import BaseModel, ConfigDict, model_validator
+
+from st_agent.contracts.identifiers import TraceId
+from st_agent.contracts.result_envelope import EnvelopeStatus, ResultEnvelope
+from st_agent.contracts.trace import Trace
+from st_agent.l3.commands.registry import INTENT_KINDS, IntentKind
+from st_agent.l3.errors import IntentValidationError
+from st_agent.l3.intent.protocol import IntentConfirmation
+
+__all__ = [
+    "DISPATCH_INITIATOR",
+    "DISPATCH_PURPOSE",
+    "LLM_DEGRADED_NOTICE",
+    "ROUTE_BY_INTENT",
+    "ROUTE_SPECS",
+    "DispatchBus",
+    "DispatchOutcome",
+    "RouteSpec",
+    "UiSemantics",
+    "render_semantics",
+]
+
+DISPATCH_INITIATOR = "l3-dispatch"
+DISPATCH_PURPOSE = "对话意图派发"
+
+LLM_DEGRADED_NOTICE = (
+    "云端 LLM 端点暂不可用；可改用本地推理模式（能力受限），或稍后重试。"
+)
+"""LLM 端点不可用时的降级告知（§4；Story 原文措辞按铁律 2 中性改述）。"""
+
+Presentation = Literal["normal", "empty_state", "delayed", "error", "input_error"]
+
+
+class RouteSpec(BaseModel):
+    """一类去向的登记（§3.1 的派发目标 + 本批的接入态）。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    intent: IntentKind
+    wired: bool
+    owner: str | None = None
+    """未接入时的**归属任务 id**（`reason` 点名用）。"""
+    note: str = ""
+
+    @model_validator(mode="after")
+    def _route_shape(self) -> "RouteSpec":
+        if not self.wired and not (self.owner or "").strip():
+            raise IntentValidationError(
+                f"去向 {self.intent} 未接入时必须点名归属任务（不静默留悬）"
+            )
+        return self
+
+
+ROUTE_SPECS: tuple[RouteSpec, ...] = (
+    RouteSpec(
+        intent="query", wired=True,
+        note="经注入的 L1 SkillRunner.run 执行，信封原样透出",
+    ),
+    RouteSpec(
+        intent="configure", wired=False, owner="T-L3-003",
+        note="对话即配置 ConfigDraft（05 §5）",
+    ),
+    RouteSpec(
+        intent="analyze", wired=False, owner="T-L4-002",
+        note="多视角执行编排（06 §2）",
+    ),
+    RouteSpec(
+        intent="memory_op", wired=False, owner="T-L3-005",
+        note="冲突裁决与反馈采集点（05 §9）",
+    ),
+    RouteSpec(
+        intent="train", wired=False, owner="T-L6-002",
+        note="训练对话协议与主动提案（08 §3–§4）",
+    ),
+    RouteSpec(
+        intent="explain", wired=True,
+        note="把调用方给的推理链作为载荷返回；展开渲染归 T-L3-004",
+    ),
+)
+"""六类去向的登记（[05 §3.1](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 分类表逐行对应、同序）。"""
+
+ROUTE_BY_INTENT: dict[str, RouteSpec] = {spec.intent: spec for spec in ROUTE_SPECS}
+assert set(ROUTE_BY_INTENT) == set(INTENT_KINDS), (
+    "路由表必须与 05 §3.1 的六类意图逐项对应（缺项即契约漂移）"
+)
+
+
+class UiSemantics(BaseModel):
+    """一条信封状态的渲染语义（§4 结果渲染语义表的机器可读形态）。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    status: str
+    presentation: Presentation
+    must_show: tuple[str, ...] = ()
+    """该态必展示的项（原因 / 最后更新时间 / 日志入口）。"""
+    notice: str | None = None
+    """附加告知（如 LLM 降级）；缺省无。"""
+
+
+RENDER_SEMANTICS: dict[str, UiSemantics] = {
+    "ok": UiSemantics(status="ok", presentation="normal"),
+    "empty": UiSemantics(status="empty", presentation="empty_state",
+                         must_show=("原因",)),
+    "unavailable": UiSemantics(status="unavailable", presentation="delayed",
+                               must_show=("最后更新时间", "原因")),
+    "dependency_failed": UiSemantics(status="dependency_failed", presentation="error",
+                                     must_show=("原因", "日志入口")),
+    "failed": UiSemantics(status="failed", presentation="error",
+                          must_show=("原因", "日志入口")),
+    "validation_failed": UiSemantics(status="validation_failed", presentation="input_error",
+                                     must_show=("理由",)),
+}
+"""六态渲染语义（§4）。``validation_failed`` 一行系 2026-09-28 补入——§4 原枚举遗漏该态。"""
+
+assert set(RENDER_SEMANTICS) == set(get_args(EnvelopeStatus)), (
+    "渲染语义表必须穷尽 01 §5 的六态（缺态即拒绝，见 §4）"
+)
+
+
+def render_semantics(envelope: ResultEnvelope, *, llm_degraded: bool = False) -> UiSemantics:
+    """取一个信封的渲染语义（§4）。
+
+    ``unavailable`` 且 ``llm_degraded`` 时附 :data:`LLM_DEGRADED_NOTICE`——**显式降级
+    告知**而非静默失败；其余态不带告知。
+    """
+    base = RENDER_SEMANTICS[envelope.status]
+    notice = (
+        LLM_DEGRADED_NOTICE
+        if llm_degraded and envelope.status == "unavailable"
+        else None
+    )
+    return base.model_copy(update={"notice": notice})
+
+
+class DispatchOutcome(BaseModel):
+    """一次派发的产出（信封 + 链定位 + 去向台账）。"""
+
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
+
+    envelope: ResultEnvelope
+    trace_id: str
+    intent: IntentKind
+    route: IntentKind
+    wired: bool
+    owner: str | None = None
+    run: Any = None
+    """``query`` 去向的 ``RunOutcome``；其余去向为 ``None``。"""
+    trace: Trace | None = None
+    """本次派发关联的链（``explain`` 去向即其载荷；未接入去向为**空链**）。"""
+
+
+def _now() -> datetime:
+    """用户本地时区当前时刻（01 §8）。"""
+    return datetime.now().astimezone()
+
+
+class DispatchBus:
+    """派发总线（[05 §4](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+
+    :param runner: 注入的 Skill 执行面（鸭子类型 ``run(...) -> RunOutcome``，
+        如 L1 的 ``SkillRunner``）；缺省 ``None`` → ``query`` 去向 fail-closed
+        （``unavailable``），**不臆测**
+    """
+
+    def __init__(self, *, runner: Any = None) -> None:
+        self._runner = runner
+
+    def dispatch(
+        self,
+        confirmation: IntentConfirmation,
+        *,
+        values: Mapping[str, Any] | None = None,
+        inputs: Mapping[str, Any] | None = None,
+        approved_permissions: tuple[str, ...] = (),
+        trace: Trace | None = None,
+        now: datetime | None = None,
+    ) -> DispatchOutcome:
+        """派发一张**已确认**的意图确认卡（§4）。
+
+        :param values: 覆盖确认卡上的参数取值；缺省用 ``confirmation.values``
+        :param inputs: 对象类输入（[01 §2](../../../../docs/技术架构-v2/01-平台共享契约.md) 的通道之②，转交 L1）
+        :param trace: ``explain`` 去向要展开的链
+        :param now: 本次派发时刻（缺省取本机当前带时区时间）
+        """
+        moment = now if now is not None else _now()
+        spec = ROUTE_BY_INTENT[confirmation.intent]
+        if not confirmation.confirmed:
+            chain = Trace(trace_id=TraceId.generate())
+            return self._outcome(
+                ResultEnvelope.validation_failed(
+                    "意图确认卡未经用户确认，拒绝派发（05 §3.2）"),
+                chain, spec,
+            )
+        if confirmation.intent == "query":
+            return self._dispatch_query(
+                confirmation, spec, values, inputs, approved_permissions, trace, moment)
+        if confirmation.intent == "explain":
+            return self._dispatch_explain(spec, trace, moment)
+        return self._pending(spec, moment)
+
+    # ───────────────────────── 去向实现 ─────────────────────────
+
+    def _dispatch_query(
+        self,
+        confirmation: IntentConfirmation,
+        spec: RouteSpec,
+        values: Mapping[str, Any] | None,
+        inputs: Mapping[str, Any] | None,
+        approved_permissions: tuple[str, ...],
+        trace: Trace | None,
+        moment: datetime,
+    ) -> DispatchOutcome:
+        chain = Trace(trace_id=TraceId.generate())
+        if not (confirmation.target or "").strip():
+            return self._outcome(
+                ResultEnvelope.validation_failed(
+                    "query 去向缺少目标 Skill 标识（无法派发，05 §3.1）"),
+                chain, spec,
+            )
+        if self._runner is None:
+            return self._outcome(
+                ResultEnvelope.unavailable(
+                    "未注入 Skill 执行面，无法派发 query 去向（05 §4）",
+                    last_updated_at=moment,
+                ),
+                chain, spec,
+            )
+        run = self._runner.run(
+            confirmation.target,
+            dict(values) if values is not None else dict(confirmation.values),
+            inputs=dict(inputs or {}),
+            trace=trace,
+            approved_permissions=approved_permissions,
+            initiator=DISPATCH_INITIATOR, purpose=DISPATCH_PURPOSE,
+        )
+        # 信封**原样透出**（GWT-2）：不重包、不改 status、不吞 reason
+        return DispatchOutcome(
+            envelope=run.envelope,
+            trace_id=run.trace.trace_id.value,
+            intent=confirmation.intent, route=confirmation.intent,
+            wired=spec.wired, run=run, trace=run.trace,
+        )
+
+    def _dispatch_explain(
+        self, spec: RouteSpec, trace: Trace | None, moment: datetime
+    ) -> DispatchOutcome:
+        if trace is None:
+            chain = Trace(trace_id=TraceId.generate())
+            return self._outcome(
+                ResultEnvelope.empty(
+                    "本次派发未提供可展开的推理链（explain 去向的载荷即 Trace）",
+                    as_of=moment,
+                ),
+                chain, spec,
+            )
+        return DispatchOutcome(
+            envelope=ResultEnvelope.ok(trace, as_of=moment),
+            trace_id=trace.trace_id.value, intent="explain", route="explain",
+            wired=spec.wired, trace=trace,
+        )
+
+    def _pending(self, spec: RouteSpec, moment: datetime) -> DispatchOutcome:
+        """未接入去向：``unavailable`` + 原因 + **归属任务 id**（不伪造、不静默丢）。
+
+        ``last_updated_at`` 取派发时刻，并在 `reason` 里**明说该时刻不代表数据
+        截止时间**——下游未接入时没有任何数据落地，不许冒充「最后更新时间 T」。
+        """
+        chain = Trace(trace_id=TraceId.generate())
+        reason = (
+            f"去向「{spec.intent}」尚未接入（归属 {spec.owner}：{spec.note}）；"
+            f"本次派发记录时刻 {moment.isoformat()}，该时刻不代表数据截止时间"
+        )
+        return self._outcome(
+            ResultEnvelope.unavailable(reason, last_updated_at=moment),
+            chain, spec,
+        )
+
+    # ───────────────────────── 内部 ─────────────────────────
+
+    def _outcome(
+        self,
+        envelope: ResultEnvelope,
+        chain: Trace,
+        spec: RouteSpec,
+    ) -> DispatchOutcome:
+        return DispatchOutcome(
+            envelope=envelope, trace_id=chain.trace_id.value,
+            intent=spec.intent, route=spec.intent, wired=spec.wired,
+            owner=spec.owner, trace=chain,
+        )
