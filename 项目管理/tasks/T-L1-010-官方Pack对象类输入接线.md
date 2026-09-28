@@ -6,7 +6,7 @@ arch: ../../docs/技术架构-v2/03-L1-能力底座-Skills与MCP.md
 arch_link: "[03 §1.2](../../docs/技术架构-v2/03-L1-能力底座-Skills与MCP.md)"
 priority: P1
 milestone: M2
-depends_on: [T-L1-004, T-L2-001, T-L2-004]
+depends_on: [T-L1-004, T-L2-001, T-L2-004.1, T-L2-004.2, T-L2-004.3]
 status: todo
 decisions: []
 ---
