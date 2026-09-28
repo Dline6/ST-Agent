@@ -8,6 +8,7 @@
 - :mod:`st_agent.l2.memory.write_policy` —— 自主写入白名单与写入策略（§4）
 - :mod:`st_agent.l2.memory.conflict` —— 冲突检测 · 提案队列与裁决落盘（§4）
 - :mod:`st_agent.l2.memory.confidence` —— 置信度模型（§5）
+- :mod:`st_agent.l2.memory.deleter` —— 删除与审计（§6）
 - :mod:`st_agent.l2.memory.errors` —— 子系统错误类型
 
 对外统一从 ``st_agent.l2.memory`` import。
@@ -39,6 +40,13 @@ from st_agent.l2.memory.conflict import (
     ConflictQueue,
     ConflictResolution,
     MemoryConflictProposal,
+)
+from st_agent.l2.memory.deleter import (
+    DELETE_PREFIX,
+    DeletionOutcome,
+    DeletionRecord,
+    MemoryDeleter,
+    checked_record,
 )
 from st_agent.l2.memory.errors import (
     MemoryConflictError,
@@ -102,6 +110,7 @@ __all__ = [
     "DEFAULT_DYNAMICS",
     "DEFAULT_TOKEN_BUDGET",
     "DEFAULT_WRITE_WHITELIST",
+    "DELETE_PREFIX",
     "DYNAMICS_CONFIG_ID",
     "EDGE_PREFIX",
     "EDGE_TYPES",
@@ -122,6 +131,8 @@ __all__ = [
     "ConflictKind",
     "ConflictQueue",
     "ConflictResolution",
+    "DeletionOutcome",
+    "DeletionRecord",
     "EdgeTypeName",
     "EvolutionNode",
     "EvolutionPoint",
@@ -129,6 +140,7 @@ __all__ = [
     "IdentityNode",
     "MemoryConflictError",
     "MemoryConflictProposal",
+    "MemoryDeleter",
     "MemoryEdge",
     "MemoryError",
     "MemoryGraph",
@@ -152,6 +164,7 @@ __all__ = [
     "checked_dynamics",
     "checked_edge",
     "checked_node",
+    "checked_record",
     "edge_key",
     "new_change_id",
     "new_node_id",

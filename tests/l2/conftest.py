@@ -11,6 +11,7 @@ from st_agent.l0.storage import Store
 from st_agent.l2.memory import (
     ConfidenceModel,
     ConflictQueue,
+    MemoryDeleter,
     MemoryGraph,
     MemoryReader,
     MemoryWriter,
@@ -56,3 +57,8 @@ def queue(graph: MemoryGraph, writer: MemoryWriter, policy: WritePolicy) -> Conf
 @pytest.fixture()
 def confidence(graph: MemoryGraph) -> ConfidenceModel:
     return ConfidenceModel(graph, now=lambda: NOW)
+
+
+@pytest.fixture()
+def deleter(graph: MemoryGraph) -> MemoryDeleter:
+    return MemoryDeleter(graph, now=lambda: NOW)

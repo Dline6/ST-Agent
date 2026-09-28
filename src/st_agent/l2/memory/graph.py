@@ -7,7 +7,7 @@
       edge/<edge_key>.json           # 一边一文件（`edge_key` = 组合键）
 
 逐实体落盘的取舍：单用户本地图谱（量级百至数千实体），逐实体落盘使节点级增删
-与将来的级联删除（`T-L2-003`）不必重写整图；代价是列举需按清单扫描。
+与级联删除（`T-L2-003`）不必重写整图；代价是列举需按清单扫描。
 
 图不变量（`:meth:`MemoryGraph.add_edge` 强制）:
 
@@ -17,7 +17,9 @@
 
 本类只做**存取与图结构**；写入路径的语义（两条写入路径、红线、修正历史）在
 :class:`~st_agent.l2.memory.writer.MemoryWriter`。``replace_node`` 是**存储层
-原语**，语义入口只有 writer 的用户显式编辑路径。
+原语**，语义入口只有 writer 的用户显式编辑路径；``delete_node`` / ``delete_edge``
+同为存储层原语，语义入口只有 :class:`~st_agent.l2.memory.deleter.MemoryDeleter`
+（级联与审计不在本类）。
 """
 
 from __future__ import annotations
@@ -117,6 +119,18 @@ class MemoryGraph:
         return tuple(self.get_node(p[len(NODE_PREFIX):-len(".json")])
                      for p in self._files(NODE_PREFIX))
 
+    def delete_node(self, node_id: str) -> None:
+        """删除一个节点记录（**存储层原语**；不存在即错，不静默成功）。
+
+        只删这一个记录——**不**处理相接的边：边的回收是调用方的事，语义入口见
+        :class:`~st_agent.l2.memory.deleter.MemoryDeleter`（先删边、后删节点，故
+        本原语放行后不可能有边指向它）。
+        """
+        path = self.node_path(node_id)
+        if path not in self._files(NODE_PREFIX):
+            raise MemoryNotFoundError(f"memory 分区无节点 {node_id!r}，无可删除")
+        self._store.delete("memory", path)
+
     # ───────────────────────── 边 ─────────────────────────
 
     def add_edge(self, edge: MemoryEdge) -> MemoryEdge:
@@ -142,6 +156,18 @@ class MemoryGraph:
     def edges(self) -> tuple[MemoryEdge, ...]:
         """全部边（按键升序）。"""
         return tuple(self._read_edge(p) for p in self._files(EDGE_PREFIX))
+
+    def delete_edge(self, edge: MemoryEdge) -> None:
+        """删除一条边记录（**存储层原语**；不存在即错）。
+
+        语义入口见 :class:`~st_agent.l2.memory.deleter.MemoryDeleter`。
+        """
+        path = self.edge_path(edge)
+        if path not in self._files(EDGE_PREFIX):
+            raise MemoryNotFoundError(
+                f"memory 分区无此边（{edge_key(edge)}），无可删除"
+            )
+        self._store.delete("memory", path)
 
     def edges_of(self, node_id: str) -> tuple[MemoryEdge, ...]:
         """与该节点相接的全部边（两个方向都算——图谱视图的取材面）。"""
