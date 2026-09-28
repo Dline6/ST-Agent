@@ -158,30 +158,35 @@ def _skill_id(registry: SkillRegistry, base: str) -> str:
     return next(d.skill_id for d in registry.list_all() if d.skill_id.startswith(f"{base}_v"))
 
 
-def _run(registry: SkillRegistry, runner: SkillRunner, base: str, values: dict | None = None):
+def _run(registry: SkillRegistry, runner: SkillRunner, base: str,
+         values: dict | None = None, inputs: dict | None = None):
     return runner.run(
         _skill_id(registry, base), values or {},
+        inputs=inputs,
         approved_permissions=_pack_permissions(registry),
     )
 
 
-def _ctx(upstream: dict[str, ResultEnvelope] | None = None) -> SkillContext:
+def _ctx(upstream: dict[str, ResultEnvelope] | None = None,
+         inputs: dict | None = None) -> SkillContext:
     return SkillContext(
         skill_id="sk_probe_v1.0",
         skill_run_id="run_0000000000000000000",
         trace_id="tr_0000000000000000000",
         upstream=upstream or {},
+        inputs=inputs or {},
     )
 
 
-def _direct(registry, base, source, upstream=None, params=None) -> ResultEnvelope:
+def _direct(registry, base, source, upstream=None, params=None,
+            inputs=None) -> ResultEnvelope:
     """执行器级调用（用于验证「有依赖但描述体未声明」的上游接线）。
 
     参数经 ``registry.validate_call_params`` 合并默认值——与 runner 内口径一致。
     """
     merged = registry.validate_call_params(_skill_id(registry, base), dict(params or {}))
     factory = {**cognition.EXECUTORS, **ambient.EXECUTORS}[base]
-    return factory(source)(_ctx(upstream), merged)
+    return factory(source)(_ctx(upstream, inputs), merged)
 
 
 @pytest.fixture()
@@ -365,6 +370,164 @@ class TestGwt4NoFabrication:
         assert out.envelope.status == "ok"
         assert out.envelope.data["portfolio_source"] == "local-cache-equal-weight"
         assert out.envelope.data["holdings"] == len(SERIES)
+
+
+# ───────────────────────── T-L1-010.2 对象类输入接线 ─────────────────────────
+
+
+INDUSTRIES = {
+    "sh.600001": "基础化工",
+    "sh.600002": "基础化工",
+    "sz.000003": "电子",
+    "sh.600004": "机械设备",
+    "sh.600010": "医药生物",
+    "sh.600012": "电子",
+}
+"""候选所属行业（`stock_industry` 最新快照）——板块偏好过滤的取材面。"""
+
+
+def _seed_industries(db: MarketDb) -> None:
+    with db.transact() as con:
+        con.executemany(
+            "INSERT INTO stock_industry(code, update_date, code_name, industry,"
+            " industry_classification) VALUES (?, ?, NULL, ?, '申万一级行业')",
+            [(code, DATES[-1], industry) for code, industry in INDUSTRIES.items()],
+        )
+        con.commit()
+
+
+class TestObjectClassInputs:
+    """三处对象类输入经 `ctx.inputs` 注入（T-L1-010.2；03 §2.2 · 01 §2 运行期输入面）。"""
+
+    def test_portfolio_uses_injected_codes_only(self, db, registry):
+        out = _direct(
+            registry, "sk_portfolio_stress_test", db,
+            inputs={"portfolio": {"codes": ["sh.600001", "sz.000003"],
+                                  "source": "attention.holdings"}},
+        )
+        assert out.status == "ok"
+        assert out.data["portfolio_source"] == "attention.holdings"
+        assert out.data["holdings"] == 2          # 池外标的不掺入
+
+    def test_portfolio_without_source_marks_channel(self, db, registry):
+        out = _direct(
+            registry, "sk_portfolio_stress_test", db,
+            inputs={"portfolio": {"codes": ["sh.600004"]}},
+        )
+        assert out.data["portfolio_source"] == "inputs.portfolio"
+
+    def test_portfolio_falls_back_and_marks_default(self, registry, runner):
+        out = _run(registry, runner, "sk_portfolio_stress_test")
+        assert out.envelope.status == "ok"
+        assert out.envelope.data["portfolio_source"] == ambient.DEFAULT_PORTFOLIO_SOURCE
+        assert out.envelope.data["holdings"] == len(SERIES)
+
+    def test_source_labels_are_distinguishable(self, db, registry):
+        injected = _direct(
+            registry, "sk_portfolio_stress_test", db,
+            inputs={"portfolio": {"codes": ["sh.600001"],
+                                  "source": "attention.holdings"}},
+        )
+        default = _direct(registry, "sk_portfolio_stress_test", db, inputs={})
+        assert injected.data["portfolio_source"] != default.data["portfolio_source"]
+
+    def test_invalid_input_is_rejected_by_pipeline(self, registry, runner):
+        out = _run(registry, runner, "sk_portfolio_stress_test",
+                   inputs={"portfolio": "不是对象"})
+        assert out.envelope.status == "validation_failed"
+        assert "input_schema" in out.envelope.reason
+
+    def test_opportunity_filters_by_sector_preference(self, db, registry):
+        _seed_industries(db)
+        screened = _direct(registry, "sk_fundamental_screening", db)
+        out = _direct(
+            registry, "sk_opportunity_mine", db,
+            {FUNDAMENTAL_ID: ResultEnvelope.ok(screened.data)},
+            inputs={"preference": {"sectors": ["电子"], "risk": "稳健",
+                                   "source": "attention.sector_preferences"}},
+        )
+        assert out.status == "ok"
+        codes = {c["code"] for c in out.data["candidates"]}
+        assert codes and codes <= {"sz.000003", "sh.600012"}
+        assert out.data["preference"]["source"] == "attention.sector_preferences"
+        assert out.data["preference"]["risk"] == "稳健"
+
+    def test_opportunity_preference_dimensions_are_or_ed(self, db, registry):
+        _seed_industries(db)
+        screened = _direct(registry, "sk_fundamental_screening", db)
+        upstream = {FUNDAMENTAL_ID: ResultEnvelope.ok(screened.data)}
+        sector_only = _direct(
+            registry, "sk_opportunity_mine", db, upstream,
+            inputs={"preference": {"sectors": ["机械设备"]}},
+        )
+        both = _direct(
+            registry, "sk_opportunity_mine", db, upstream,
+            inputs={"preference": {"sectors": ["机械设备"], "themes": ["ROE"]}},
+        )
+        assert sector_only.status == "ok" and both.status == "ok"
+        assert len(both.data["candidates"]) > len(sector_only.data["candidates"])
+
+    def test_opportunity_empty_when_preference_matches_nothing(self, db, registry):
+        _seed_industries(db)
+        screened = _direct(registry, "sk_fundamental_screening", db)
+        out = _direct(
+            registry, "sk_opportunity_mine", db,
+            {FUNDAMENTAL_ID: ResultEnvelope.ok(screened.data)},
+            inputs={"preference": {"sectors": ["不存在的行业"]}},
+        )
+        assert out.status == "empty"
+        assert "偏好过滤后无候选" in out.reason
+
+    def test_opportunity_default_preference_unchanged(self, db, registry):
+        screened = _direct(registry, "sk_fundamental_screening", db)
+        out = _direct(
+            registry, "sk_opportunity_mine", db,
+            {FUNDAMENTAL_ID: ResultEnvelope.ok(screened.data)},
+            inputs={},
+        )
+        assert out.status == "ok"
+        assert out.data["preference"] == ambient.DEFAULT_PREFERENCE
+
+    def test_strategy_universe_restricts_backtest_window(self, db, registry):
+        everything = _direct(registry, "sk_strategy_design", db, inputs={})
+        narrowed = _direct(
+            registry, "sk_strategy_design", db,
+            inputs={"universe": "sh.600001，sz.000003"},
+        )
+        assert narrowed.status == "ok"
+        assert narrowed.data["report"]["universe"] == 2
+        assert everything.data["report"]["universe"] > 2
+        assert narrowed.data["report"]["universe_source"] == "inputs.universe"
+        assert everything.data["report"]["universe_source"] == ambient.DEFAULT_UNIVERSE_SOURCE
+
+    def test_strategy_signal_source_marks_provider(self, db, registry):
+        spec = {"fields": ["close"], "align": {"close": "trade_date"}}
+        out = _direct(
+            registry, "sk_strategy_design", db,
+            {AGGREGATE_ID: ResultEnvelope.ok({ambient.SIGNAL_SPEC_KEY: spec})},
+        )
+        check = out.data["report"]["signal_check"]
+        assert check["passed"] is True
+        assert check["source"] == AGGREGATE_ID
+
+    def test_strategy_signal_source_marks_absent(self, db, registry):
+        out = _direct(registry, "sk_strategy_design", db)
+        check = out.data["report"]["signal_check"]
+        assert check["passed"] is None
+        assert check["source"] == ambient.SIGNAL_SOURCE_NONE
+
+    def test_empty_inputs_keep_todays_behaviour(self, db, registry):
+        """GWT-4 空态：`ctx.inputs == {}` 时三处口径与今天逐字一致。"""
+        screened = _direct(registry, "sk_fundamental_screening", db)
+        portfolio = _direct(registry, "sk_portfolio_stress_test", db)
+        opportunity = _direct(
+            registry, "sk_opportunity_mine", db,
+            {FUNDAMENTAL_ID: ResultEnvelope.ok(screened.data)},
+        )
+        strategy = _direct(registry, "sk_strategy_design", db)
+        assert portfolio.data["portfolio_source"] == "local-cache-equal-weight"
+        assert opportunity.data["preference"] == "none"
+        assert strategy.data["report"]["universe_source"] == "local-cache-all"
 
 
 # ───────────────────────── GWT-5 参数生效 ─────────────────────────

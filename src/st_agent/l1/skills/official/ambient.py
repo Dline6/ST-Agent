@@ -8,9 +8,13 @@
 - **联动**：`risk-alert` / `opportunity-mine` / `strategy-design` 按描述体声明的
   ``dependencies`` 消费上游输出（`ctx.upstream`）；上游非 `ok` / `empty` 时下游由
   运行器的依赖门拦为 ``dependency_failed``，本模块不自行兜底
-- **输入缺口显式化**：对象类输入（用户组合 / 风格板块偏好 / 信号定义）在既有
-  两条通道（声明参数 + 上游输出）里承载不了——执行器**显式标注所用来源**，
-  不冒充用户输入（`portfolio_source` / `preference` / `signal_check`）
+- **输入缺口显式化**：对象类输入（用户组合 / 风格板块偏好 / 回测标的池）在
+  声明参数里承载不了——由**调用方**经 ``ctx.inputs``（01 §2 的运行期输入通道）
+  注入；执行器取不到相关记忆时**回落可解释默认口径**并**显式标注来源**，
+  不冒充用户输入（`portfolio_source` / `preference` / `universe_source`）。
+  L1 **不**读 L2（铁律 7）——「读记忆 → 汇成 inputs」是调用方的事
+- **信号定义来源**：`strategy-design` 的 `signal_spec` 仍只来自上游载荷
+  （记忆六类节点无信号定义一类）；`report.signal_check` 记其提供方
 - **未来函数检测**：`strategy-design` 的 §2.2 特殊契约，检测件为
   :mod:`st_agent.l1.skills.official.signal_check` 的公开纯函数
 """
@@ -28,12 +32,23 @@ from st_agent.l1.skills.official.common import (
     evidence_of,
     fetch_rows,
     ok_envelope,
+    query_rows,
     round_of,
     stopping_factory,
 )
 from st_agent.l1.skills.official.signal_check import check_future_function
 
-__all__ = ["EXECUTORS", "SIGNAL_SPEC_KEY", "STRESS_MULTIPLIERS"]
+__all__ = [
+    "DEFAULT_PORTFOLIO_SOURCE",
+    "DEFAULT_PREFERENCE",
+    "DEFAULT_UNIVERSE_SOURCE",
+    "EXECUTORS",
+    "PORTFOLIO_INPUT_KEY",
+    "PREFERENCE_INPUT_KEY",
+    "SIGNAL_SPEC_KEY",
+    "STRESS_MULTIPLIERS",
+    "UNIVERSE_INPUT_KEY",
+]
 
 # ───────────────────────── 规则常量（可解释口径，集中复核处） ─────────────────────────
 
@@ -76,6 +91,50 @@ DEP_DATA_AGGREGATE = "sk_data_aggregate_v1.0"
 
 SIGNAL_SPEC_KEY = "signal_spec"
 """上游载荷里信号定义的键（`strategy-design` 的唯一信号来源；无生产者时显式标注未提供）。"""
+
+PORTFOLIO_INPUT_KEY = "portfolio"
+PREFERENCE_INPUT_KEY = "preference"
+UNIVERSE_INPUT_KEY = "universe"
+"""对象类输入在 ``ctx.inputs`` 里的键——与各描述体 ``input_schema`` 的声明逐字一致。"""
+
+DEFAULT_PORTFOLIO_SOURCE = "local-cache-equal-weight"
+"""无组合注入时的默认口径来源标注（本地缓存最新交易日在市标的等权）。"""
+
+DEFAULT_PREFERENCE = "none"
+"""无偏好注入时的默认口径标注（原优选池按分数排序）。"""
+
+DEFAULT_UNIVERSE_SOURCE = "local-cache-all"
+"""无标的池注入时的默认口径标注（全市场等权）。"""
+
+SIGNAL_SOURCE_NONE = "未提供"
+"""`signal_check` 的来源标注：上游无生产者时的取值（不假装有信号定义）。"""
+
+
+# ───────────────────────── 对象类输入（01 §2 运行期输入通道） ─────────────────────────
+
+
+def _source_label(raw: Mapping[str, Any], key: str) -> str:
+    """来源标注：注入对象自带的 ``source``（调用方写明记忆维度），缺省 ``inputs.<键>``。
+
+    执行器**不臆测**数据来源——「来自哪个记忆维度」只有调用方知道（铁律 5 可解释
+    的落点：追溯链由调用方在注入对象里给出，执行器如实回显）。
+    """
+    declared = raw.get("source")
+    if isinstance(declared, str) and declared.strip():
+        return declared.strip()
+    return f"inputs.{key}"
+
+
+def _string_list(value: Any) -> tuple[str, ...]:
+    """把输入里的列表项规整成非空字符串元组（去重保序）。"""
+    if not isinstance(value, (list, tuple)):
+        return ()
+    out: list[str] = []
+    for item in value:
+        text = str(item).strip()
+        if text and text not in out:
+            out.append(text)
+    return tuple(out)
 
 
 # ───────────────────────── 上游载荷的读取 ─────────────────────────
@@ -375,6 +434,35 @@ def _risk_alert(source, ctx, params) -> ResultEnvelope:
 # ───────────────────────── opportunity-mine ─────────────────────────
 
 
+_SECTOR_SQL = (
+    "SELECT i.code AS code, i.industry AS industry FROM stock_industry i"
+    " WHERE i.code IN ({codes})"
+    "   AND i.update_date = (SELECT MAX(x.update_date) FROM stock_industry x"
+    "                        WHERE x.code = i.code)"
+)
+"""候选所属行业（最新快照）——板块偏好过滤的取材面。"""
+
+
+def _preference(ctx: SkillContext) -> Mapping[str, Any] | None:
+    """``inputs.preference``（调用方注入的风格 / 板块偏好）；无有效注入 → ``None``。"""
+    raw = ctx.inputs.get(PREFERENCE_INPUT_KEY)
+    return raw if isinstance(raw, Mapping) else None
+
+
+def _industries(source, codes: tuple[str, ...]) -> dict[str, str] | ResultEnvelope:
+    """候选代码 → 行业。行业面非 ``ok`` 时**原样透出同一信封**（不假装过滤过）。"""
+    got = query_rows(source, _SECTOR_SQL.format(codes=",".join("?" * len(codes))), codes)
+    if isinstance(got, ResultEnvelope):
+        return got
+    return {str(row["code"]): str(row.get("industry") or "") for row in got.rows}
+
+
+def _theme_hit(item: Mapping[str, Any], themes: tuple[str, ...]) -> bool:
+    """题材命中：候选的 ``reasons`` 文本含任一题材词。"""
+    text = " ".join(str(reason) for reason in (item.get("reasons") or ()))
+    return any(theme in text for theme in themes)
+
+
 @stopping_factory
 def _opportunity_mine(source, ctx, params) -> ResultEnvelope:
     max_results = int(params["max_results"])
@@ -384,7 +472,27 @@ def _opportunity_mine(source, ctx, params) -> ResultEnvelope:
     pool = list(upstream.get("pool") or ())
     if not pool:
         return empty_envelope("上游优选池为空，无候选可挖掘")
-    ranked = sorted(pool, key=lambda item: (-float(item.get("score") or 0.0), str(item["code"])))
+    preference = _preference(ctx)
+    sectors = _string_list(preference.get("sectors")) if preference is not None else ()
+    themes = _string_list(preference.get("themes")) if preference is not None else ()
+    kept = pool
+    if sectors or themes:
+        industries: dict[str, str] = {}
+        if sectors:
+            lookup = _industries(source, tuple(str(item["code"]) for item in pool))
+            if isinstance(lookup, ResultEnvelope):
+                return lookup
+            industries = lookup
+        kept = [
+            item for item in pool
+            if (sectors and industries.get(str(item["code"])) in sectors)
+            or (themes and _theme_hit(item, themes))
+        ]
+        if not kept:
+            parts = [f"{label} {'、'.join(values)}"
+                     for label, values in (("板块", sectors), ("题材", themes)) if values]
+            return empty_envelope("偏好过滤后无候选（" + "；".join(parts) + "）")
+    ranked = sorted(kept, key=lambda item: (-float(item.get("score") or 0.0), str(item["code"])))
     candidates = [
         {
             "code": item["code"],
@@ -394,10 +502,16 @@ def _opportunity_mine(source, ctx, params) -> ResultEnvelope:
         }
         for item in ranked[:max_results]
     ]
+    preference_label: Any = DEFAULT_PREFERENCE
+    if preference is not None:
+        preference_label = {
+            **preference,
+            "source": _source_label(preference, PREFERENCE_INPUT_KEY),
+        }
     return ok_envelope(
         {
             "candidates": candidates,
-            "preference": "none",
+            "preference": preference_label,
             "max_results": max_results,
             "source_pool_size": len(pool),
         },
@@ -413,12 +527,39 @@ _PORTFOLIO_SQL = (
 )
 
 
+def _portfolio_codes(ctx: SkillContext) -> tuple[str, ...] | None:
+    """``inputs.portfolio.codes``（调用方注入的用户组合）；无有效注入 → ``None``。
+
+    空表（注入但无标的）同样判 ``None``——[04 §7](../../../../docs/技术架构-v2/04-L2-记忆图谱.md)
+    的「某维度无记忆」表达为没有该键，故两者都走默认口径（降级语义，见任务 `A2`）。
+    """
+    raw = ctx.inputs.get(PORTFOLIO_INPUT_KEY)
+    if not isinstance(raw, Mapping):
+        return None
+    return _string_list(raw.get("codes")) or None
+
+
 @stopping_factory
 def _portfolio_stress_test(source, ctx, params) -> ResultEnvelope:
     shock = float(params["shock"])
-    got = fetch_rows(source, _PORTFOLIO_SQL)
+    codes = _portfolio_codes(ctx)
+    if codes is None:
+        got = fetch_rows(source, _PORTFOLIO_SQL)
+        portfolio_source = DEFAULT_PORTFOLIO_SOURCE
+    else:
+        got = fetch_rows(
+            source,
+            _PORTFOLIO_SQL + " WHERE k.code IN ({codes})".format(
+                codes=",".join("?" * len(codes))),
+            codes,
+        )
+        portfolio_source = _source_label(ctx.inputs[PORTFOLIO_INPUT_KEY], PORTFOLIO_INPUT_KEY)
     if not got.rows:
-        return empty_envelope("本地缓存无在市标的，无组合可推演", as_of=got.as_of)
+        return empty_envelope(
+            "本地缓存无在市标的，无组合可推演" if codes is None
+            else "注入组合内的标的在本地缓存无最新日线，无组合可推演",
+            as_of=got.as_of,
+        )
     holdings = len(got.rows)
     st_count = sum(1 for row in got.rows if int(row.get("is_st") or 0) == 1)
     st_ratio = st_count / holdings
@@ -438,7 +579,7 @@ def _portfolio_stress_test(source, ctx, params) -> ResultEnvelope:
     return ok_envelope(
         {
             "scenarios": scenarios,
-            "portfolio_source": "local-cache-equal-weight",
+            "portfolio_source": portfolio_source,
             "holdings": holdings,
             "st_ratio": round_of(st_ratio),
             "beta": round_of(beta),
@@ -457,21 +598,55 @@ _BACKTEST_SQL = (
     " ORDER BY code, trade_date"
 )
 
+_BACKTEST_CODES_SQL = (
+    "SELECT code, trade_date, close FROM k_line_daily"
+    " WHERE code IN ({codes})"
+    "   AND trade_date >= (SELECT MIN(trade_date) FROM ("
+    "     SELECT DISTINCT trade_date FROM k_line_daily"
+    "     ORDER BY trade_date DESC LIMIT ?))"
+    " ORDER BY code, trade_date"
+)
+"""注入标的池后的回测取数——逗号分隔的 ``stock_id`` 串（同 `keywords` 的串约定）。"""
 
-def _signal_spec(ctx: SkillContext) -> Mapping[str, Any] | None:
-    """上游载荷里的信号定义（首个提供者胜出；无生产者时 → ``None``）。"""
+
+def _universe_codes(ctx: SkillContext) -> tuple[str, ...] | None:
+    """``inputs.universe``（逗号分隔的标的代码）；无有效注入 → ``None``。"""
+    raw = ctx.inputs.get(UNIVERSE_INPUT_KEY)
+    if not isinstance(raw, str):
+        return None
+    return _string_list(raw.replace("，", ",").split(",")) or None
+
+
+def _signal_spec(ctx: SkillContext) -> tuple[Mapping[str, Any] | None, str | None]:
+    """上游载荷里的信号定义**及其提供方**（首个提供者胜出；无生产者 → ``(None, None)``）。
+
+    信号定义**不经** ``ctx.inputs``：记忆六类节点无信号定义一类，其唯一来源是上游
+    载荷（见任务 `A3`），故此处一并回报提供方供来源标注。
+    """
     for skill_id in sorted(ctx.upstream):
         data = _upstream_data(ctx, skill_id)
         if data is not None and isinstance(data.get(SIGNAL_SPEC_KEY), Mapping):
-            return data[SIGNAL_SPEC_KEY]
-    return None
+            return data[SIGNAL_SPEC_KEY], skill_id
+    return None, None
 
 
 @stopping_factory
 def _strategy_design(source, ctx, params) -> ResultEnvelope:
     lookback_years = int(params["lookback_years"])
     window = lookback_years * TRADING_DAYS_PER_YEAR
-    got = fetch_rows(source, _BACKTEST_SQL, (window,))
+    codes = _universe_codes(ctx)
+    if codes is None:
+        got = fetch_rows(source, _BACKTEST_SQL, (window,))
+        universe_source = DEFAULT_UNIVERSE_SOURCE
+        scope = "全市场"
+    else:
+        got = fetch_rows(
+            source,
+            _BACKTEST_CODES_SQL.format(codes=",".join("?" * len(codes))),
+            (*codes, window),
+        )
+        universe_source = f"inputs.{UNIVERSE_INPUT_KEY}"
+        scope = "注入标的池"
     if not got.rows:
         return empty_envelope("本地缓存无回测窗口内的日线数据", as_of=got.as_of)
     closes: dict[str, list[tuple[str, float]]] = {}
@@ -490,9 +665,12 @@ def _strategy_design(source, ctx, params) -> ResultEnvelope:
         return empty_envelope("回测窗口内无足两个交易日的标的序列", as_of=got.as_of)
     dates = sorted({date for series in closes.values() for date, _ in series})
     average = sum(returns) / len(returns)
-    check = check_future_function(_signal_spec(ctx))
+    spec, provider = _signal_spec(ctx)
+    check = check_future_function(spec).model_dump()
+    check["source"] = provider if provider is not None else SIGNAL_SOURCE_NONE
     steps = [
-        {"step": "选股", "detail": f"{len(returns)} 只标的纳入回测窗口（近 {lookback_years} 年）"},
+        {"step": "选股",
+         "detail": f"{len(returns)} 只标的纳入回测窗口（近 {lookback_years} 年；{scope}）"},
         {"step": "信号", "detail": "以窗口内等权组合的日线收益率为信号基础"},
         {"step": "策略", "detail": "等权买入持有（规则化口径，不做参数寻优）"},
         {
@@ -504,8 +682,9 @@ def _strategy_design(source, ctx, params) -> ResultEnvelope:
         {
             "report": {
                 "steps": steps,
-                "signal_check": check.model_dump(),
+                "signal_check": check,
                 "universe": len(returns),
+                "universe_source": universe_source,
                 "window": {
                     "lookback_years": lookback_years,
                     "start": dates[0],
