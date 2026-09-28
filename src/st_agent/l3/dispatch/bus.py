@@ -7,8 +7,10 @@
 **去向与接入态**（假设 A1）：六类去向逐一登记接入态。**尚未接入的去向不得伪造
 执行、也不得静默丢弃**——按 ``unavailable`` 呈现且 `reason` **点名归属任务**
 （同 [`card.py`](../home/card.py)「生产方未接入即 `unavailable` + 点名」的先例）。
-本批只接 ``query``（经注入的 L1 ``SkillRunner``）与 ``explain``（把调用方给的链
-作为载荷返回；**展开渲染**归 [`T-L3-004`](../../../项目管理/tasks/T-L3-004-GenerativeUI推理链可视化.md)）。
+本批接 ``query``（经注入的 L1 ``SkillRunner``）、``explain``（把调用方给的链
+作为载荷返回；**展开渲染**归 [`T-L3-004`](../../../项目管理/tasks/T-L3-004-GenerativeUI推理链可视化.md)）
+与 ``configure``（经注入的**配置草稿生成面**，见 [`l3.config.draft`](../config/draft.py)；
+草稿的**落值与处置三态**归 [`T-L3-003.2`](../../../项目管理/tasks/T-L3-003.2-双通道登记面与处置三态.md)）。
 
 **`trace_id` 从哪来**（假设 A2）：[01 §1](../../../../docs/技术架构-v2/01-平台共享契约.md)
 登记其产生方为「L1 调度器」，故 ``query`` 去向的链**由 L1 产**、本层经
@@ -34,6 +36,7 @@ from st_agent.contracts.identifiers import TraceId
 from st_agent.contracts.result_envelope import EnvelopeStatus, ResultEnvelope
 from st_agent.contracts.trace import Trace
 from st_agent.l3.commands.registry import INTENT_KINDS, IntentKind
+from st_agent.l3.config.draft import CONFIG_DRAFT_ABSENT_REASON
 from st_agent.l3.errors import IntentValidationError
 from st_agent.l3.intent.protocol import IntentConfirmation
 
@@ -87,8 +90,8 @@ ROUTE_SPECS: tuple[RouteSpec, ...] = (
         note="经注入的 L1 SkillRunner.run 执行，信封原样透出",
     ),
     RouteSpec(
-        intent="configure", wired=False, owner="T-L3-003",
-        note="对话即配置 ConfigDraft（05 §5）",
+        intent="configure", wired=True,
+        note="经注入的配置草稿生成面产出 ConfigDraft（05 §5）；落值与三态归 T-L3-003.2",
     ),
     RouteSpec(
         intent="analyze", wired=False, owner="T-L4-002",
@@ -176,6 +179,9 @@ class DispatchOutcome(BaseModel):
     owner: str | None = None
     run: Any = None
     """``query`` 去向的 ``RunOutcome``；其余去向为 ``None``。"""
+    draft: Any = None
+    """``configure`` 去向的草稿载荷（:class:`~st_agent.l3.config.draft.ConfigDraft`
+    或工作流分支的 ``WorkflowDraft``）；其余去向为 ``None``。"""
     trace: Trace | None = None
     """本次派发关联的链（``explain`` 去向即其载荷；未接入去向为**空链**）。"""
 
@@ -191,10 +197,15 @@ class DispatchBus:
     :param runner: 注入的 Skill 执行面（鸭子类型 ``run(...) -> RunOutcome``，
         如 L1 的 ``SkillRunner``）；缺省 ``None`` → ``query`` 去向 fail-closed
         （``unavailable``），**不臆测**
+    :param configs: 注入的配置草稿生成面（鸭子类型
+        ``generate(confirmation, *, structure=None) -> ResultEnvelope``，如
+        :class:`~st_agent.l3.config.draft.ConfigDraftProtocol`）；缺省 ``None`` →
+        ``configure`` 去向 fail-closed（``unavailable`` + 点名），**不臆测**
     """
 
-    def __init__(self, *, runner: Any = None) -> None:
+    def __init__(self, *, runner: Any = None, configs: Any = None) -> None:
         self._runner = runner
+        self._configs = configs
 
     def dispatch(
         self,
@@ -204,6 +215,7 @@ class DispatchBus:
         inputs: Mapping[str, Any] | None = None,
         approved_permissions: tuple[str, ...] = (),
         trace: Trace | None = None,
+        structure: Mapping[str, Any] | None = None,
         now: datetime | None = None,
     ) -> DispatchOutcome:
         """派发一张**已确认**的意图确认卡（§4）。
@@ -211,6 +223,8 @@ class DispatchBus:
         :param values: 覆盖确认卡上的参数取值；缺省用 ``confirmation.values``
         :param inputs: 对象类输入（[01 §2](../../../../docs/技术架构-v2/01-平台共享契约.md) 的通道之②，转交 L1）
         :param trace: ``explain`` 去向要展开的链
+        :param structure: ``configure`` 去向的工作流结构载荷——**非空即工作流分支**
+            （[05 §5](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的判定只有这一处）
         :param now: 本次派发时刻（缺省取本机当前带时区时间）
         """
         moment = now if now is not None else _now()
@@ -227,6 +241,8 @@ class DispatchBus:
                 confirmation, spec, values, inputs, approved_permissions, trace, moment)
         if confirmation.intent == "explain":
             return self._dispatch_explain(spec, trace, moment)
+        if confirmation.intent == "configure":
+            return self._dispatch_configure(confirmation, spec, structure, moment)
         return self._pending(spec, moment)
 
     # ───────────────────────── 去向实现 ─────────────────────────
@@ -288,6 +304,45 @@ class DispatchBus:
             envelope=ResultEnvelope.ok(trace, as_of=moment),
             trace_id=trace.trace_id.value, intent="explain", route="explain",
             wired=spec.wired, trace=trace,
+        )
+
+    def _dispatch_configure(
+        self,
+        confirmation: IntentConfirmation,
+        spec: RouteSpec,
+        structure: Mapping[str, Any] | None,
+        moment: datetime,
+    ) -> DispatchOutcome:
+        """``configure`` 去向：经注入的草稿生成面产出草稿（§5）。
+
+        未注入生成面 → ``unavailable`` + 点名（同 ``query`` 去向「未注入 Skill
+        执行面」的写法），**不伪造**；生成面的失败信封（``validation_failed`` /
+        ``unavailable`` 等）**原样透出**——本层不重包、不改 status、不吞 reason。
+        """
+        chain = Trace(trace_id=TraceId.generate())
+        if self._configs is None:
+            return self._outcome(
+                ResultEnvelope.unavailable(
+                    CONFIG_DRAFT_ABSENT_REASON, last_updated_at=moment
+                ),
+                chain, spec,
+            )
+        outcome_result = self._configs.generate(confirmation, structure=structure)
+        if not isinstance(outcome_result, ResultEnvelope):
+            return self._outcome(
+                ResultEnvelope.dependency_failed(
+                    "配置草稿生成面返回非法类型 "
+                    f"{type(outcome_result).__name__}（须为 ResultEnvelope）"
+                ),
+                chain, spec,
+            )
+        if outcome_result.status != "ok":
+            return self._outcome(outcome_result, chain, spec)
+        return DispatchOutcome(
+            envelope=outcome_result,
+            trace_id=chain.trace_id.value,
+            intent=confirmation.intent, route=confirmation.intent,
+            wired=spec.wired, draft=outcome_result.data, trace=chain,
         )
 
     def _pending(self, spec: RouteSpec, moment: datetime) -> DispatchOutcome:
