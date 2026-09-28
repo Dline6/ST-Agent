@@ -10,7 +10,8 @@ tasks/*.md 的 YAML frontmatter 是唯一真相源；任务账本.md 是派生�
   render      扫描 tasks/ 与 tasks/done/ → 重新生成 项目管理/任务账本.md
   archive     把「全部任务 done」的里程碑整批移入 tasks/done/<Mn>/（--dry 预览）
               移动会**改变相对链接的基准**，故同批改正受影响的链接（见 _retarget）
-  status      按 children 重算父任务 status；打印就绪集
+  status      按 children 重算父任务 status 与 depends_on（活跃区）；打印就绪集
+              render 走同一派生路径（build_ledger → compute_status），故也会重算
 
 frontmatter 约定：
   文件内部链接（story / arch / 正文）相对 tasks/ → 用 ../../docs/
@@ -190,6 +191,30 @@ def bootstrap(force=False):
     print(f"bootstrap: wrote {created}, protected(hand) {skipped}")
 
 # ---------- 派生 + 就绪 ----------
+def subtree_ids(pid, children):
+    """``pid`` 的全部后代 id（不含 ``pid`` 自身）。"""
+    out, stack = set(), [pid]
+    while stack:
+        for k in children.get(stack.pop(), []):
+            if k["id"] not in out:
+                out.add(k["id"]); stack.append(k["id"])
+    return out
+
+def derive_parent_deps(pid, children):
+    """父 ``depends_on`` ＝直接 children 的 ``depends_on`` 并集，剔掉指向父自身子树（**含父 id 自身**）的边。
+
+    剔子树边：子依赖兄弟 / 依赖父本身属子树内部次序，不构成父的**外部**前置；父 id 自身
+    必须一并剔——``T-L0-005`` 的唯一子依赖父自身，不剔会派生出自我依赖，被依赖图判环。
+    顺序＝子 id 序 + 子内原序（确定性，供首次落盘与检查比对）。
+    """
+    blocked = subtree_ids(pid, children) | {pid}
+    out = []
+    for k in sorted(children.get(pid, []), key=lambda t: t["id"]):
+        for d in k["depends_on"]:
+            if d not in blocked and d not in out:
+                out.append(d)
+    return out
+
 def compute_status(tasks):
     byid = {t["id"]: t for t in tasks}
     children = {}
@@ -201,10 +226,20 @@ def compute_status(tasks):
         sts = [derive(k["id"]) for k in kids]
         v = "done" if all(s=="done" for s in sts) else "blocked" if any(s=="blocked" for s in sts) \
             else "doing" if any(s=="doing" for s in sts) else "todo"
-        if v != byid[pid]["status"]:
-            byid[pid]["status"] = v
-            fm, body = read_fm(byid[pid]["path"]); fm["status"] = v
-            write_file(byid[pid]["path"], serialize(fm, body))
+        t = byid[pid]
+        # 归档＝冻结历史：只派生 status，不重算 depends_on（同 verify_docs 检查 5/6 的历史豁免口径）
+        new_deps = None
+        if not t["rel"].startswith("tasks/done/"):
+            cur = t["depends_on"]; want = derive_parent_deps(pid, children)
+            if set(cur) != set(want):          # 按**集合**比较：仅顺序差异不写盘，免无意义 churn
+                new_deps = [d for d in cur if d in want] + [d for d in want if d not in cur]
+        if v != t["status"] or new_deps is not None:
+            t["status"] = v
+            fm, body = read_fm(t["path"]); fm["status"] = v
+            if new_deps is not None:
+                t["depends_on"] = new_deps                # 内存副本同步：账本渲染读的是它
+                fm["depends_on"] = "[" + ", ".join(new_deps) + "]" if new_deps else "[]"
+            write_file(t["path"], serialize(fm, body))
         return v
     for pid in list(children):
         if pid in byid: derive(pid)
@@ -224,7 +259,7 @@ def build_ledger():
          "# 任务账本","",
          "> ⚙️ **本文件由 `tools/render_ledger.py render` 自动生成，请勿手改；改任务只改 `tasks/T-*.md` 再 render。**",
          f"> 真相源 = `tasks/*.md` frontmatter。刷新 {datetime.now(CST):%Y-%m-%d %H:%M} · 活跃 {len(active)} / 已归档 {len(archived)}。",
-         "> 生成 `... render` · 满里程碑归档 `... archive` · 派生父状态+就绪集 `... status`","",
+         "> 生成 `... render` · 满里程碑归档 `... archive` · 派生父状态/依赖+就绪集 `... status`","",
          "## 里程碑视图","","| 里程碑 | 目标 | 覆盖层 | 完成 |","|---|---|---|---|"]
     for mid, name, goal in MILESTONES:
         tms = [t for t in all_t if t["milestone"] == mid]

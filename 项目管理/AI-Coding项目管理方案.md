@@ -67,7 +67,7 @@ ID 命名：`T-<层>-<三位序号>[.<子序号>]*-<中文slug>.md`，层 ∈ {S
 GWT > 5 · 涉及 ≥ 2 契约小节/架构层 · 跨 spec+plan 的一次性改动 · 预计会话轮次 > 20 · 中途新增需独立记录的决策。拆分在**开工 ③ 阶段**做，不预先铺满账本。
 
 ### 3.3 父任务状态派生（禁止手写）
-父 `status` 由 children 聚合：全 done→done / 任一 blocked→blocked / 任一 doing→doing / 其余→todo。父 `depends_on` = children 并集去掉指向自身子树的边。**由 `tools/render_ledger.py render`（或 `status`）自动重算**，人不手填。
+父 `status` 由 children 聚合：全 done→done / 任一 blocked→blocked / 任一 doing→doing / 其余→todo。父 `depends_on` = children 并集去掉指向自身子树（**含自身 id**）的边。**活跃区**父的二者皆由 `tools/render_ledger.py render`（或 `status`）自动重算（`depends_on` 按集合比较，仅顺序差异不写盘）；已归档任务为冻结历史、不追补。一致性由 `verify_docs.py` 检查 9 把关，人不手填。
 
 ### 3.4 任务文件 frontmatter（真相源在 `tasks/T-*.md`，账本据此渲染）
 
