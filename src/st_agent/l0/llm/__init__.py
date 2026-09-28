@@ -5,6 +5,8 @@
 - 云端 Key 唯一经 ``CredentialVault.use()`` 取用，prompt/response 不落盘，
   用量只记计数入 ``execution_log``（GWT-4）
 - 失败一律走 ``ResultEnvelope``（GWT-5）
+- 真实发包经 [出网网关](l0/net/gateway.py) 的**按次 sender**通道（T-L0-016）：
+  ``openai_compat_sender_factory`` 把 prompt / key 放进 sender 闭包，网关只见字节数
 
 对外统一从 ``st_agent.l0.llm`` import。
 """
@@ -23,6 +25,13 @@ from st_agent.l0.llm.errors import (
     LlmNotFoundError,
     LlmValidationError,
 )
+from st_agent.l0.llm.http_transport import (
+    CHAT_COMPLETIONS_PATH,
+    OpenAiRoute,
+    Post,
+    openai_compat_sender_factory,
+    provider_hosts_of,
+)
 from st_agent.l0.llm.models import (
     CapabilityRequirement,
     EndpointCapability,
@@ -35,6 +44,7 @@ from st_agent.l0.llm.models import (
 from st_agent.l0.llm.registry import ENDPOINT_PREFIX, EndpointRegistry
 
 __all__ = [
+    "CHAT_COMPLETIONS_PATH",
     "ENDPOINT_PREFIX",
     "LLM_USAGE_PREFIX",
     "CapabilityRequirement",
@@ -47,6 +57,8 @@ __all__ = [
     "LlmNotFoundError",
     "LlmUsageRecord",
     "LlmValidationError",
+    "OpenAiRoute",
+    "Post",
     "StreamEvent",
     "TransportCancelledError",
     "TransportError",
@@ -54,4 +66,6 @@ __all__ = [
     "TransportUnavailableError",
     "check_endpoint_id",
     "estimate_tokens",
+    "openai_compat_sender_factory",
+    "provider_hosts_of",
 ]
