@@ -5,7 +5,7 @@ story: ../../docs/PRD-v2-Agent/story-01-chat-as-os.md
 arch_link: "[05 §6–§7](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P0
 milestone: M1
-depends_on: [T-L3-002]
+depends_on: [T-L3-002, T-UI-001]
 status: todo
 decisions: []
 ---
