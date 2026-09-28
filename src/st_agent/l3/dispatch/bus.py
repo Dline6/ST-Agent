@@ -10,7 +10,10 @@
 本批接 ``query``（经注入的 L1 ``SkillRunner``）、``explain``（把调用方给的链
 作为载荷返回；**展开渲染**归 [`T-L3-004`](../../../项目管理/tasks/T-L3-004-GenerativeUI推理链可视化.md)）
 与 ``configure``（经注入的**配置草稿生成面**，见 [`l3.config.draft`](../config/draft.py)；
-草稿的**落值与处置三态**归 [`T-L3-003.2`](../../../项目管理/tasks/T-L3-003.2-双通道登记面与处置三态.md)）。
+草稿的**落值与处置三态**归 [`T-L3-003.2`](../../../项目管理/tasks/T-L3-003.2-双通道登记面与处置三态.md)）
+与 ``memory_op``（经注入的**冲突裁决面**，见 [`l3.conflict.adjudication`](../conflict/adjudication.py)；
+裁决的承接 / 提交归 [`T-L3-005.1`](../../../项目管理/tasks/T-L3-005.1-冲突裁决承接事件与memory_op去向接线.md)，
+其**偏好写入支**归 L2 写入面、组合根装配归 [`T-INT-002`](../../../项目管理/tasks/T-INT-002-M1集成关卡首次可对话.md)）。
 
 **`trace_id` 从哪来**（假设 A2）：[01 §1](../../../../docs/技术架构-v2/01-平台共享契约.md)
 登记其产生方为「L1 调度器」，故 ``query`` 去向的链**由 L1 产**、本层经
@@ -36,6 +39,10 @@ from st_agent.contracts.identifiers import TraceId
 from st_agent.contracts.result_envelope import EnvelopeStatus, ResultEnvelope
 from st_agent.contracts.trace import Trace
 from st_agent.l3.commands.registry import INTENT_KINDS, IntentKind
+from st_agent.l3.conflict.adjudication import (
+    QUEUE_ABSENT_REASON,
+    ConflictAdjudication,
+)
 from st_agent.l3.config.draft import CONFIG_DRAFT_ABSENT_REASON
 from st_agent.l3.errors import IntentValidationError
 from st_agent.l3.intent.protocol import IntentConfirmation
@@ -98,8 +105,8 @@ ROUTE_SPECS: tuple[RouteSpec, ...] = (
         note="多视角执行编排（06 §2）",
     ),
     RouteSpec(
-        intent="memory_op", wired=False, owner="T-L3-005",
-        note="冲突裁决与反馈采集点（05 §9）",
+        intent="memory_op", wired=True,
+        note="经注入的冲突裁决面产出裁决卡（05 §9）；偏好写入支归 L2 写入面（04 §3.2），装配归 T-INT-002",
     ),
     RouteSpec(
         intent="train", wired=False, owner="T-L6-002",
@@ -182,6 +189,9 @@ class DispatchOutcome(BaseModel):
     draft: Any = None
     """``configure`` 去向的草稿载荷（:class:`~st_agent.l3.config.draft.ConfigDraft`
     或工作流分支的 ``WorkflowDraft``）；其余去向为 ``None``。"""
+    adjudications: tuple[ConflictAdjudication, ...] = ()
+    """``memory_op`` 去向的裁决卡（[05 §9](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）；
+    其余去向为空元组。**渲染**该卡的归 [`T-L3-004`](../../../项目管理/tasks/T-L3-004-GenerativeUI推理链可视化.md)。"""
     trace: Trace | None = None
     """本次派发关联的链（``explain`` 去向即其载荷；未接入去向为**空链**）。"""
 
@@ -189,6 +199,20 @@ class DispatchOutcome(BaseModel):
 def _now() -> datetime:
     """用户本地时区当前时刻（01 §8）。"""
     return datetime.now().astimezone()
+
+
+def _as_cards(payload: Any) -> tuple[ConflictAdjudication, ...] | None:
+    """裁决面载荷 → 裁决卡序列（形状不合即 ``None``，由调用方显式失败）。
+
+    卡可以是单张（``card_for``）或一序列（``cards``）；**不静默过滤**非卡元素。
+    """
+    if isinstance(payload, ConflictAdjudication):
+        return (payload,)
+    if isinstance(payload, (tuple, list)):
+        if all(isinstance(p, ConflictAdjudication) for p in payload):
+            return tuple(payload)
+        return None
+    return None
 
 
 class DispatchBus:
@@ -201,11 +225,18 @@ class DispatchBus:
         ``generate(confirmation, *, structure=None) -> ResultEnvelope``，如
         :class:`~st_agent.l3.config.draft.ConfigDraftProtocol`）；缺省 ``None`` →
         ``configure`` 去向 fail-closed（``unavailable`` + 点名），**不臆测**
+    :param adjudications: 注入的冲突裁决面（鸭子类型
+        ``card_for(conflict_id) -> ResultEnvelope`` / ``cards() -> ResultEnvelope``，
+        如 :class:`~st_agent.l3.conflict.adjudication.ConflictAdjudicator`）；
+        缺省 ``None`` → ``memory_op`` 去向 fail-closed（``unavailable`` + 点名），**不臆测**
     """
 
-    def __init__(self, *, runner: Any = None, configs: Any = None) -> None:
+    def __init__(
+        self, *, runner: Any = None, configs: Any = None, adjudications: Any = None
+    ) -> None:
         self._runner = runner
         self._configs = configs
+        self._adjudications = adjudications
 
     def dispatch(
         self,
@@ -243,6 +274,8 @@ class DispatchBus:
             return self._dispatch_explain(spec, trace, moment)
         if confirmation.intent == "configure":
             return self._dispatch_configure(confirmation, spec, structure, moment)
+        if confirmation.intent == "memory_op":
+            return self._dispatch_memory_op(confirmation, spec, moment)
         return self._pending(spec, moment)
 
     # ───────────────────────── 去向实现 ─────────────────────────
@@ -343,6 +376,60 @@ class DispatchBus:
             trace_id=chain.trace_id.value,
             intent=confirmation.intent, route=confirmation.intent,
             wired=spec.wired, draft=outcome_result.data, trace=chain,
+        )
+
+    def _dispatch_memory_op(
+        self,
+        confirmation: IntentConfirmation,
+        spec: RouteSpec,
+        moment: datetime,
+    ) -> DispatchOutcome:
+        """``memory_op`` 去向：经注入的冲突裁决面产出裁决卡（§9）。
+
+        确认卡的 ``target`` 非空即视为**指定冲突 id**（只取那一张），否则列出
+        **全部待裁决**项。未注入裁决面 → ``unavailable`` + 点名（同 ``query``
+        去向「未注入 Skill 执行面」的写法），**不伪造**；裁决面的失败信封
+        （``empty`` / ``validation_failed`` / ``unavailable``）**原样透出**。
+
+        本次派发的链为**空链**（同 ``configure`` 去向）——裁决卡的推理锚点是
+        提案自带的 ``trace_id``（[04 §1](../../../../docs/技术架构-v2/04-L2-记忆图谱.md)），
+        本层不伪造派发步骤。
+        """
+        chain = Trace(trace_id=TraceId.generate())
+        if self._adjudications is None:
+            return self._outcome(
+                ResultEnvelope.unavailable(QUEUE_ABSENT_REASON, last_updated_at=moment),
+                chain, spec,
+            )
+        target = (confirmation.target or "").strip()
+        envelope = (
+            self._adjudications.card_for(target) if target
+            else self._adjudications.cards()
+        )
+        if not isinstance(envelope, ResultEnvelope):
+            return self._outcome(
+                ResultEnvelope.dependency_failed(
+                    "冲突裁决面返回非法类型 "
+                    f"{type(envelope).__name__}（须为 ResultEnvelope）"
+                ),
+                chain, spec,
+            )
+        if envelope.status != "ok":
+            return self._outcome(envelope, chain, spec)
+        cards = _as_cards(envelope.data)
+        if cards is None:
+            return self._outcome(
+                ResultEnvelope.dependency_failed(
+                    "冲突裁决面返回的载荷不是裁决卡"
+                    "（须为 ConflictAdjudication 或其一序列）"
+                ),
+                chain, spec,
+            )
+        return DispatchOutcome(
+            envelope=envelope,
+            trace_id=chain.trace_id.value,
+            intent=confirmation.intent, route=confirmation.intent,
+            wired=spec.wired, adjudications=cards, trace=chain,
         )
 
     def _pending(self, spec: RouteSpec, moment: datetime) -> DispatchOutcome:

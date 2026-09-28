@@ -7,12 +7,15 @@
 ``IntentValidationError`` 收意图协议被拒（生成文案未过 [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md)
 执行点 2，或确认卡未确认即派发）；``ConfigValidationError`` 收配置草稿被拒
 （草稿生成文案未过 [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md) 执行点 2，
-或草稿形状不合 [05 §5](../../../docs/技术架构-v2/05-L3-对话主入口.md) 的契约）。
+或草稿形状不合 [05 §5](../../../docs/技术架构-v2/05-L3-对话主入口.md) 的契约）；
+``ConflictValidationError`` 收冲突裁决被拒（裁决卡的生成文案未过
+[01 §6](../../../docs/技术架构-v2/01-平台共享契约.md) 执行点 2，或方向判定端口异常）。
 """
 
 __all__ = [
     "CommandValidationError",
     "ConfigValidationError",
+    "ConflictValidationError",
     "IntentValidationError",
     "L3Error",
     "SessionNotFoundError",
@@ -64,6 +67,21 @@ class ConfigValidationError(L3Error, ValueError):
     [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md) 执行点 2 ``check_output``
     ——**阻断渲染**；② 草稿形状不合契约（目标缺失 / 参数未在目标声明体内 /
     工作流草稿携带身份字段）。
+    ``findings`` 携命中项，供调用方改写而不是盲试。
+    """
+
+    def __init__(self, message: str, *, findings: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.findings = findings
+
+
+class ConflictValidationError(L3Error, ValueError):
+    """冲突裁决被拒（[05 §9](../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+
+    两类来源：① 裁决卡的**生成文案**（抬头 / 问句 / 动作标签 / 方向候选）命中
+    [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md) 执行点 2 ``check_output``
+    ——**阻断渲染**（冲突**两方内容**是记忆本体、属数据展示，不受本节约束）；
+    ② 注入的方向判定端口异常。
     ``findings`` 携命中项，供调用方改写而不是盲试。
     """
 

@@ -8,7 +8,13 @@ import pytest
 from l3_helpers import NOW, PASS
 
 from st_agent.l0.storage import Store
-from st_agent.l2.memory import MemoryGraph, MemoryReader, MemoryWriter
+from st_agent.l2.memory import (
+    ConflictQueue,
+    MemoryGraph,
+    MemoryReader,
+    MemoryWriter,
+    WritePolicy,
+)
 from st_agent.l3.chat import SessionStore
 from st_agent.l3.commands import CommandRegistry
 
@@ -46,3 +52,13 @@ def chat(store: Store) -> SessionStore:
 @pytest.fixture()
 def registry() -> CommandRegistry:
     return CommandRegistry()
+
+
+@pytest.fixture()
+def policy(store: Store) -> WritePolicy:
+    return WritePolicy(store, now=lambda: NOW)
+
+
+@pytest.fixture()
+def queue(graph: MemoryGraph, writer: MemoryWriter, policy: WritePolicy) -> ConflictQueue:
+    return ConflictQueue(graph, writer, policy, now=lambda: NOW)
