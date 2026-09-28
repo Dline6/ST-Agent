@@ -19,6 +19,12 @@ HOT = "info_sentiment_hot"
 WINDOW = ("2026-09-01", "2026-09-30")
 
 
+def _run_irm(sync, **kwargs):
+    """跑深市互动问答——T-L0-015 起它是**关注面任务**：默认禁用，须显式开启 +
+    注入关注池（`watchlist`），见 [D-037] / 05。"""
+    return sync.run_task(IRM, enabled={IRM: True}, watchlist=["sz.000001"], **kwargs)
+
+
 def _qa(code: str = "000001", *, question: str = "公司如何回应近期传闻？",
         answer: str | None = None, ask: str = "2026-09-20 10:30") -> dict:
     return {"code": code, "question": question, "answer": answer,
@@ -40,7 +46,7 @@ class TestGwt1TwoMarketsParallel:
             IRM: {"sentiment_qa": (_qa("000001"),)},
             SSE: {"sentiment_qa": (_qa("600000", question="沪市提问"),)},
         }))
-        sync.run_task(IRM, window=WINDOW)
+        _run_irm(sync, window=WINDOW)
         sync.run_task(SSE, window=WINDOW)
         env = db.query("SELECT code, market, source_id FROM sentiment_qa ORDER BY code")
         assert env.status == "ok"
@@ -53,13 +59,13 @@ class TestGwt1TwoMarketsParallel:
             IRM: {"sentiment_qa": (_qa("000001", question="深市问题"),)},
             SSE: {"sentiment_qa": (_qa("600000", question="沪市问题"),)},
         }))
-        sync.run_task(IRM, window=WINDOW)
+        _run_irm(sync, window=WINDOW)
         sync.run_task(SSE, window=WINDOW)
         assert db.query("SELECT count(*) AS n FROM sentiment_qa").data["rows"][0]["n"] == 2
 
     def test_unanswered_question_is_a_legal_row(self, db, sync_factory):
         """未回复是**合法态**（`answer=NULL`），不是缺失。"""
-        sync_factory(_plan(IRM, [_qa(answer=None)])).run_task(IRM, window=WINDOW)
+        _run_irm(sync_factory(_plan(IRM, [_qa(answer=None)])), window=WINDOW)
         env = db.query("SELECT answer FROM sentiment_qa")
         assert env.status == "ok" and env.data["rows"][0]["answer"] is None
 
@@ -112,7 +118,7 @@ class TestGwt3PerishableData:
 class TestGwt4TwoSegments:
     def test_qa_body_written_and_audit_clean(self, db, store, sync_factory):
         sync = sync_factory(_plan(IRM, [_qa(answer="已关注到相关报道。")]))
-        sync.run_task(IRM, window=WINDOW)
+        _run_irm(sync, window=WINDOW)
         row = db.query("SELECT qa_id, file_path FROM sentiment_qa").data["rows"][0]
         doc = LocalDocSource(db, store).read_doc(row["qa_id"])
         assert doc.status == "ok"
@@ -120,15 +126,15 @@ class TestGwt4TwoSegments:
         assert sync.audit_docs().is_consistent
 
     def test_doc_path_stays_under_text_root(self, db, sync_factory):
-        sync_factory(_plan(IRM, [_qa()])).run_task(IRM, window=WINDOW)
+        _run_irm(sync_factory(_plan(IRM, [_qa()])), window=WINDOW)
         path = db.query("SELECT file_path FROM sentiment_qa").data["rows"][0]["file_path"]
         assert path.startswith("info/sentiment_qa/") and path.endswith(".txt")
 
 
 class TestGwt5CoverageGapExplicit:
     def test_filtered_codes_reported(self, db, sync_factory):
-        env = sync_factory(_plan(IRM, [_qa("000001"), _qa("920002")])).run_task(
-            IRM, window=WINDOW)
+        env = _run_irm(
+            sync_factory(_plan(IRM, [_qa("000001"), _qa("920002")])), window=WINDOW)
         assert env.status == "ok"
         assert env.data["filtered_unmapped"]["sample"] == [UNMAPPED_CODE]
 
@@ -137,7 +143,7 @@ class TestGwt5CoverageGapExplicit:
         sync = sync_factory(FakeInfoFetcher({
             IRM: {"sentiment_qa": (_qa("000001"),)},
         }, unavailable_on=(SSE,)))
-        assert sync.run_task(IRM, window=WINDOW).status == "ok"
+        assert _run_irm(sync, window=WINDOW).status == "ok"
         assert sync.run_task(SSE, window=WINDOW).status == "unavailable"
         verdict = sync.freshness_verdict("sentiment_qa")
         assert verdict.stale is True and SSE in verdict.detail

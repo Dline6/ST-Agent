@@ -7,7 +7,7 @@
 | 公告 | 巨潮（**覆盖全市**） | 深交所官方（**仅深市**）· 东财（**仅沪市**） | **权威源优先**；备胎按**覆盖分片**，`coverage` 列显式标注 |
 | 龙虎榜 | 东财（上榜记录） | 深交所官方（**仅深市**）· 上交所官方（**仅沪市**） | **按实体分两表**；**席位明细以官方为主**——深交所 `1842_detal`、上交所每日交易信息（见下） |
 | 股东户数 | 东财 | **无**（不可用即 `unavailable`） | **单源**——A / B / C 在此退化为同一结果 |
-| 舆情问答 | **双市并行互补**：上证e互动（沪市，**有全市场流** ``feeds.do``）+ 互动易（深市，**无全市场流**、本轮不覆盖） | —— | 非主备：同语义、按市场分片，故**同表**、`market` 列标注 |
+| 舆情问答 | **双市并行互补**：上证e互动（沪市，**有全市场流** ``feeds.do``）+ 互动易（深市，**无全市场流**、改按**用户关注面**采集） | —— | 非主备：同语义、按市场分片，故**同表**、`market` 列标注 |
 | 热度榜 | 同花顺热榜（+ 东财人气榜作并列榜单） | —— | **易腐**数据，独立实体与契约 |
 
 **席位明细的两条官方路径**（2026-09-27 实测；原「暂无已验证源」已作废）：
@@ -38,6 +38,7 @@ from typing import NamedTuple
 from st_agent.l0.info.errors import InfoValidationError
 
 __all__ = [
+    "ATTENTION_TASKS",
     "INFO_SOURCES",
     "INFO_TASKS",
     "INFO_TASK_KEYS",
@@ -80,8 +81,10 @@ class InfoTask(NamedTuple):
 
     schedule_desc: str
     coverage: str
-    """``all`` / ``sh`` / ``sz``——**覆盖范围显式化**（D-030：不得让「换了源」
-    看起来像「没有数据」）。"""
+    """``all`` / ``sh`` / ``sz`` / ``watch``——**覆盖范围显式化**（D-030：不得让
+    「换了源」看起来像「没有数据」）。``watch`` ＝按**用户关注面**（关注池 / 持仓）
+    采集、**非**市场全域（D-037）：此类任务默认禁用、须注入关注池，且**池外标的
+    恒为空 ≠ 该标的无数据**。"""
 
     role: str
     """``primary``（权威源，`INSERT OR REPLACE`）/ ``backup``（备胎，让位于
@@ -178,11 +181,14 @@ INFO_TASKS: tuple[InfoTask, ...] = (
              "all", "backup", watermark_desc="已覆盖的最近统计截止日"),
     # ── 舆情域：双市并行互补（非主备）+ 热度榜易腐 ──
     # 沪市（T-L0-013，2026-09-27 实测）：上证e互动**有全市场流**（feeds.do），无须逐
-    # 公司定位 uid → 按窗口式节奏重拉。深市互动易**无**全市场流，口径已由 D-037 定为
-    # 「用户关注面」，**本轮不覆盖**（该行登记不变，落地待人立项）。
+    # 公司定位 uid → 按窗口式节奏重拉。深市互动易**无**全市场流 → 按 D-037 口径 B
+    # 改为「**用户关注面**」采集（`coverage=watch`，T-L0-015）：关注池 / 持仓由调用方
+    # 注入（L0 不向上读 L2），默认禁用；源端只覆盖深市，非深市标的不发请求。
     InfoTask("info_sentiment_qa_irm", "sentiment_qa", "sentiment_qa",
-             "cninfo_irm", "upsert_window", "每交易日（深市）", "sz", "parallel",
-             watermark_desc="最近已拉提问时间（深市）"),
+             "cninfo_irm", "upsert_window",
+             "每交易日（深市；按用户关注面采集——须注入关注池、默认禁用）",
+             "watch", "parallel",
+             watermark_desc="最近已拉提问时间（关注面内）"),
     InfoTask("info_sentiment_qa_sse", "sentiment_qa", "sentiment_qa",
              "sse_e", "upsert_window", "每交易日（沪市；窗口式重拉全市场流）",
              "sh", "parallel", watermark_desc="最近已拉提问时间（沪市）"),
@@ -192,6 +198,11 @@ INFO_TASKS: tuple[InfoTask, ...] = (
 )
 
 INFO_TASK_KEYS: tuple[str, ...] = tuple(t.task_key for t in INFO_TASKS)
+
+ATTENTION_TASKS: tuple[str, ...] = tuple(
+    t.task_key for t in INFO_TASKS if t.coverage == "watch")
+"""按**用户关注面**采集的任务（``coverage='watch'``）——默认禁用、须注入关注池，
+未注入 → 调用方缺陷；池为空 → **已知空集**（非缺失）。见 [D-037] 与 05。"""
 
 _TASKS_BY_KEY: dict[str, InfoTask] = {t.task_key: t for t in INFO_TASKS}
 

@@ -29,6 +29,7 @@ from st_agent.l0.info.fetch import (
     HttpInfoFetcher,
     _pythonish_list,  # noqa: PLC2701 - 测试内部工具的行为
     _sse_order_key,  # noqa: PLC2701
+    _stamp,  # noqa: PLC2701
     _szse_drill_params,  # noqa: PLC2701
     parse_announcement_em,
     parse_announcement_szse,
@@ -37,6 +38,7 @@ from st_agent.l0.info.fetch import (
     parse_dragon_tiger_szse,
     parse_dragon_tiger_szse_detail,
     parse_sentiment_hot_ths,
+    parse_sentiment_qa_irm,
     parse_sentiment_qa_sse,
     parse_shareholder_num_cninfo,
     parse_shareholder_num_em,
@@ -660,12 +662,3 @@ class TestSentimentQaSseFullMarket:
         assert any("type=10" in url for url in seen)
         assert any("type=11" in url for url in seen)
         assert "pageSize=50" in seen[0]
-
-
-class TestIrmStillReportsGap:
-    """深市互动易**仍**无全市场流——显式报缺口，不返回空结果冒充（D-037）。"""
-
-    def test_per_company_source_reports_gap(self):
-        with pytest.raises(InfoValidationError, match="按公司"):
-            HttpInfoFetcher().fetch_task(
-                "info_sentiment_qa_irm", ("2026-09-01", "2026-09-27"))

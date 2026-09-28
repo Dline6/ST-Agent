@@ -293,10 +293,13 @@ class TestGatewayAudit:
 
         回归：``cninfo_irm`` / ``sse_e`` 这类含下划线的源标识不是合法主机名，
         早期实现直接把它当 host 传给网关，被抓成 ``failed``。
+
+        深市问答自 T-L0-015 起是**关注面任务**（默认禁用），故须显式开启 + 注入关注池。
         """
         sync_factory(FakeInfoFetcher({
             "info_sentiment_qa_irm": {"sentiment_qa": ()}})).run_task(
-                "info_sentiment_qa_irm", window=("2026-09-01", "2026-09-30"))
+                "info_sentiment_qa_irm", window=("2026-09-01", "2026-09-30"),
+                enabled={"info_sentiment_qa_irm": True}, watchlist=["sz.000001"])
         hosts = {e.target_host for e in gateway.query()}
         assert hosts == {"irm.cninfo.com.cn"}
         assert "cninfo_irm" not in hosts

@@ -342,7 +342,7 @@ CREATE TABLE announcement (
   pub_date        TEXT NOT NULL,              -- 披露日期 'YYYY-MM-DD'
   url             TEXT,                       -- 源方详情页（人可复核）
   file_path       TEXT,                       -- 正文在 data_cache 内的相对路径；NULL = 仅有元数据
-  coverage        TEXT NOT NULL CHECK (coverage IN ('all','sh','sz')),
+  coverage        TEXT NOT NULL CHECK (coverage IN ('all','sh','sz')),  -- 本表不承载关注面任务；coverage=watch（用户关注面）见 05 / D-037
   source_id       TEXT NOT NULL REFERENCES data_source(source_id)
 );
 CREATE INDEX idx_announcement_code_date ON announcement(code, pub_date);
