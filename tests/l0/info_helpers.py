@@ -39,9 +39,13 @@ class FakeInfoFetcher:
         self.unavailable_on = set(unavailable_on)
         self.fail_on = set(fail_on)
         self.calls: list[tuple[str, tuple[str, str]]] = []
+        self.code_calls: list[tuple[str, tuple[str, ...] | None]] = []
+        """逐次调用携带的 ``codes``（关注面注入面；T-L0-015）。"""
 
-    def fetch_task(self, task_key: str, window: tuple[str, str]):
+    def fetch_task(self, task_key: str, window: tuple[str, str], *,
+                   codes: tuple[str, ...] | None = None):
         self.calls.append((task_key, window))
+        self.code_calls.append((task_key, codes))
         if task_key in self.unavailable_on:
             raise InfoFetchUnavailableError("源不可达（测试注入）")
         if task_key in self.fail_on:

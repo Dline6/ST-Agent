@@ -30,6 +30,7 @@ from st_agent.l0.info.errors import (
 )
 from st_agent.l0.info.prefilter import master_codes
 from st_agent.l0.info.sources import (
+    ATTENTION_TASKS,
     INFO_SOURCES,
     INFO_TASKS,
     InfoTask,
@@ -117,21 +118,35 @@ class InfoSync:
                  enabled: dict[str, bool] | None = None,
                  day: str | None = None,
                  window: tuple[str, str] | None = None,
+                 watchlist: list[str] | None = None,
                  timeout_ms: int = 120_000,
                  cancel=None) -> ResultEnvelope:
-        """执行单个信息面任务（前置 → 窗口 → 抓取 → 预过滤 → 入表 → 水位 → 校验）。"""
+        """执行单个信息面任务（前置 → 窗口 → 抓取 → 预过滤 → 入表 → 水位 → 校验）。
+
+        :param watchlist: **用户关注面**（``stock_id`` 列表）——按关注面采集的任务
+            （:data:`~st_agent.l0.info.sources.ATTENTION_TASKS`）必传，其余任务忽略。
+            **由调用方注入**（L0 不向上读 L2，D-037）：``None`` ＝调用方未接通道
+            （缺陷）；``[]`` ＝已接、关注面为空（**已知空集**，非缺失）。
+        """
         try:
             spec = get_info_task(task_key)
         except InfoValidationError as exc:
             return ResultEnvelope.validation_failed(str(exc))
-        if enabled is not None and task_key in enabled and not enabled[task_key]:
+        if not self._is_enabled(task_key, enabled):
             return self._disabled_envelope(task_key)
+        if task_key in ATTENTION_TASKS and watchlist is None:
+            return ResultEnvelope.validation_failed(
+                f"任务 {task_key!r} 按用户关注面采集（D-037）：须注入关注面"
+                "（watchlist 非 None）；无关注面请保持禁用"
+            )
         if not self._db.exists():
             now = _now()
             return ResultEnvelope.unavailable(
                 "本地市场数据库尚未建立（先执行 BaoStock 侧 setup 建库）",
                 last_updated_at=now, as_of=now,
             )
+        if task_key in ATTENTION_TASKS and not watchlist:
+            return self._attention_empty(task_key)
         known = master_codes(self._db)
         if known is None:
             now = _now()
@@ -143,8 +158,11 @@ class InfoSync:
             watermark = self._watermark(con, task_key)
         window = window or window_for(task_key, watermark, day=day)
         try:
-            fetched = self._via_gateway(task_key, spec, window,
-                                        timeout_ms=timeout_ms, cancel=cancel)
+            fetched = self._via_gateway(
+                task_key, spec, window,
+                codes=tuple(watchlist) if task_key in ATTENTION_TASKS else None,
+                timeout_ms=timeout_ms, cancel=cancel,
+            )
         except InfoFetchUnavailableError as exc:
             self._mark(task_key, status="failed",
                        error=str(exc) or "源不可达", row_count=0, watermark=watermark)
@@ -184,15 +202,21 @@ class InfoSync:
 
     def run_all(self, *, enabled: dict[str, bool] | None = None,
                 day: str | None = None,
+                watchlist: list[str] | None = None,
                 timeout_ms: int = 120_000) -> dict[str, ResultEnvelope]:
-        """按注册序执行全部信息面任务（禁用者跳过记 ``unavailable``）。"""
+        """按注册序执行全部信息面任务（禁用者跳过记 ``unavailable``）。
+
+        :param watchlist: 见 :meth:`run_task`——关注面任务默认禁用，未显式开启 /
+        未注入关注池时记**干净** ``unavailable``（不刷 ``failed`` 污染 ``sync_state``）。
+        """
         results: dict[str, ResultEnvelope] = {}
         setup_env = self.setup()
         if setup_env.status != "ok":
             return {t: setup_env for t in DOMAIN_INFO_TASKS}
         for spec in INFO_TASKS:
             results[spec.task_key] = self.run_task(
-                spec.task_key, enabled=enabled, day=day, timeout_ms=timeout_ms,
+                spec.task_key, enabled=enabled, day=day, watchlist=watchlist,
+                timeout_ms=timeout_ms,
             )
         return results
 
@@ -246,15 +270,21 @@ class InfoSync:
     # ───────────────────────── 内部：抓取闭包 ─────────────────────────
 
     def _via_gateway(self, task_key: str, spec: InfoTask,
-                     window: tuple[str, str], *, timeout_ms: int,
+                     window: tuple[str, str], *,
+                     codes: tuple[str, ...] | None,
+                     timeout_ms: int,
                      cancel) -> dict[str, tuple[dict, ...]]:
-        """经网关执行一次抓取（审计只记字节数；内容不进网关）。"""
+        """经网关执行一次抓取（审计只记字节数；内容不进网关）。
+
+        ``codes`` ＝ 注入的关注面（仅关注面任务非 ``None``）；审计 ``purpose`` 记其
+        **只数**（不逐条登记标的，避免审计面被个股列表撑爆）。
+        """
         holder: dict[str, Any] = {}
 
         def _sender(kind, host, timeout):
             _ = (kind, host, timeout)
             try:
-                rows = self._fetcher.fetch_task(task_key, window)
+                rows = self._fetcher.fetch_task(task_key, window, codes=codes)
             except InfoFetchUnavailableError as exc:
                 from st_agent.l0.net.errors import EgressUnavailableError
                 raise EgressUnavailableError(str(exc) or "源不可达") from exc
@@ -266,10 +296,13 @@ class InfoSync:
             holder["rows"] = rows
             return (0, blob, ())
 
+        purpose = f"信息面同步（{spec.domain} · {spec.source_id}）"
+        if codes is not None:
+            purpose = f"{purpose}；按用户关注面（{len(codes)} 只）"
         env = self._gateway.execute(
             "data_fetch", hosts_of(spec.source_id)[0],
             initiator=self._initiator,
-            purpose=f"信息面同步（{spec.domain} · {spec.source_id}）",
+            purpose=purpose,
             timeout_ms=timeout_ms, cancel=cancel, sender=_sender,
         )
         if env.status == "ok":
@@ -467,12 +500,39 @@ class InfoSync:
             con.commit()
         return f"data_cache/{task_key}"
 
+    @staticmethod
+    def _is_enabled(task_key: str, enabled: dict[str, bool] | None) -> bool:
+        """开关（缺省全开）；**关注面任务默认禁用**——须显式开启 **并** 注入关注池
+        （同 ``bs_k_minute`` 先例，见 05）。"""
+        if enabled is not None and task_key in enabled:
+            return bool(enabled[task_key])
+        return task_key not in ATTENTION_TASKS
+
+    def _attention_empty(self, task_key: str) -> ResultEnvelope:
+        """关注面为空 → ``empty`` + 记 ``ok``（**已知空集 ≠ 数据缺失**，D-032 ③）。
+
+        若按 ``failed`` 落痕，05 的域陈旧判据会把整个 ``sentiment_qa`` 域拖成恒
+        ``stale``——故此处记 ``ok``（行数 0、水位不变），原因写入 ``last_error`` 留痕。
+        """
+        with self._db.transact() as con:
+            watermark = self._watermark(con, task_key)
+        reason = "关注面为空（无持仓 / 观察标的）"
+        self._mark(task_key, status="ok", error=reason,
+                   row_count=0, watermark=watermark)
+        stamp = self._db.last_updated_at() or _now()
+        return ResultEnvelope.empty(
+            f"{reason}——深市互动问答按**用户关注面**采集（D-037）；"
+            "**池外标的恒为空，不等于全市场无舆情**",
+            as_of=stamp,
+        )
+
     def _disabled_envelope(self, task_key: str) -> ResultEnvelope:
         stamp = (self._db.last_updated_at() if self._db.exists() else None) or _now()
-        return ResultEnvelope.unavailable(
-            f"信息面任务 {task_key!r} 已禁用（数据源开关关闭），数据停留于标注时间",
-            last_updated_at=stamp, as_of=stamp,
-        )
+        reason = f"信息面任务 {task_key!r} 已禁用（数据源开关关闭），数据停留于标注时间"
+        if task_key in ATTENTION_TASKS:
+            reason = (f"信息面任务 {task_key!r} 按用户关注面采集（D-037）：未注入关注面，"
+                      "默认禁用；数据停留于标注时间")
+        return ResultEnvelope.unavailable(reason, last_updated_at=stamp, as_of=stamp)
 
 
 def _merge_reasons(rows: list[dict]) -> list[dict]:

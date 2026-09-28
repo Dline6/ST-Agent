@@ -28,6 +28,7 @@ from st_agent.l0.info.errors import (
 from st_agent.l0.info.fetch import HttpInfoFetcher, InfoFetcher
 from st_agent.l0.info.prefilter import UnmappedCount, filter_unmapped, master_codes
 from st_agent.l0.info.sources import (
+    ATTENTION_TASKS,
     INFO_SOURCES,
     INFO_TASKS,
     INFO_TASK_KEYS,
@@ -41,6 +42,7 @@ from st_agent.l0.info.sync import ARCHIVAL_DOMAINS, DOMAIN_INFO_TASKS, InfoSync,
 
 __all__ = [
     "ARCHIVAL_DOMAINS",
+    "ATTENTION_TASKS",
     "DOC_TEXT_DOMAINS",
     "DOMAIN_INFO_TASKS",
     "DocConsistency",

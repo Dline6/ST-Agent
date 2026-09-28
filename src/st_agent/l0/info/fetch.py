@@ -20,7 +20,7 @@ T-L0-013 再校正两处口径：
 
 - **沪市舆情有全市场流**——``sns.sseinfo.com/ajax/feeds.do`` 按 ``type`` 直接分页，
   原记「上证e互动为**按公司**接口、须先定位 ``uid``」对沪市**不成立**（深市互动易
-  仍无全市场流，本轮不覆盖，见 [D-037](../../../../项目管理/决策日志.md)）。
+  仍无全市场流，改按用户关注面采集，见 [D-037](../../../../项目管理/决策日志.md)）。
 - **``announcement.ann_type`` 无统一语义**——三源各给各的（东财＝**证券类别/板块码**、
   巨潮＝恒 ``NULL``、深交所＝大类字段可空），**不是**「公告内容类型」；内容类型若需要，
   走巨潮**请求侧 ``category``**（26 类），见 [05](../../../../docs/数据库设计-BaoStock数据层/05-同步策略与新鲜度契约.md)
@@ -40,6 +40,14 @@ T-L0-014 补一处股东户数口径（2026-09-27 实测）：
 **出网纪律**：一切请求经 L0 出网网关（02 §6）——本层只做「发一次请求并返回
 载荷」，审计与限流在网关侧。**查询参数一律经 ``urlencode``**：东财的 ``filter``
 含 ``<`` / ``>``，直接拼进 URL 会被拒（实测 400）。
+
+T-L0-015 落地深市舆情问答口径（[D-037](../../../../项目管理/决策日志.md) 口径 B）：
+
+- **深市互动易按「用户关注面」采集**——两步接口：``newircs/index/queryKeyboardInfo``
+  （body ``keyWord=代码`` → ``data[0].secid`` 即 ``orgId``）＋ ``newircs/company/question``
+  （参数**必须放 query string**，否则 400）。该源**只覆盖深市**（实测沪市公司返 0 条），
+  故非 ``sz.`` 标的**不发请求**；关注面由调用方**注入**（``fetch_task(..., codes=…)``），
+  L0 不向上读 L2。
 """
 
 from __future__ import annotations
@@ -62,7 +70,7 @@ from st_agent.l0.info.errors import (
     InfoFetchUnavailableError,
     InfoValidationError,
 )
-from st_agent.l0.info.sources import to_stock_id
+from st_agent.l0.info.sources import ATTENTION_TASKS, to_stock_id
 
 __all__ = [
     "HttpInfoFetcher",
@@ -91,8 +99,15 @@ InfoRows = dict[str, tuple[dict, ...]]
 class InfoFetcher(Protocol):
     """信息面抓取器协议（同步引擎唯一依赖；测试注入离线 Fake）。"""
 
-    def fetch_task(self, task_key: str, window: tuple[str, str]) -> InfoRows:
-        """抓取一个任务在其窗口内的全部行；不可达 → ``InfoFetchUnavailableError``。"""
+    def fetch_task(self, task_key: str, window: tuple[str, str], *,
+                   codes: tuple[str, ...] | None = None) -> InfoRows:
+        """抓取一个任务在其窗口内的全部行；不可达 → ``InfoFetchUnavailableError``。
+
+        :param codes: **用户关注面**（``stock_id`` 列表）——按关注面采集的任务
+            （``coverage='watch'``，见 :data:`~st_agent.l0.info.sources.ATTENTION_TASKS`）
+            必传，表示**只采这些标的**；其余任务忽略。**由调用方注入**（L0 不向上
+            读 L2，[D-037](../../../../项目管理/决策日志.md)）。
+        """
         ...
 
 
@@ -590,20 +605,42 @@ def parse_shareholder_num_cninfo(payload: dict) -> tuple[dict, ...]:
 
 # ───────────────────────── 纯解析：舆情 ─────────────────────────
 
-def parse_sentiment_qa_irm(payload: dict) -> tuple[dict, ...]:
-    """互动易（深市）→ 问答行。``answer`` 为 ``None`` 表示**尚未回复**（合法态）。
+def _irm_code(stock_id: str) -> str | None:
+    """关注面项（``sz.000001``）→ 互动易的六位 ``stockcode``；**非深市 → ``None``**。
 
-    ⚠️ 该接口是**按公司**的（见 :meth:`HttpInfoFetcher._fetch_info_sentiment_qa_irm`），
-    非全市场流。
+    互动易只覆盖深市（实测沪市公司返 0 条），故非 ``sz.`` 标的一律**不发请求**——
+    省一次两步往返，也免得把「源不覆盖」读成「该标的无问答」（D-032 ③）。
     """
+    prefix, _, digits = str(stock_id or "").strip().partition(".")
+    if not digits or prefix.lower() != "sz":
+        return None
+    return digits.zfill(6)
+
+
+def parse_sentiment_qa_irm(payload: dict) -> tuple[dict, ...]:
+    """互动易（深市）``newircs/company/question`` 载荷 → 问答行。
+
+    ``answer`` 为 ``None`` 表示**尚未回复**（合法态，**不丢行**——否则系统性漏掉
+    「公司尚未回应」这一风险信号）。
+
+    ``market`` 显式标 ``sz``：该源只覆盖深市（实测沪市公司返 0 条），不靠号段推断
+    （同 :func:`parse_sentiment_qa_sse` 的不误标原则，D-032）。
+
+    **fail-fast**：载荷缺 ``rows`` 键 → **结构变更**（抛错），与「该公司无问答」
+    （``rows`` 为合法空列表）**必须可区分**（对齐 T-L0-012 / T-L0-013 的两态判据）。
+    """
+    if not isinstance(payload, dict) or "rows" not in payload:
+        raise InfoValidationError(
+            "互动易 company/question 载荷缺 rows 键——页面结构可能已变")
     rows: list[dict] = []
-    for item in (payload.get("rows") or payload.get("data") or []):
+    for item in payload.get("rows") or []:
         code = _text(item.get("stockCode"))
         question = _text(item.get("mainContent"))
         if not code or not question:
             continue
         rows.append({
             "code": code,
+            "market": "sz",
             "question": question,
             "answer": _text(item.get("attachedContent")),
             "answerer": _text(item.get("attachedAuthor")),
@@ -773,6 +810,18 @@ _SSE_FEED_TYPES = ("10", "11")
 ``answer=None``，稍后被回复 → 本次抓取内由后到的「有回答」行覆盖同键行
 （键 = ``(code, question, ask_time)``）。"""
 
+_IRM_SEARCH = "https://irm.cninfo.com.cn/newircs/index/queryKeyboardInfo"
+_IRM_QUESTION = "https://irm.cninfo.com.cn/newircs/company/question"
+_IRM_REFERER = "https://irm.cninfo.com.cn/"
+"""互动易（巨潮，**深市**投资者关系）——**按公司**的两步接口，**无全市场流**（D-037）。"""
+
+_IRM_PAGE_SIZE = 1000
+"""每页条数——参数形状取自 ``akshare`` 的 ``stock_irm_cninfo.py``（成熟实现）。"""
+
+_IRM_MAX_PAGES = 10
+"""翻页上限（兜底）：同 ``akshare`` 的收敛口径（``totalPage`` 超过 10 即只取前 10 页）。
+源端按公司给问答，页数由该公司的问答量决定——上限防翻页失控，**不是**分页语义的声明。"""
+
 _CNINFO_API = "https://webapi.cninfo.com.cn/api/sysapi/p_sysapi1034"
 """巨潮数据中心「股东人数及持股集中度」（专题统计）——**按报告期**全市场。"""
 
@@ -824,11 +873,15 @@ class HttpInfoFetcher:
     def __init__(self, *, timeout: float = 20.0) -> None:
         self._timeout = timeout
 
-    def fetch_task(self, task_key: str, window: tuple[str, str]) -> InfoRows:
+    def fetch_task(self, task_key: str, window: tuple[str, str], *,
+                   codes: tuple[str, ...] | None = None) -> InfoRows:
         handler = getattr(self, f"_fetch_{task_key}", None)
         if handler is None:
             raise InfoValidationError(f"真实抓取器未实现任务 {task_key!r}")
         try:
+            # 关注面任务的处理函数**额外**接收关注池；其余任务只认窗口
+            if task_key in ATTENTION_TASKS:
+                return handler(window, codes=codes)
             return handler(window)
         except (InfoFetchUnavailableError, InfoValidationError):
             raise  # 源不可达 / 能力缺口（如「按公司接口」）——原样透出，不吞成抓取失败
@@ -1040,17 +1093,65 @@ class HttpInfoFetcher:
         _ = window
         return {"sentiment_hot": parse_sentiment_hot_ths(payload)}
 
-    def _fetch_info_sentiment_qa_irm(self, window: tuple[str, str]) -> InfoRows:
-        """互动易——**按公司**的两步流程（先查 ``secid``，再查问答）。
+    def _fetch_info_sentiment_qa_irm(self, window: tuple[str, str], *,
+                                     codes: tuple[str, ...] | None = None) -> InfoRows:
+        """互动易（深市）——**按关注面逐公司**的两步流程（[D-037](../../../../项目管理/决策日志.md) 口径 B）。
 
-        ⚠️ 本接口**没有全市场流**：需给定股票代码。当前任务形状按「全市场窗口」
-        定义，故此处**显式**报告该缺口而非返回空结果（见 T-L0-010 遗留册）。
+        ① ``queryKeyboardInfo``（body ``keyWord=代码``）→ ``data[0].secid`` 即 ``orgId``；
+        ② ``company/question``（参数**必须放 query string 且以 POST 发出**，否则 400）
+        → ``rows``，按 ``totalPage`` 翻页（页数上限兜底）。
+
+        **只采 ``sz.`` 标的**：该源只覆盖深市（实测沪市公司返 0 条），非深市标的
+        **不发请求**（见 :func:`_irm_code`）。
+
+        ``window`` 不参与过滤：本接口**无日期窗口语义**，每轮按关注面重拉，落库由
+        ``qa_id``（业务键确定性摘要）幂等 UPSERT——故「旧提问新回复」可自愈。
         """
         _ = window
-        raise InfoValidationError(
-            "互动易为**按公司**接口（无全市场流）：须给定股票代码全域后逐只查询——"
-            "任务形状待调整（已登记 T-L0-010 遗留册）"
-        )
+        merged: list[dict] = []
+        for stock_id in codes or ():
+            code = _irm_code(stock_id)
+            if code is None:
+                continue  # 非深市：源不覆盖
+            org_id = self._irm_org_id(code)
+            if org_id is None:
+                continue  # 源端查无此公司（退市等）——合法空，非结构变更
+            for page in range(1, _IRM_MAX_PAGES + 1):
+                # ``data={}`` 只为**强制 POST**（body 为空；参数在 query string）
+                payload = self._request(_IRM_QUESTION, params={
+                    "_t": "1", "stockcode": code, "orgId": org_id,
+                    "pageSize": str(_IRM_PAGE_SIZE), "pageNum": str(page),
+                    "keyWord": "", "startDay": "", "endDay": "",
+                }, data={}, referer=_IRM_REFERER)
+                batch = parse_sentiment_qa_irm(payload)
+                merged.extend(batch)
+                total = _int(payload.get("totalPage"))
+                if total is not None:
+                    if page >= total:
+                        break
+                elif len(batch) < _IRM_PAGE_SIZE:
+                    break  # `totalPage` 缺失时的兜底判据：不足一页即末页
+        return {"sentiment_qa": tuple(merged)}
+
+    def _irm_org_id(self, code: str) -> str | None:
+        """第一步：搜索接口取 ``orgId``（``data[0].secid``）。
+
+        载荷**缺 ``data`` 键** → 结构变更（抛错）；``data`` 为**空列表** → 源端查无
+        此公司（合法，返回 ``None``）——两态必须分开（对齐 T-L0-012 / 013 的判据）。
+        """
+        payload = self._request(_IRM_SEARCH, data={"keyWord": code},
+                                referer=_IRM_REFERER)
+        if not isinstance(payload, dict) or "data" not in payload:
+            raise InfoValidationError(
+                "互动易 queryKeyboardInfo 载荷缺 data 键——页面结构可能已变")
+        found = payload.get("data") or []
+        if not found:
+            return None
+        org_id = _text(found[0].get("secid"))
+        if not org_id:
+            raise InfoValidationError(
+                "互动易 queryKeyboardInfo 命中项缺 secid——页面结构可能已变")
+        return org_id
 
     def _fetch_info_sentiment_qa_sse(self, window: tuple[str, str]) -> InfoRows:
         """上证e互动**全市场流**（``ajax/feeds.do``）→ 问答行（覆盖沪市）。
