@@ -23,14 +23,24 @@
 
 from __future__ import annotations
 
+import os
+import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from st_agent.l0.llm.client import LlmClient
+from st_agent.l0.llm.errors import LlmNotFoundError
+from st_agent.l0.llm.http_transport import (
+    OpenAiRoute,
+    openai_compat_sender_factory,
+    provider_hosts_of,
+)
 from st_agent.l0.llm.registry import EndpointRegistry
 from st_agent.l0.net.gateway import EgressGateway
+from st_agent.l0.secrets.errors import CredentialNotFoundError
 from st_agent.l0.secrets.vault import CredentialVault
 from st_agent.l0.storage.store import Store
 from st_agent.l1.mcp.lifecycle import McpHubStateMachine
@@ -51,12 +61,37 @@ from st_agent.l1.skills.registry import SkillRegistry
 from st_agent.l1.workflow.store import WorkflowStore
 
 __all__ = [
+    "DOTENV_NAME",
+    "LLM_CREDENTIAL_ID",
+    "LLM_ENDPOINT_ID",
+    "LLM_ENV_KEYS",
+    "LLM_PROVIDER",
     "L1Runtime",
+    "LlmBootstrap",
     "SkillPermissionSource",
     "VaultEnvResolver",
     "build_l1_runtime",
+    "llm_env_from_ambient",
+    "load_dotenv",
     "open_runtime",
 ]
+
+DOTENV_NAME = ".env"
+"""引导装载默认查找的文件名（开发 / 自用通道，**不进产品面文档**）。"""
+
+LLM_ENV_KEYS = ("LLM_API_KEY", "LLM_BASE_URL", "LLM_MODEL")
+"""引导装载取的三键（三键齐备才装；缺任一即 fail-closed）。"""
+
+LLM_ENDPOINT_ID = "cloud-main"
+LLM_CREDENTIAL_ID = "llm-api-key"
+LLM_PROVIDER = "openai-compatible"
+
+LLM_CAPABILITY = {"max_context_tokens": 128_000, "supports_structured_output": True}
+"""引导装载的端点能力声明。
+
+``.env`` 三键不含上下文规模，故取一个**不设限的宽松档**（宁可在提供方侧被拒，
+也不在本地把一个合法 prompt 误判超限）。真实档位待设置页任务按端点配置。
+"""
 
 
 class VaultEnvResolver:
@@ -207,6 +242,8 @@ def build_l1_runtime(
     market_query: Any,
     sender: Any | None = None,
     transport: Any | None = None,
+    llm_config: "LlmBootstrap | None" = None,
+    llm_post: Any | None = None,
     freshness_source: Any | None = None,
     mcp_transport_factory: Any | None = None,
     mcp_env_resolver: Any | None = None,
@@ -225,7 +262,14 @@ def build_l1_runtime(
     :param store: **已解锁**的 ``Store``（解锁不属组合根）
     :param sender: 按次发包实现（``Sender``）；缺省 ``None`` → 出网一律
         ``unavailable``（不臆测、不直连）
-    :param transport: LLM 传输实现；缺省 ``None`` → 调用即 ``unavailable``
+    :param transport: LLM 传输实现；缺省 ``None`` → 调用即 ``unavailable``。
+        **显式传入即优先**（``llm_config`` / ``llm_post`` 随之失效）
+    :param llm_config: 引导装载的 LLM 三键（:class:`LlmBootstrap`）；给定且未显式
+        传 ``transport`` 时，组合根**幂等播种**端点 / 凭据 / ``provider → host``
+        映射，并装配真实发送器（``T-L1-011``）。缺省 ``None`` → 不装，调用仍
+        fail-closed。**本函数不读环境**——取值面由 ``open_runtime`` 或调用方解析
+    :param llm_post: 真实发送器的 HTTP 发送口（缺省 ``urllib``）；测试注入替身
+        以离线覆盖
     :param freshness_source: 新鲜度来源（须提供 ``freshness_verdict(domain)``，
         如 ``st_agent.l0.market.BaoStockSync``）；缺省 ``None`` → 不接新鲜度判定
         （执行器的 ``ctx.freshness`` 为 ``None``，口径不合即构造期拒绝）
@@ -244,8 +288,16 @@ def build_l1_runtime(
     gateway = EgressGateway(store, sender=sender, online=online)
     endpoints = EndpointRegistry(store)
     vault = CredentialVault(store)
-    llm = LlmClient(store, endpoints, vault, transport)
     provider_hosts = ProviderHostRegistry(store)
+
+    # 引导装载（T-L1-011）：显式 transport 优先；否则按 llm_config 幂等播种并装配真实发送器
+    llm_transport = transport
+    if llm_transport is None and llm_config is not None:
+        llm_transport = _bootstrap_llm_transport(
+            llm_config, endpoints=endpoints, vault=vault,
+            provider_hosts=provider_hosts, gateway=gateway, post=llm_post,
+        )
+    llm = LlmClient(store, endpoints, vault, llm_transport)
 
     freshness = (
         MarketFreshnessOracle(freshness_source) if freshness_source is not None else None
@@ -328,22 +380,159 @@ def open_runtime(
     passphrase: str,
     *,
     create: bool = False,
+    llm_env: Mapping[str, str] | None = None,
+    dotenv_path: Path | str | None = None,
     **kwargs: Any,
 ) -> L1Runtime:
     """会话入口：解锁存储**一次**并装配运行时。
 
     :param create: 盘上无存储时是否先初始化（``Store.create``）；缺省 ``False``
         即只打开既有存储（不存在或口令错 → L0 的 ``StorageOpenError``）
-    :param kwargs: 透传给 :func:`build_l1_runtime`
+    :param llm_env: 引导装载的取值面（``LLM_API_KEY`` / ``LLM_BASE_URL`` /
+        ``LLM_MODEL``）。缺省 ``None`` → 取**环境变量**（缺三键时回落 ``.env``，
+        见 :func:`llm_env_from_ambient`）；传 ``{}`` 即**显式关闭**引导装载
+    :param dotenv_path: ``.env`` 的位置；缺省 ``<cwd>/.env``
+    :param kwargs: 透传给 :func:`build_l1_runtime`（其中 ``transport`` /
+        ``llm_config`` 优先于 ``llm_env`` 的解析结果）
 
     口令派生每会话每存储只发生一次（``Store.open`` / ``Store.create`` 各跑一次
     PBKDF2：主密钥 + ``secrets`` 独立派生）；运行时持有该句柄供整个会话复用，
     **运行期不再重新解锁**，也不在进程内另设密钥缓存。
     """
     store = Store.create(root, passphrase) if create else Store.open(root, passphrase)
+    env = llm_env if llm_env is not None else llm_env_from_ambient(dotenv_path)
+    kwargs.setdefault("llm_config", LlmBootstrap.from_env(env))
     return build_l1_runtime(store, **kwargs)
 
 
 def _local_now() -> datetime:
     """本机当前时间（带本地时区语义；01 §8 要求时间锚点带时区）。"""
     return datetime.now().astimezone()
+
+
+# ───────────────────────── 引导装载：LLM 端点与会话（T-L1-011） ─────────────────────────
+
+_INLINE_COMMENT = re.compile(r"\s+#")
+
+
+@dataclass(frozen=True)
+class LlmBootstrap:
+    """引导装载的 LLM 三键（``.env`` / 环境变量；``T-L1-011``）。
+
+    **开发 / 自用通道**——产品正典的端点配置入口是设置页
+    （``T-L3-003`` / ``T-L3-004``，[01 §7](../../docs/技术架构-v2/01-平台共享契约.md)
+    的配置注册表）；本类只解决「三键配好即可真实调用」，故**不做** 01 §7 登记。
+    """
+
+    api_key: str
+    base_url: str
+    model: str
+
+    @classmethod
+    def from_env(cls, env: Mapping[str, str]) -> "LlmBootstrap | None":
+        """三键**齐备**才产出；任一缺失 / 空白 → ``None``（fail-closed，不猜端点）。"""
+        values = {key: str(env.get(key) or "").strip() for key in LLM_ENV_KEYS}
+        if not all(values.values()):
+            return None
+        return cls(
+            api_key=values["LLM_API_KEY"],
+            base_url=values["LLM_BASE_URL"],
+            model=values["LLM_MODEL"],
+        )
+
+
+def load_dotenv(path: Path | str) -> dict[str, str]:
+    """读 ``KEY=VALUE`` 行（整行注释 / 行尾注释 / 成对引号剥除）。
+
+    文件不存在或不可读 → 空字典——缺省路径下没有 ``.env`` 是常态，不是错误。
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError:
+        return {}
+    values: dict[str, str] = {}
+    for raw in text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        value = value.strip()
+        if value.startswith("#"):
+            value = ""
+        else:
+            value = _INLINE_COMMENT.split(value, maxsplit=1)[0].strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        if key.strip():
+            values[key.strip()] = value
+    return values
+
+
+def llm_env_from_ambient(dotenv_path: Path | str | None = None) -> dict[str, str]:
+    """取值面：**环境变量优先**，三键不齐时回落 ``.env``（缺省 ``<cwd>/.env``）。"""
+    present = {k: v for k, v in os.environ.items() if k in LLM_ENV_KEYS}
+    if all(str(present.get(k, "")).strip() for k in LLM_ENV_KEYS):
+        return present
+    path = Path(dotenv_path) if dotenv_path is not None else Path.cwd() / DOTENV_NAME
+    merged = load_dotenv(path)
+    merged.update(present)
+    return merged
+
+
+def _bootstrap_llm_transport(
+    config: LlmBootstrap,
+    *,
+    endpoints: EndpointRegistry,
+    vault: CredentialVault,
+    provider_hosts: ProviderHostRegistry,
+    gateway: EgressGateway,
+    post: Any | None = None,
+):
+    """播种三类记录（幂等）并装配真实发送器（``T-L1-011``）。
+
+    ``base_url`` 非法（非 http/https、无主机）时 :class:`~st_agent.l0.llm.http_transport.OpenAiRoute`
+    抛 ``ValueError``——这是**启动期**的配置错误，显式暴露胜过静默降级。
+    """
+    route = OpenAiRoute(base_url=config.base_url, model=config.model)
+    _seed_llm_records(route, api_key=config.api_key, endpoints=endpoints, vault=vault,
+                      provider_hosts=provider_hosts)
+    routes = {LLM_PROVIDER: route}
+    # 审计主机与请求面必须同源（provider_hosts_of），否则发送器拒绝发包
+    return gateway.llm_transport(
+        provider_hosts_of(routes),
+        sender_factory=openai_compat_sender_factory(routes, post=post),
+    )
+
+
+def _seed_llm_records(
+    route: OpenAiRoute,
+    *,
+    api_key: str,
+    endpoints: EndpointRegistry,
+    vault: CredentialVault,
+    provider_hosts: ProviderHostRegistry,
+) -> None:
+    """端点 / 凭据 / ``provider → host`` 的**整组**幂等播种。
+
+    **端点已存在即整组跳过**——与官方 Pack 播种同口径（``build_l1_runtime`` 的
+    「只首次播种」），既不覆盖既有配置，也不留下「新凭据无人引用」这类半套记录。
+    故换 Key 走凭据库 ``rotate``、换端点走 ``replace``，而不是改 ``.env`` 后指望
+    它覆盖既有记录。三者为一组：端点供 ``LlmClient``、凭据供取 Key、映射供沙箱
+    核对 ``net_access``。
+    """
+    try:
+        endpoints.get(LLM_ENDPOINT_ID)
+        return
+    except LlmNotFoundError:
+        pass
+    endpoints.register(
+        LLM_ENDPOINT_ID, kind="cloud", provider=LLM_PROVIDER,
+        capability=dict(LLM_CAPABILITY), priority=10,
+        purpose="日常（引导装载）", credential_id=LLM_CREDENTIAL_ID,
+    )
+    try:
+        vault.get_view(LLM_CREDENTIAL_ID)
+    except CredentialNotFoundError:
+        vault.add(LLM_CREDENTIAL_ID, "llm_api_key", api_key)
+    if provider_hosts.resolve(LLM_PROVIDER) is None:
+        provider_hosts.register(LLM_PROVIDER, route.host)

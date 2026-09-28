@@ -192,12 +192,14 @@ class TestGwt4SessionUnlock:
     def test_create_flag_initialises_a_fresh_store(self, tmp_path: Path):
         root = tmp_path / "fresh"
 
-        rt = open_runtime(root, PASS, create=True, market_query=_FAKE_MARKET)
+        # llm_env={} 显式关闭引导装载（T-L1-011）——本用例断言「全新存储为空」，
+        # 不能随本机 .env 的有无而变（否则 CI 无 .env 过、本机有 .env 挂）
+        rt = open_runtime(root, PASS, create=True, market_query=_FAKE_MARKET, llm_env={})
 
         assert rt.endpoints.list_endpoints() == ()
         assert rt.vault.list_credentials() == ()
         # 二次以既有存储打开（不经 create）可行
-        again = open_runtime(root, PASS, market_query=_FAKE_MARKET)
+        again = open_runtime(root, PASS, market_query=_FAKE_MARKET, llm_env={})
         assert again.endpoints.list_endpoints() == ()
 
     def test_wrong_passphrase_is_rejected_by_l0(self, tmp_path: Path):

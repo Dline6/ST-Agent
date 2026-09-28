@@ -208,12 +208,17 @@ class EgressGateway:
         bytes_out: int = 0,
         timeout_ms: int = 60_000,
         cancel: threading.Event | None = None,
+        sender: Sender | None = None,
     ) -> Iterator[str]:
         """经网关执行流式出网，产出文本块；失败抛 ``Egress*`` 异常。
 
         审计事件无论成败先行落盘（成功 ``ok`` / 离线 ``unavailable`` /
         超时 ``failed`` / 取消 ``cancelled``）。发起前校验失败抛
         ``NetValidationError``（无出网事实，不记审计）。
+
+        :param sender: 按次发包实现（缺省用构造时 ``sender``）——与 ``execute``
+            同款。一次请求的载荷只能在这一跳组装时（如 LLM 的 prompt 与凭据）
+            经此注入：载荷由 sender 闭包承载，网关仍只见字节数（02 §6）。
         """
         req_kind = self._check_request(kind, target_host, initiator, purpose,
                                        bytes_out, timeout_ms)
@@ -226,7 +231,8 @@ class EgressGateway:
                       bytes_out, 0, "unavailable",
                       "离线模式：请求已拦截，未发出（网络恢复后按需重发）")
             raise EgressUnavailableError("离线模式：请求未发出（pending_reconnect）")
-        if self._sender is None:
+        active_sender = sender if sender is not None else self._sender
+        if active_sender is None:
             self._log(req_kind, target_host, initiator, purpose,
                       bytes_out, 0, "unavailable", f"{target_host} 无可用发包实现")
             raise EgressUnavailableError(f"{target_host} 无可用发包实现")
@@ -234,7 +240,7 @@ class EgressGateway:
         elapsed_ms = lambda: int((time.monotonic() - started) * 1000)
         bytes_in = 0
         try:
-            _, _, chunks = self._sender(req_kind, target_host, timeout_ms)
+            _, _, chunks = active_sender(req_kind, target_host, timeout_ms)
             for piece in chunks:
                 if cancel is not None and cancel.is_set():
                     self._log(req_kind, target_host, initiator, purpose,
@@ -409,7 +415,12 @@ class EgressGateway:
 
     # ───────────────────────── LLM 传输适配器（GWT-4） ─────────────────────
 
-    def llm_transport(self, provider_hosts: dict[str, str] | None = None):
+    def llm_transport(
+        self,
+        provider_hosts: dict[str, str] | None = None,
+        *,
+        sender_factory: Callable[[Any, str, str | None, int], Sender] | None = None,
+    ):
         """生成 ``LlmClient`` 可用的 ``transport`` callable（兑现 T-L0-003 遗留）。
 
         签名 ``(endpoint, prompt, key, timeout_ms) -> Iterable[str]``：按端点
@@ -418,6 +429,12 @@ class EgressGateway:
         ``Egress*`` 异常翻译为 ``LlmClient`` 可接的 ``Transport*`` 异常
         （T-L0-003 ``transport`` 签名只认该体系）。
         未登记的 provider → ``TransportUnavailableError``（上层映射为信封）。
+
+        :param sender_factory: 真实发送器的**按次构造器**（02 §6 按次 sender）——
+            ``(endpoint, prompt, key, timeout_ms) -> Sender``。缺省 ``None`` 时
+            沿用网关构造时的 sender（其签名不含 prompt / key，故只适合替身与
+            离线路径）；真实端点须经此注入，否则prompt 发不出去（只有字节数
+            被记录）。工厂返回的 Sender 抛 ``Egress*`` 时按同款映射透出。
         """
         hosts = dict(provider_hosts or {})
 
@@ -434,15 +451,20 @@ class EgressGateway:
                 raise TransportUnavailableError(
                     f"提供方 {endpoint.provider!r} 未登记目标主机"
                 )
-            _ = key  # Key 只透传给 sender（如 TLS/鉴权头由 sender 组装），网关不记录
             purpose = f"LLM 调用（端点 {endpoint.endpoint_id}，提供方 {endpoint.provider}）"
             try:
+                # 载荷（prompt / key）只进按次 sender 闭包，网关只见字节数
+                per_call: Sender | None = (
+                    sender_factory(endpoint, prompt, key, timeout_ms)
+                    if sender_factory is not None else None
+                )
                 yield from self.stream(
                     "llm_call", host,
                     initiator=f"llm-endpoint:{endpoint.endpoint_id}",
                     purpose=purpose,
                     bytes_out=len(prompt.encode("utf-8")),
                     timeout_ms=timeout_ms,
+                    sender=per_call,
                 )
             except EgressUnavailableError as exc:
                 raise TransportUnavailableError(str(exc)) from exc

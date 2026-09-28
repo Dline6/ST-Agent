@@ -130,11 +130,16 @@ def seed_market_db(root: Path, passphrase: str) -> None:
 
 
 def assemble(root: Path, *, create: bool = False) -> Rig:
-    """装配一次运行时（``create=True`` 即盘上无存储时先初始化）。"""
+    """装配一次运行时（``create=True`` 即盘上无存储时先初始化）。
+
+    ``llm_env={}`` **显式关闭** LLM 引导装载（T-L1-011）——本套件是**离线**
+    装配，不能随开发机 ``.env`` 的有无而变（否则 CI 无 ``.env`` 过、本机挂）；
+    LLM 面由各用例按需自注入。
+    """
     feed = MarketData()
     sender = RecordingSender()
     runtime = open_runtime(
-        root, PASS, create=create, market_query=feed, sender=sender,
+        root, PASS, create=create, market_query=feed, sender=sender, llm_env={},
     )
     feed.bind(runtime.store)
     return Rig(root=root, runtime=runtime, feed=feed, sender=sender)
