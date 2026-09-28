@@ -266,7 +266,7 @@ repos:
 
 **合入方式（2026-09-26 起）**：PR 建好后即 `gh pr merge <n> --auto --squash --delete-branch`，检查满足后自动合入，**不必守着 CI**（此前惯例是等 CI 绿再手动 squash，已废止；见 [决策日志 D-011](决策日志.md) / [D-012](决策日志.md)）。**前提是 `main` 上有必检规则**（本仓库：ruleset `main-require-ci` 要求 `check`）——没有它 auto-merge 会立即合入、根本不过 CI。因 auto-merge 一旦满足条件即落地，上列「人工 / Agent 自查部分」3、4 两条必须在**建 PR 之前**过完。
 
-> CI 只跑离线部分：真实网络 / 长跑用例标 `@pytest.mark.live` 放 `tests/live/`，本地按需 `pytest -m live` 单跑，不进 CI。baostock 是可选依赖（`pip install -e ".[market]"`），CI 不装——其缺失路径本身有测试覆盖。
+> CI 只跑离线部分：真实网络 / 长跑用例标 `@pytest.mark.live` 放 `tests/live/`，本地按需 `pytest -m live` 单跑，不进 CI（**动到真实 LLM 出网面时该子集是强制项、非「按需」**，见 [工作流.md「测试分层」](工作流.md) 与 [D-059](决策日志.md)）。baostock 是可选依赖（`pip install -e ".[market]"`），CI 不装——其缺失路径本身有测试覆盖。
 
 ### 5.3 收工 checklist（每次准备 commit / push 时过一遍）
 
