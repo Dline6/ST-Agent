@@ -58,32 +58,22 @@ def test_reserved_types_are_registered_but_not_implemented() -> None:
         assert spec.required_slots == ()
 
 
-#: 归 `T-L3-004.1` / `.2` 的四型——它们在**本叶之后**落地。这份「待补齐集」是显式声明的：
-#: 那两叶一开工，下面的断言就会因集合变化而红，逼人把它收紧成「两侧相等」——
-#: 欠账由机器接住，不靠记性。
-PENDING_IN_FRONTEND = frozenset(
-    {"trace_timeline", "context_card", "config_draft_card", "conflict_adjudication_card"}
-)
-
-#: 本叶（`T-UI-001.3`）自己交付的两型——它们必须已在册。
-OWNED_BY_THIS_TASK = ("table", "report_card")
+#: 本批（`T-L3-004.1` / `.2`）之后，四型渲染件已随注册表落地——`T-UI-001.3` 留下的
+#: 「待补齐集」由此**收紧为空**：两侧必须**相等**，不再有豁免项（欠账由机器接住，不靠记性）。
+PENDING_IN_FRONTEND: frozenset[str] = frozenset()
 
 
 def test_frontend_registry_matches_the_python_side() -> None:
-    """两侧不漂移：前端**不得**登记 Python 侧不认的类型，也不得漏掉本叶交付的两型。"""
+    """两侧不漂移：前端**不得**登记 Python 侧不认的类型，也不得漏掉任何已实现型。"""
     frontend = _frontend_component_types()
     assert frontend <= set(IMPLEMENTED_COMPONENT_TYPES), "前端登记了契约未实现的类型"
-    assert set(OWNED_BY_THIS_TASK) <= frontend
     assert set(IMPLEMENTED_COMPONENT_TYPES) - frontend == PENDING_IN_FRONTEND
 
 
 def test_frontend_renderers_exist_as_files() -> None:
     """注册表里点名的渲染件必须真有对应模块（防悬空登记）。"""
-    components = _UI / "web" / "js" / "components"
-    assert components.is_dir()
-    text = _REGISTRY_JS.read_text(encoding="utf-8")
-    for module in re.findall(r"from '\./components/(\w+)\.js'", text):
-        assert (components / f"{module}.js").is_file(), module
+    for relative in re.findall(r"from '\./([\w/]+)\.js'", _REGISTRY_JS.read_text(encoding="utf-8")):
+        assert (_UI / "web" / "js" / f"{relative}.js").is_file(), relative
 
 
 @pytest.mark.parametrize(
@@ -92,8 +82,8 @@ def test_frontend_renderers_exist_as_files() -> None:
         ("table", {"columns": [], "rows": []}),
         ("report_card", {"sections": []}),
         ("trace_timeline", {"steps": []}),
-        ("context_card", {"sections": []}),
-        ("config_draft_card", {"summary": {}}),
+        ("context_card", {"sections": [], "labels": {}}),
+        ("config_draft_card", {"target": "stock-watch", "panels": []}),
         ("conflict_adjudication_card", {"sides": [], "question": "选哪一条"}),
     ],
 )
@@ -104,6 +94,8 @@ def test_complete_descriptions_have_no_slot_gaps(component_type: str, slots: dic
 def test_slot_gaps_reports_missing_required_slots() -> None:
     assert slot_gaps(_description("table", {"columns": []})) == ("rows",)
     assert slot_gaps(_description("trace_timeline", {})) == ("steps",)
+    assert slot_gaps(_description("context_card", {"sections": []})) == ("labels",)
+    assert slot_gaps(_description("config_draft_card", {"summary": "草稿"})) == ("target", "panels")
 
 
 def test_reserved_type_is_not_judged_here() -> None:

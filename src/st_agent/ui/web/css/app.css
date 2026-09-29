@@ -115,3 +115,60 @@ main {
 
 .component--degraded { padding: .75rem; border: 1px dashed var(--line); border-radius: 8px; }
 .component--degraded summary { cursor: pointer; color: var(--fg-muted); font-size: .85rem; }
+
+/* ── L3 四型（05 §2 / §5 / §7 / §9；槽词汇表见 D-064） ──────────── */
+
+.component__title { margin: 0 0 .35rem; font-size: 1rem; }
+.component__meta { margin: .2rem 0; color: var(--fg-muted); font-size: .88rem; }
+.component__greeting,
+.component__summary,
+.component__question { margin: .35rem 0; }
+.component__pairs { display: grid; grid-template-columns: max-content 1fr; gap: .2rem .75rem; margin: .35rem 0; }
+.component__pairs dt { color: var(--fg-muted); font-size: .88rem; }
+.component__pairs dd { margin: 0; }
+.component__unknown { margin-top: .5rem; }
+.component__unknown summary { cursor: pointer; color: var(--delayed); font-size: .85rem; }
+
+.badge {
+  display: inline-block;
+  padding: 0 .4rem;
+  margin-right: .3rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: .8rem;
+}
+.badge--degraded { color: var(--delayed); border-color: var(--delayed); }
+.chip--action { color: var(--notice); border-color: var(--notice); }
+
+/* trace_timeline（05 §7）：每环可点开细看 */
+.trace-steps { margin: .5rem 0; padding-left: 1.2rem; }
+.trace-step { margin: .3rem 0; }
+.trace-step summary { cursor: pointer; }
+.trace-step__index { display: inline-block; min-width: 1.2rem; color: var(--fg-muted); }
+.trace-step__type { font-weight: 600; }
+.trace-step__meta { margin-left: .5rem; color: var(--fg-muted); font-size: .85rem; }
+.trace-conclusion { margin: .5rem 0 0; font-weight: 600; }
+
+/* context_card（05 §2）：六段固定卡片 */
+.card-section { margin: .5rem 0; padding: .5rem .75rem; border: 1px solid var(--line); border-radius: 8px; }
+.card-section__title { margin: 0 0 .25rem; font-size: .95rem; }
+.card-section__items,
+.card-section__tags { margin: .25rem 0; padding-left: 1.1rem; }
+.card-section__tags { list-style: none; padding-left: 0; }
+.card-section__tags li { display: inline-block; }
+
+/* config_draft_card（05 §5）：草稿 / 面板两个形态 */
+.component__panels,
+.component__questions { margin: .35rem 0; padding-left: 1.1rem; }
+.panel-row,
+.component__questions li { margin: .35rem 0; }
+.panel-row__label { margin: 0; font-weight: 600; }
+.panel-row__value { margin: 0; }
+.question__prompt { margin: 0; }
+
+/* conflict_adjudication_card（05 §9）：两方并列、不合并 */
+.conflict-sides { display: flex; flex-wrap: wrap; gap: .75rem; margin: .5rem 0; }
+.conflict-side { flex: 1 1 14rem; padding: .5rem .75rem; border: 1px solid var(--line); border-radius: 8px; }
+.conflict-side__label { margin: 0 0 .25rem; font-size: .95rem; }
+.conflict-directions { margin: .25rem 0; padding-left: 1.1rem; }
+.conflict-actions { margin: .25rem 0; }

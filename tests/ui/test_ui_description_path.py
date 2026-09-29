@@ -6,6 +6,11 @@
 
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
+import pytest
+
 from st_agent.contracts.ui_description import UiDescription, new_description_id
 from st_agent.ui.app import build_ui
 
@@ -75,3 +80,49 @@ def test_missing_required_slot_is_blocked_before_the_renderer() -> None:
     )
     assert payload["status"] == "validation_failed"
     assert "rows" in payload["reason"]
+
+
+@pytest.mark.parametrize(
+    "kind,component_type",
+    [
+        ("trace_timeline", "trace_timeline"),
+        ("context_card", "context_card"),
+        ("config_draft_card", "config_draft_card"),
+        ("config_draft_panel", "config_draft_card"),
+        ("conflict_adjudication_card", "conflict_adjudication_card"),
+    ],
+)
+def test_l3_sample_descriptions_leave_the_gate_intact(
+    ui_server_dev, http_get, auth, kind, component_type
+) -> None:
+    """L3 四型的走查样本走**同一条**出站校验路径（真描述件产物，非手抄）。"""
+    payload = _fetch(http_get, auth, ui_server_dev, kind).json()
+    assert payload["status"] == "ok", payload.get("reason")
+    assert payload["data"]["component_type"] == component_type
+
+
+def test_context_card_without_labels_is_blocked() -> None:
+    """`labels`（段名 / 原因）是本批收紧后的必填槽——缺它渲染件出不了完整卡片（D-064）。"""
+    app = build_ui(host="127.0.0.1", port=1)
+    payload = app.api_description(
+        UiDescription(
+            description_id=new_description_id(),
+            component_type="context_card",
+            slots={"sections": []},
+            text_kinds={"sections": "data"},
+        )
+    )
+    assert payload["status"] == "validation_failed"
+    assert "labels" in payload["reason"]
+
+
+def test_dev_panel_lists_every_sample_kind() -> None:
+    """dev 面板的按钮清单与样本清单**不漂移**——否则走查路径会静默少一条。"""
+    from st_agent.ui.dev import samples
+
+    panel = (
+        Path(__file__).resolve().parents[2] / "src" / "st_agent" / "ui" / "dev" / "web" / "devpanel.js"
+    ).read_text(encoding="utf-8")
+    block = panel.split("const DESCRIPTIONS = [", 1)[1].split("];", 1)[0]
+    listed = re.findall(r"'([\w-]+)'", block)
+    assert listed == list(samples.DESCRIPTION_KINDS)

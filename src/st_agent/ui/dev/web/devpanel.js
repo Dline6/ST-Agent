@@ -19,6 +19,12 @@ const STATUSES = [
 const DESCRIPTIONS = [
   'report_card',
   'table',
+  'trace_timeline',
+  'context_card',
+  'config_draft_card',
+  'config_draft_panel',
+  'conflict_adjudication_card',
+  'extra-slot',
   'reserved',
   'generated-violation',
   'data-violation',
