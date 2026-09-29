@@ -8,9 +8,9 @@ arch_link: "[05 §6–§7](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P0
 milestone: M1
 depends_on: [T-L3-002, T-UI-001.3]
-status: todo
-decisions: [D-060, D-063]
-verify:
+status: done
+decisions: [D-060, D-063, D-064]
+verify: 两叶全 done 派生；全量 2045 passed / 7 deselected；verify_docs --strict 检查 1–9 全 0；PENDING_IN_FRONTEND 收紧为空集；见执行日志 [T-L3-004]
 ---
 
 # T-L3-004 · Generative UI + 推理链可视化

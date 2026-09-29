@@ -27,8 +27,12 @@ REQUIRED_SLOTS: dict[str, tuple[str, ...]] = {
     "table": ("columns", "rows"),
     "report_card": ("sections",),
     "trace_timeline": ("steps",),
-    "context_card": ("sections",),
-    "config_draft_card": ("summary",),
+    # 段名 / 原因在 `labels`（生成文案槽），段内容在 `sections`（数据槽）——两处按 `key` 并联，
+    # 缺任一处渲染件都出不了完整卡片（[D-064]）。
+    "context_card": ("sections", "labels"),
+    # `ConfigDraft` 与 `PanelView` 共用本型，故必填槽取两者都在的 `target` / `panels`；
+    # `summary` 只在草稿分支存在（面板视图无摘要），不能作必填（[D-064]）。
+    "config_draft_card": ("target", "panels"),
     "conflict_adjudication_card": ("sides", "question"),
 }
 """每型的必填槽——新增实现型时**必须**在此表态（下面的断言会拦住漏填）。"""
