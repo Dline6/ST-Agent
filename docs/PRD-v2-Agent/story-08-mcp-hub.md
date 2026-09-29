@@ -60,5 +60,5 @@ MCP Hub 是一个本地 MCP Client，允许用户挂载任意 MCP Server（本�
 - 平台契约：[10-platform-capabilities.md](10-platform-capabilities.md)（契约 1 数据底座）
 - 依赖：[story-02](story-02-skills-runtime.md)（tool 注册为 Skill）· [story-05](story-05-local-first.md)（本地优先、网络透明化）
 - 被依赖：[story-10](story-10-skill-sharing.md)（分享含 MCP 依赖的 Skill 时需追溯 Server 来源）
-- 关联页面（Sitemap 占位）：待生成后回填
-- 设计资产：待生成
+- 关联页面（Sitemap）：[11-sitemap.md · 能力（MCP Hub）· 设置（网络活动）](11-sitemap.md#能力)
+- 设计资产：[11-sitemap.md §3.7 能力挂载与导入](11-sitemap.md#37-能力挂载与导入)

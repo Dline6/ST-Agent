@@ -63,5 +63,5 @@ consumed_by: [story-01, story-02, story-03, story-06, story-07, story-08, story-
 
 - 平台契约：[10-platform-capabilities.md](10-platform-capabilities.md)（契约 1 数据底座、契约 2 记忆持久化、契约 3 LLM 抽象）
 - 被依赖：**全部其他 Story**（数据都存本地、都受离线与主权约束）
-- 关联页面（Sitemap 占位）：待生成后回填
-- 设计资产：待生成
+- 关联页面（Sitemap）：[11-sitemap.md · 设置 · 全局要素](11-sitemap.md#设置)
+- 设计资产：[11-sitemap.md §3.8 备份 / 恢复 / 清空](11-sitemap.md#3-页面-flow) · [§3.9 离线降级](11-sitemap.md#39-离线降级)

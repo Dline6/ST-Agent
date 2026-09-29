@@ -66,5 +66,5 @@ Skill Studio 是一个可视化编排环境。用户可以：
 - 平台契约：[10-platform-capabilities.md](10-platform-capabilities.md)（契约 4 数据协同复用、契约 6 双通道配置）
 - 依赖：[story-02](story-02-skills-runtime.md)（被编排的 Skill）· [story-04](story-04-multi-lens.md)（命名中性校验规则、策略评判）· [story-05](story-05-local-first.md)（本地存储）
 - 被依赖：[story-01](story-01-chat-as-os.md)（对话生成草稿的执行环境）· [story-10](story-10-skill-sharing.md)（自建 Skill 的分享来源）
-- 关联页面（Sitemap 占位）：待生成后回填
-- 设计资产：待生成
+- 关联页面（Sitemap）：[11-sitemap.md · 能力（Studio）](11-sitemap.md#能力)
+- 设计资产：[11-sitemap.md §3.4 对话即配置](11-sitemap.md#34-对话即配置)

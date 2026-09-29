@@ -66,5 +66,5 @@ Reflection Loop 让整个系统随时间演进：
 - 平台契约：[10-platform-capabilities.md](10-platform-capabilities.md)（契约 7 执行可追溯——反思消费追溯日志；契约 9 中性表达——反思报告同样适用）
 - 依赖：[story-02](story-02-skills-runtime.md)（执行日志）· [story-03](story-03-memory-graph.md)（模式节点写入）· [story-04](story-04-multi-lens.md)（决策记录）· [story-07](story-07-ambient-delivery.md)（推送反馈 + 报告触达）· [story-05](story-05-local-first.md)（报告本地生成）
 - 被依赖：[story-01](story-01-chat-as-os.md)（下次对话中的反馈回溯）· [story-06](story-06-skill-studio.md)（主动提案的新 Skill 草稿）
-- 关联页面（Sitemap 占位）：待生成后回填
-- 设计资产：待生成
+- 关联页面（Sitemap）：[11-sitemap.md · 反思](11-sitemap.md#反思)
+- 设计资产：[11-sitemap.md §3.6 主动触达与反馈（反馈回流入口）](11-sitemap.md#36-主动触达与反馈)

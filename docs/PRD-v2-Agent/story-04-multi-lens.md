@@ -80,5 +80,5 @@ consumed_by: [story-01, story-07, story-06]
 - 平台契约：[10-platform-capabilities.md](10-platform-capabilities.md)（契约 5 结构化输出、契约 8 分歧并列、契约 9 中性表达）
 - 依赖：[story-02 Skills Runtime](story-02-skills-runtime.md)（视角的组成单元）· [story-03 Memory Graph](story-03-memory-graph.md)（个性化前提 + 决策记录写入）
 - 被依赖：[story-01](story-01-chat-as-os.md)（Deliberation 触发入口与追问通道）· [story-06](story-06-skill-studio.md)（策略的多视角评判）· [story-07](story-07-ambient-delivery.md)（结果触达）
-- 关联页面（Sitemap 占位）：待生成后回填
-- 设计资产：待生成
+- 关联页面（Sitemap）：[11-sitemap.md · 推理](11-sitemap.md#推理)
+- 设计资产：[11-sitemap.md §3.5 多视角决策闭环](11-sitemap.md#35-多视角决策闭环)
