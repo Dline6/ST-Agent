@@ -71,6 +71,15 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, payload)
             return
 
+        if path == "/api/dev/description":
+            wanted = parse_qs(parsed.query).get("kind", [""])[0]
+            described = self.app.api_dev_description(wanted)
+            if described is None:
+                self._send_text(404, "未找到")
+                return
+            self._send_json(200, described)
+            return
+
         if path in ("/", "/index.html"):
             self._send_text(200, self.app.index_html())
             return

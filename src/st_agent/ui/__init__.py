@@ -9,13 +9,19 @@ from __future__ import annotations
 from st_agent.ui.app import WEB_ROOT, UiApp, build_ui
 from st_agent.ui.envelope import envelope_payload
 from st_agent.ui.errors import DevSurfaceUnavailable, UiError
+from st_agent.ui.neutrality_gate import GateVerdict, NeutralityGate
+from st_agent.ui.registry import REGISTRY, ComponentSpec, slot_gaps, spec_for
 from st_agent.ui.security import TOKEN_HEADER, RequestGuard, new_token
 from st_agent.ui.server import RunningUi, UiServer, serve
 
 __all__ = [
+    "REGISTRY",
     "TOKEN_HEADER",
     "WEB_ROOT",
+    "ComponentSpec",
     "DevSurfaceUnavailable",
+    "GateVerdict",
+    "NeutralityGate",
     "RequestGuard",
     "RunningUi",
     "UiApp",
@@ -25,4 +31,6 @@ __all__ = [
     "envelope_payload",
     "new_token",
     "serve",
+    "slot_gaps",
+    "spec_for",
 ]

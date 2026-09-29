@@ -1,7 +1,7 @@
 """01-平台共享契约 §1 标识（ID）体系。
 
 契约要点（§1）：
-- 14 类 ID，全局唯一、生成后不可变、可本地持久化
+- 15 类 ID，全局唯一、生成后不可变、可本地持久化
 - ``stock_id`` 首个落地形态 = 本地市场数据库 ``security`` 主档主键
   （BaoStock ``sh.``/``sz.`` 格式，数据库设计 01-核心实体层）——由 L0 数据缓存
   按交易所代码映射产生，**不由本地随机生成**
@@ -11,7 +11,7 @@
 - ``trial_id`` 为一次工作流试跑的留存与对比单位（2026-09-26 由 ``T-L1-003.3``
   触发登记进 §1）：形态与其余本机生成的 ID 同构；试跑共用一条推理链，
   但其标识**独立于** ``trace_id``（两者是不同实体）
-- 其余 12 类由本机产生（``generate()``：``<prefix>_<uuid4 前 20 位>``），
+- 其余 13 类由本机产生（``generate()``：``<prefix>_<uuid4 前 20 位>``），
   无中心分配方，与本地优先原则一致
 - 其中 ``announcement_id`` 与 ``dataset_snapshot_id`` 的形态是**确定性摘要**
   （``<prefix>_<sha256 前 20 位十六进制>``，业务键稳定 → ID 稳定）而非随机
@@ -47,6 +47,7 @@ __all__ = [
     "ChangeId",
     "DatasetSnapshotId",
     "DeliveryId",
+    "DescriptionId",
     "FeedbackId",
     "FlowId",
     "LensId",
@@ -198,6 +199,10 @@ FlowId = _make_id_type(
 TrialId = _make_id_type("trial_id", "trial")
 """一次工作流试跑（03 §4 调试协议）——本机生成，形态 ``trial_<uuid4 前 20 位>``。"""
 
+DescriptionId = _make_id_type("description_id", "desc")
+"""一份 UI 描述（§12 Generative UI）——本机生成、不外发（2026-09-29 由 ``T-UI-001.3``
+触发登记进 §1）；渲染面据其追溯，「钉」到工作区后的寻址单位。"""
+
 # 契约 §1 表的机器可读副本：id → (指代对象, 产生方)。§1 增删类型时同步此表。
 ID_REGISTRY: dict[str, tuple[str, str]] = {
     "stock_id": ("证券标的", "L0 数据缓存"),
@@ -214,12 +219,13 @@ ID_REGISTRY: dict[str, tuple[str, str]] = {
     "lens_id": ("一个视角定义", "L4"),
     "flow_id": ("一条工作流定义（含版本语义）", "L1"),
     "trial_id": ("一次工作流试跑", "L1"),
+    "description_id": ("一份 UI 描述", "L3"),
 }
 ID_KINDS: tuple[str, ...] = tuple(ID_REGISTRY)
 ID_ALIASES: dict[str, type[PlatformId]] = {
     t.id_kind: t  # type: ignore[attr-defined]
     for t in (StockId, AnnouncementId, DatasetSnapshotId, SkillId, SkillRunId,
               MemoryNodeId, TraceId, SignalId, DeliveryId, FeedbackId, ChangeId,
-              LensId, FlowId, TrialId)
+              LensId, FlowId, TrialId, DescriptionId)
 }
 """契约名 → ID 类型登记表（§1 全表，供上层按名取类型）。"""

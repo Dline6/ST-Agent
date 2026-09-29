@@ -99,3 +99,19 @@ main {
 }
 
 #dev-panel button:hover { border-color: var(--fg-muted); }
+
+/* ── 组件面（01 §12：描述 → 注册表 → 渲染件） ───────────────────── */
+
+.component { margin-top: .75rem; }
+
+.component-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+.component-table th,
+.component-table td { padding: .35rem .5rem; border-bottom: 1px solid var(--line); text-align: left; }
+.component-table th { color: var(--fg-muted); font-weight: 600; }
+
+.component-report h3 { margin: 0 0 .5rem; font-size: 1rem; }
+.component-report h4 { margin: .75rem 0 .25rem; font-size: .9rem; color: var(--fg-muted); }
+.component-report ul { margin: 0; padding-left: 1.1rem; }
+
+.component--degraded { padding: .75rem; border: 1px dashed var(--line); border-radius: 8px; }
+.component--degraded summary { cursor: pointer; color: var(--fg-muted); font-size: .85rem; }

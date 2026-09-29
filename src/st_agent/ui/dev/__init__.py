@@ -12,15 +12,22 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from st_agent.ui.dev.samples import SAMPLE_STATUSES, sample_envelope
+from st_agent.ui.dev.samples import (
+    DESCRIPTION_KINDS,
+    SAMPLE_STATUSES,
+    sample_description,
+    sample_envelope,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - 仅供类型标注
     from st_agent.ui.server import RunningUi
 
 __all__ = [
+    "DESCRIPTION_KINDS",
     "SAMPLE_STATUSES",
     "browser_url",
     "dev_script_tag",
+    "sample_description",
     "sample_envelope",
     "web_root",
 ]

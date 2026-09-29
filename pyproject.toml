@@ -27,7 +27,7 @@ exclude = ["st_agent.ui.dev"]
 
 [tool.setuptools.package-data]
 # 无构建前端资产随包走：原生 ES modules，产物即静态文件（D-063 ①）。
-"st_agent.ui" = ["web/*.html", "web/css/*.css", "web/js/*.js"]
+"st_agent.ui" = ["web/*.html", "web/css/*.css", "web/js/*.js", "web/js/components/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

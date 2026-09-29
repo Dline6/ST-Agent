@@ -1,0 +1,115 @@
+"""组件类型注册表：服务端镜像与前端注册表**不漂移**（[01 §12]；[05 §6]）。
+
+真正维护注册表的是渲染方（前端 `web/js/registry.js`）；本组用例锁的是「两侧类型集合
+一致」——一旦 Python 侧新增实现型而前端没跟上（或反之），这里立刻红。
+"""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
+
+import pytest
+
+from st_agent.contracts.ui_description import (
+    IMPLEMENTED_COMPONENT_TYPES,
+    RESERVED_COMPONENT_TYPES,
+    UiDescription,
+    new_description_id,
+)
+from st_agent.ui.registry import REGISTRY, slot_gaps, spec_for
+
+_UI = Path(__file__).resolve().parents[2] / "src" / "st_agent" / "ui"
+_REGISTRY_JS = _UI / "web" / "js" / "registry.js"
+
+
+def _frontend_component_types() -> set[str]:
+    """从 `registry.js` 的 `RENDERERS` 字面量里取出已实现的类型键。"""
+    text = _REGISTRY_JS.read_text(encoding="utf-8")
+    block = text.split("export const RENDERERS = {", 1)[1].split("};", 1)[0]
+    return set(re.findall(r"(\w+)\s*:", block))
+
+
+def _description(component_type: str, slots: dict) -> UiDescription:
+    return UiDescription(
+        description_id=new_description_id(),
+        component_type=component_type,
+        slots=slots,
+        text_kinds={name: "data" for name in slots},
+    )
+
+
+def test_every_registered_type_has_a_spec() -> None:
+    """登记表与契约的枚举面一致（不含未登记项，也不漏登记项）。"""
+    assert set(REGISTRY) == set(IMPLEMENTED_COMPONENT_TYPES) | set(RESERVED_COMPONENT_TYPES)
+
+
+def test_implemented_types_declare_required_slots() -> None:
+    for component_type in IMPLEMENTED_COMPONENT_TYPES:
+        spec = spec_for(component_type)
+        assert spec is not None and spec.implemented
+        assert spec.required_slots, f"{component_type} 未声明必填槽"
+
+
+def test_reserved_types_are_registered_but_not_implemented() -> None:
+    for component_type in RESERVED_COMPONENT_TYPES:
+        spec = spec_for(component_type)
+        assert spec is not None and not spec.implemented
+        assert spec.required_slots == ()
+
+
+#: 归 `T-L3-004.1` / `.2` 的四型——它们在**本叶之后**落地。这份「待补齐集」是显式声明的：
+#: 那两叶一开工，下面的断言就会因集合变化而红，逼人把它收紧成「两侧相等」——
+#: 欠账由机器接住，不靠记性。
+PENDING_IN_FRONTEND = frozenset(
+    {"trace_timeline", "context_card", "config_draft_card", "conflict_adjudication_card"}
+)
+
+#: 本叶（`T-UI-001.3`）自己交付的两型——它们必须已在册。
+OWNED_BY_THIS_TASK = ("table", "report_card")
+
+
+def test_frontend_registry_matches_the_python_side() -> None:
+    """两侧不漂移：前端**不得**登记 Python 侧不认的类型，也不得漏掉本叶交付的两型。"""
+    frontend = _frontend_component_types()
+    assert frontend <= set(IMPLEMENTED_COMPONENT_TYPES), "前端登记了契约未实现的类型"
+    assert set(OWNED_BY_THIS_TASK) <= frontend
+    assert set(IMPLEMENTED_COMPONENT_TYPES) - frontend == PENDING_IN_FRONTEND
+
+
+def test_frontend_renderers_exist_as_files() -> None:
+    """注册表里点名的渲染件必须真有对应模块（防悬空登记）。"""
+    components = _UI / "web" / "js" / "components"
+    assert components.is_dir()
+    text = _REGISTRY_JS.read_text(encoding="utf-8")
+    for module in re.findall(r"from '\./components/(\w+)\.js'", text):
+        assert (components / f"{module}.js").is_file(), module
+
+
+@pytest.mark.parametrize(
+    "component_type,slots",
+    [
+        ("table", {"columns": [], "rows": []}),
+        ("report_card", {"sections": []}),
+        ("trace_timeline", {"steps": []}),
+        ("context_card", {"sections": []}),
+        ("config_draft_card", {"summary": {}}),
+        ("conflict_adjudication_card", {"sides": [], "question": "选哪一条"}),
+    ],
+)
+def test_complete_descriptions_have_no_slot_gaps(component_type: str, slots: dict) -> None:
+    assert slot_gaps(_description(component_type, slots)) == ()
+
+
+def test_slot_gaps_reports_missing_required_slots() -> None:
+    assert slot_gaps(_description("table", {"columns": []})) == ("rows",)
+    assert slot_gaps(_description("trace_timeline", {})) == ("steps",)
+
+
+def test_reserved_type_is_not_judged_here() -> None:
+    """已登记未实现型交由**渲染面降级**，不该在服务端被判成「缺槽」。"""
+    assert slot_gaps(_description("heatmap", {})) == ()
+
+
+def test_unknown_type_has_no_spec() -> None:
+    assert spec_for("no_such_component") is None

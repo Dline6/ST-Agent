@@ -10,14 +10,17 @@ dev 面的开关是**构建期**语义：``st_agent.ui.dev`` 子包在发布构�
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from st_agent.contracts.result_envelope import ResultEnvelope
+from st_agent.contracts.ui_description import UiDescription
 
 from st_agent.ui.envelope import envelope_payload
 from st_agent.ui.errors import DevSurfaceUnavailable
+from st_agent.ui.neutrality_gate import NeutralityGate
+from st_agent.ui.registry import slot_gaps
 from st_agent.ui.security import RequestGuard, new_token, resolve_static
 
 __all__ = ["DEV_SCRIPT_MARKER", "UiApp", "WEB_ROOT", "build_ui"]
@@ -49,6 +52,7 @@ class UiApp:
     dev: bool = False
     web_root: Path = WEB_ROOT
     dev_package: Any = None
+    neutrality_gate: NeutralityGate = field(default_factory=NeutralityGate)
 
     @property
     def dev_enabled(self) -> bool:
@@ -62,6 +66,33 @@ class UiApp:
                 {"service": "st-agent-ui", "version": _VERSION, "dev": self.dev_enabled}
             )
         )
+
+    def api_description(self, description: UiDescription) -> dict[str, Any]:
+        """出站一份 UI 描述：先查该型必填槽，再过**中性化门**（[01 §6] 执行点 2）。
+
+        两道任一不过都**阻断渲染**并回 `validation_failed`——不回可渲染的描述（[01 §12]）。
+        门与注册表都在 Python 侧，规则库与类型表因此只有一份真相源。
+        """
+        gaps = slot_gaps(description)
+        if gaps:
+            return envelope_payload(
+                ResultEnvelope.validation_failed(
+                    f"UI 描述缺少 {description.component_type} 的必填槽：{'、'.join(gaps)}"
+                )
+            )
+        verdict = self.neutrality_gate.check(description)
+        if not verdict.passed:
+            return envelope_payload(ResultEnvelope.validation_failed(verdict.reason))
+        return envelope_payload(ResultEnvelope.ok(description))
+
+    def api_dev_description(self, kind: str) -> dict[str, Any] | None:
+        """dev 示例描述：走与真实描述**同一条**出站校验路径。"""
+        if not self.dev_enabled:
+            return None
+        description = self.dev_package.sample_description(kind)
+        if description is None:
+            return None
+        return self.api_description(description)
 
     def api_dev_sample(self, status: str) -> dict[str, Any] | None:
         """dev 示例端点：按状态名造一条合法信封；未知状态名返回 ``None``（调用方回 400）。"""

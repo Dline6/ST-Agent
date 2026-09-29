@@ -16,6 +16,14 @@ const STATUSES = [
   'validation_failed',
 ];
 
+const DESCRIPTIONS = [
+  'report_card',
+  'table',
+  'reserved',
+  'generated-violation',
+  'data-violation',
+];
+
 function button(label, onClick) {
   const node = document.createElement('button');
   node.type = 'button';
@@ -24,29 +32,36 @@ function button(label, onClick) {
   return node;
 }
 
+/** 取一条信封并渲染；失败即把错误写进主区域（不静默）。 */
+async function show(root, url) {
+  try {
+    renderEnvelope(await getJson(url), root);
+  } catch (error) {
+    root.textContent = `示例取数失败：${error.message}`;
+  }
+}
+
 function mountDevPanel() {
   const root = document.getElementById('root');
 
   const panel = document.createElement('section');
   panel.id = 'dev-panel';
   const heading = document.createElement('h2');
-  heading.textContent = 'dev 面 · 六态走查（发布构建不含此面板）';
-  const row = document.createElement('div');
-  row.className = 'row';
+  heading.textContent = 'dev 面 · 走查（发布构建不含此面板）';
 
+  const statusRow = document.createElement('div');
+  statusRow.className = 'row';
   for (const status of STATUSES) {
-    row.append(
-      button(status, async () => {
-        try {
-          renderEnvelope(await getJson(`/api/dev/sample?status=${status}`), root);
-        } catch (error) {
-          root.textContent = `示例取数失败：${error.message}`;
-        }
-      }),
-    );
+    statusRow.append(button(status, () => show(root, `/api/dev/sample?status=${status}`)));
   }
 
-  panel.append(heading, row);
+  const descriptionRow = document.createElement('div');
+  descriptionRow.className = 'row';
+  for (const kind of DESCRIPTIONS) {
+    descriptionRow.append(button(kind, () => show(root, `/api/dev/description?kind=${kind}`)));
+  }
+
+  panel.append(heading, statusRow, descriptionRow);
   document.body.append(panel);
 }
 

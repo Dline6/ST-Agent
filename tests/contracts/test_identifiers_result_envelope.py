@@ -16,6 +16,7 @@ from st_agent.contracts import (
     ContractViolation,
     DatasetSnapshotId,
     DeliveryId,
+    DescriptionId,
     EvidenceRef,
     FeedbackId,
     FlowId,
@@ -35,8 +36,8 @@ from st_agent.contracts.identifiers import digest_id
 TZ = timezone.utc
 
 LOCALLY_GENERATED = (SkillId, SkillRunId, MemoryNodeId, TraceId, SignalId,
-                     DeliveryId, FeedbackId, ChangeId, LensId, TrialId)
-"""**本机产生的 10 类**：`generate()` 返回新的全局唯一 ID（`<prefix>_<uuid4 前 20 位>`）。"""
+                     DeliveryId, FeedbackId, ChangeId, LensId, TrialId, DescriptionId)
+"""**本机产生的 11 类**：`generate()` 返回新的全局唯一 ID（`<prefix>_<uuid4 前 20 位>`）。"""
 
 NOT_LOCALLY_GENERATED = (StockId, FlowId, AnnouncementId, DatasetSnapshotId)
 """**不由本机产生的 4 类**：`generate()` 须被拒绝——映射产生（`stock_id`）/ 拼接产生
@@ -85,10 +86,10 @@ class TestSection1Identifiers:
             typ.generate()
 
     def test_generation_partition_covers_all_kinds(self):
-        """产出面二分且不漏：本机产生 10 类 + 拒绝 4 类 = §1 的 14 类。"""
+        """产出面二分且不漏：本机产生 11 类 + 拒绝 4 类 = §1 的 15 类。"""
         both = LOCALLY_GENERATED + NOT_LOCALLY_GENERATED
         assert {t.id_kind for t in both} == set(ID_KINDS)
-        assert len(both) == len(ID_KINDS) == 14
+        assert len(both) == len(ID_KINDS) == 15
 
     def test_kind_mismatch_rejected_at_source(self):
         """用 A 类型的 of() 校验 B 类的字符串 → 格式校验拦截（防串用第一道闸）。"""
@@ -110,8 +111,8 @@ class TestSection1Identifiers:
                 FlowId.of(bad)
 
     def test_registry_covers_contract_table(self):
-        """ID_REGISTRY 是 §1 表的完整机器可读副本（14 类）。"""
-        assert len(ID_KINDS) == 14
+        """ID_REGISTRY 是 §1 表的完整机器可读副本（15 类）。"""
+        assert len(ID_KINDS) == 15
         assert set(ID_KINDS) == set(ID_REGISTRY) == set(ID_ALIASES)
 
 
