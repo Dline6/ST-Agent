@@ -72,6 +72,11 @@ jobs:
             if printf '%s\n' "$changed" | grep -qE '^(src/st_agent/l3/|tests/l3/)'; then
               targets="$targets tests/l3"
             fi
+            # 表现层（跨层工程 T-UI-*）：src/st_agent/ui/** 与 tests/ui/** 不在按层映射内，
+            # 不补这一支则 tests/ui/ 在 PR 门禁**不被收集**（D-045 对 tests/integration 的同型教训）。
+            if printf '%s\n' "$changed" | grep -qE '^(src/st_agent/ui/|tests/ui/|src/st_agent/contracts/ui_description\.py)'; then
+              targets="$targets tests/ui"
+            fi
           fi
           echo "run=true" >> "$GITHUB_OUTPUT"
           echo "targets=$targets" >> "$GITHUB_OUTPUT"

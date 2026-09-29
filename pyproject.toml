@@ -21,6 +21,13 @@ market = ["baostock>=0.9.4"]
 # src 布局：包根在 src/，否则 wheel 里会打成 src/st_agent/...（import st_agent 失败）
 where = ["src"]
 include = ["st_agent*"]
+# dev 面（浏览器直开的走查面板等）在发布构建里**物理剔除**——D-060 ④I：开发/验收期的
+# 可达性用「显式 dev 开关 + 发布包剔除」兜住。剔除后 `build_ui(dev=True)` 会显式失败。
+exclude = ["st_agent.ui.dev"]
+
+[tool.setuptools.package-data]
+# 无构建前端资产随包走：原生 ES modules，产物即静态文件（D-063 ①）。
+"st_agent.ui" = ["web/*.html", "web/css/*.css", "web/js/*.js", "web/js/components/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

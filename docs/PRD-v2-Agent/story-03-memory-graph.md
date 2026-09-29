@@ -69,5 +69,5 @@ Memory Graph 不是简单的"用户设置"，而是一张结构化图谱，含 *
 - 平台契约：[10-platform-capabilities.md](10-platform-capabilities.md)（契约 2 记忆持久化）
 - 依赖：[story-05 本地优先](story-05-local-first.md)（加密、备份、导出主权）
 - 被依赖：[story-01](story-01-chat-as-os.md)（上下文卡片）· [story-04](story-04-multi-lens.md)（个性化推理输入）· [story-07](story-07-ambient-delivery.md)（推送文案个性化）· [story-09](story-09-reflection-loop.md)（训练修正写入目标）· [story-10](story-10-skill-sharing.md)（公开片段导出）
-- 关联页面（Sitemap 占位）：待生成后回填
-- 设计资产：待生成
+- 关联页面（Sitemap）：[11-sitemap.md · 记忆](11-sitemap.md#记忆)
+- 设计资产：[11-sitemap.md §3.1 首次启动（Onboarding）](11-sitemap.md#31-首次启动)

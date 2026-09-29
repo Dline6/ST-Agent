@@ -76,5 +76,5 @@ consumed_by: [story-01, story-04, story-06, story-07, story-08, story-10]
 - 平台契约：[10-platform-capabilities.md](10-platform-capabilities.md)（契约 1 数据底座、契约 4 复用、契约 5 结构化输出、契约 7 可追溯）
 - 依赖：[story-05 本地优先](story-05-local-first.md)（Skill 与数据本地存储）
 - 被依赖：[story-01](story-01-chat-as-os.md)（调用）· [story-04](story-04-multi-lens.md)（视角素材）· [story-06](story-06-skill-studio.md)（编排对象）· [story-08](story-08-mcp-hub.md)（MCP tool 注册为 Skill）· [story-10](story-10-skill-sharing.md)（分享对象）
-- 关联页面（Sitemap 占位）：待生成后回填
-- 设计资产：待生成
+- 关联页面（Sitemap）：[11-sitemap.md · 能力](11-sitemap.md#能力)
+- 设计资产：[11-sitemap.md §3 页面 Flow](11-sitemap.md#3-页面-flow)

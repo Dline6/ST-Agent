@@ -83,3 +83,35 @@ def test_only_downward_dependencies(layer, order, path, rel):
         + "\n  ".join(violations)
         + "\n跨层协作一律经 01-平台共享契约（依赖注入/事件），见 00-架构总览 §3。"
     )
+
+
+# ── 表现层（跨层工程 `T-UI-*`）的依赖约束 ────────────────────────────────────────
+# `ui` 是各层的**客户端组合根**，不是第七层（00 §1.1；D-060 ⑤）。故它**不进
+# `LAYER_ORDER`**——把 `ui` 塞进层表等于把「不是第七层」反向编码，而且会让
+# `test_only_downward_dependencies` 的层序语义变得没有意义。约束改由下面这组用例承担。
+
+UI_ALLOWED_TOP = set(LAYER_ORDER) | {"ui"}
+
+
+def test_ui_is_client_only():
+    """`src/st_agent/ui/**` 只可消费 contracts / l0..l6 / 自身；任何层不得反向 import 它。"""
+    ui_dir = SRC / "ui"
+    if ui_dir.is_dir():
+        for path in sorted(ui_dir.rglob("*.py")):
+            rel = f"ui/{path.relative_to(ui_dir)}".replace("\\", "/")
+            for module, lineno in _imports(path):
+                if not module.startswith("st_agent."):
+                    continue
+                parts = module.split(".")
+                top = parts[1] if len(parts) > 1 else ""
+                assert top in UI_ALLOWED_TOP, (
+                    f"{rel}:{lineno} import 了 {module}——表现层是各层的客户端组合根，"
+                    "只可消费 contracts / l0..l6 / 自身（00 §1.1；D-060）"
+                )
+
+    for layer, _order, path, rel in CASES:
+        for module, lineno in _imports(path):
+            assert not module.startswith("st_agent.ui"), (
+                f"{rel}:{lineno} 反向 import 了表现层——UI 是客户端，层不得依赖它"
+                "（铁律 7 的同型约束；D-060 ⑤）"
+            )

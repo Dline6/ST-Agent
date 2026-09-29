@@ -1,0 +1,117 @@
+/* 骨架样式：只解决可读性与六态的可辨识度，不做视觉定稿。
+   配色只用中性灰阶 + 一套语义色，避免在渲染器尚未定型时先立品牌视觉。 */
+
+:root {
+  color-scheme: light dark;
+  --fg: #1c1c1e;
+  --fg-muted: #5c5c60;
+  --bg: #fbfbfd;
+  --card: #ffffff;
+  --line: #e3e3e8;
+  --ok: #1f6f43;
+  --empty: #5c5c60;
+  --delayed: #8a5a00;
+  --error: #a52121;
+  --notice: #2a4d8f;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --fg: #ececf0;
+    --fg-muted: #a0a0a8;
+    --bg: #16161a;
+    --card: #1e1e23;
+    --line: #33333a;
+    --ok: #6fcf97;
+    --empty: #a0a0a8;
+    --delayed: #e0b050;
+    --error: #f08a8a;
+    --notice: #8ab0f0;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 2rem 1.25rem 4rem;
+  background: var(--bg);
+  color: var(--fg);
+  font: 15px/1.6 -apple-system, "Segoe UI", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+}
+
+.masthead { max-width: 46rem; margin: 0 auto 1.5rem; }
+.masthead h1 { margin: 0 0 .25rem; font-size: 1.4rem; letter-spacing: .01em; }
+.hint { margin: 0; color: var(--fg-muted); font-size: .9rem; }
+
+main {
+  max-width: 46rem;
+  margin: 0 auto;
+  padding: 1.25rem;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.state { margin: 0 0 .5rem; font-weight: 600; }
+.state--loading { color: var(--fg-muted); font-weight: 400; }
+.state--ok { color: var(--ok); }
+.state--empty { color: var(--empty); }
+.state--delayed { color: var(--delayed); }
+.state--error { color: var(--error); }
+.state--input-error { color: var(--error); }
+
+.reason { margin: .25rem 0; }
+.meta { margin: .25rem 0; color: var(--fg-muted); font-size: .88rem; }
+.notice { margin: .5rem 0; color: var(--notice); font-size: .9rem; }
+
+.payload {
+  margin: .75rem 0 0;
+  padding: .75rem;
+  overflow-x: auto;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: 13px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+#dev-panel {
+  max-width: 46rem;
+  margin: 1rem auto 0;
+  padding: 1rem 1.25rem;
+  background: var(--card);
+  border: 1px dashed var(--line);
+  border-radius: 10px;
+}
+
+#dev-panel h2 { margin: 0 0 .5rem; font-size: .95rem; color: var(--fg-muted); font-weight: 600; }
+#dev-panel .row { display: flex; flex-wrap: wrap; gap: .5rem; }
+
+#dev-panel button {
+  padding: .3rem .7rem;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+  font-size: .85rem;
+  cursor: pointer;
+}
+
+#dev-panel button:hover { border-color: var(--fg-muted); }
+
+/* ── 组件面（01 §12：描述 → 注册表 → 渲染件） ───────────────────── */
+
+.component { margin-top: .75rem; }
+
+.component-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+.component-table th,
+.component-table td { padding: .35rem .5rem; border-bottom: 1px solid var(--line); text-align: left; }
+.component-table th { color: var(--fg-muted); font-weight: 600; }
+
+.component-report h3 { margin: 0 0 .5rem; font-size: 1rem; }
+.component-report h4 { margin: .75rem 0 .25rem; font-size: .9rem; color: var(--fg-muted); }
+.component-report ul { margin: 0; padding-left: 1.1rem; }
+
+.component--degraded { padding: .75rem; border: 1px dashed var(--line); border-radius: 8px; }
+.component--degraded summary { cursor: pointer; color: var(--fg-muted); font-size: .85rem; }

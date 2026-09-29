@@ -61,5 +61,5 @@ consumed_by: [story-04, story-06, story-07]
 - 平台契约：[10-platform-capabilities.md](10-platform-capabilities.md)（契约 6 双通道、契约 7 可追溯）
 - 依赖：[story-02 Skills Runtime](story-02-skills-runtime.md)（被调度的能力）· [story-03 Memory Graph](story-03-memory-graph.md)（上下文卡片数据源）· [story-05 本地优先](story-05-local-first.md)（历史存储）
 - 被依赖：[story-04](story-04-multi-lens.md)（Deliberation 触发入口）· [story-06](story-06-skill-studio.md)（对话生成工作流草稿）· [story-07](story-07-ambient-delivery.md)（晚间交互式对话时段）
-- 关联页面（Sitemap 占位）：待生成后回填
-- 设计资产：待生成
+- 关联页面（Sitemap）：[11-sitemap.md · Chat 主界面 · 工作区](11-sitemap.md#chat-主界面)
+- 设计资产：[11-sitemap.md §3.2 用户发起（反向流）](11-sitemap.md#32-用户发起反向流) · [§3.3 推理链展开](11-sitemap.md#33-推理链展开)

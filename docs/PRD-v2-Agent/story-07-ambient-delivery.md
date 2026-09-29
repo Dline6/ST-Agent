@@ -66,5 +66,5 @@ Ambient Delivery 层负责把副驾产出的信号主动送到用户面前，核
 - 平台契约：[10-platform-capabilities.md](10-platform-capabilities.md)（契约 9 中性表达，推送文案同样适用）
 - 依赖：[story-02](story-02-skills-runtime.md)（信号来源）· [story-03](story-03-memory-graph.md)（文案个性化）· [story-04](story-04-multi-lens.md)（多视角摘要）· [story-05](story-05-local-first.md)（离线降级）
 - 被依赖：[story-09](story-09-reflection-loop.md)（推送疲劳反馈数据）· [story-01](story-01-chat-as-os.md)（晚间交互式对话时段）
-- 关联页面（Sitemap 占位）：待生成后回填
-- 设计资产：待生成
+- 关联页面（Sitemap）：[11-sitemap.md · 触达](11-sitemap.md#触达)
+- 设计资产：[11-sitemap.md §3.6 主动触达与反馈](11-sitemap.md#36-主动触达与反馈)

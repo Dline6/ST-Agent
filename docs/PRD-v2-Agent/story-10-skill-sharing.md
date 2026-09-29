@@ -60,5 +60,5 @@ consumed_by: []
 
 - 平台契约：[10-platform-capabilities.md](10-platform-capabilities.md)（契约 2 本地持久化、契约 9 中性表达——命名校验）
 - 依赖：[story-02](story-02-skills-runtime.md)（分享对象）· [story-03](story-03-memory-graph.md)（隐私分级）· [story-05](story-05-local-first.md)（本地文件与主权）· [story-06](story-06-skill-studio.md)（自建 Skill 来源）· [story-08](story-08-mcp-hub.md)（含 MCP 依赖的追溯）
-- 关联页面（Sitemap 占位）：待生成后回填
-- 设计资产：待生成
+- 关联页面（Sitemap）：[11-sitemap.md · 能力（分享与导入）](11-sitemap.md#能力)
+- 设计资产：[11-sitemap.md §3.7 能力挂载与导入（导入校验）](11-sitemap.md#37-能力挂载与导入)
