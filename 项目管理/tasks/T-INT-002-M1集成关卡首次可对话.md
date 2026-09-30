@@ -10,7 +10,7 @@ milestone: M1
 depends_on: [T-L0-016, T-L1-011, T-L2-001.1, T-L2-001.2, T-L2-001.3, T-L2-002.1, T-L2-002.2, T-L2-002.3, T-L2-003, T-L2-004.1, T-L2-004.2, T-L2-004.3, T-L3-001.1, T-L3-001.2, T-L3-001.3, T-L3-002.1, T-L3-002.2, T-L3-003.1, T-L3-003.2, T-L3-003.3, T-L3-004.1, T-L3-004.2, T-L3-005.1, T-L3-005.2, T-UI-001.1, T-UI-001.2, T-UI-001.3, T-INT-001]
 status: done
 decisions: [D-065]
-verify: 全量 pytest **2055 passed / 0 failed / 8 deselected**（463s）；`tests/integration/test_m1_chat.py` **9 条**（GWT-1..6 离线端到端）· `tests/live/test_llm_chat_live.py` **1 passed**（生产根默认理解器经真端点收敛意图、审计恰一条、明文不落盘）· `verify_docs.py --strict` 检查 1–9 全 0 · 真 HTTP 回环往返（401/对话/降级三态）· 红-绿已验（摘生产根内取数面 `bind` → GWT-2 `dependency_failed`）· 见执行日志 [T-INT-002]
+verify: 全量 pytest **2055 passed / 0 failed / 8 deselected**（463s）；`tests/integration/test_m1_chat.py` **9 条**（GWT-1..6 离线端到端）· `tests/live/test_llm_chat_live.py` **1 passed**（生产根默认理解器经真端点收敛意图、审计恰一条、明文不落盘）· `verify_docs.py --strict` 检查 1–9 全 0 · 真 HTTP 回环往返（401/对话/降级三态）· 红-绿已验（摘生产根内取数面 `bind` → GWT-2 `dependency_failed`）· 入库 `6f9f77d` + [PR #71](https://github.com/Dline6/ST-Agent/pull/71)（`8b1a81a`）· 见执行日志 [T-INT-002]
 ---
 
 # T-INT-002 · M1 集成关卡 · 首次可对话
