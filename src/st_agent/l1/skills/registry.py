@@ -132,10 +132,24 @@ def _checked_descriptor(**fields) -> SkillDescriptor:
 
 
 class SkillRegistry:
-    """Skill 注册表门面（03 §1.1 + §1.4；持久化只经 ``Store`` 的 ``config`` 分区）。"""
+    """Skill 注册表门面（03 §1.1 + §1.4；持久化只经 ``Store`` 的 ``config`` 分区）。
 
-    def __init__(self, store, name_neutrality_check: NeutralityCheck | None = None) -> None:
+    :param permission_book: 批准账本（鸭子类型，只需 ``forget``）——注入时
+        :meth:`unregister` **同批回收该 base 的批准记录**（`T-L3-006` 销 L1 册 `D2`
+        回收半；对位 ``McpServerRegistry.remove_server`` 的 ``permissions.forget``）。
+        base 可被复用（重注册同名 base），旧批准不回收即静默套用到新实体——与已闭
+        `B2` 同型。缺省 ``None`` 行为逐字节不变。
+    """
+
+    def __init__(
+        self,
+        store,
+        name_neutrality_check: NeutralityCheck | None = None,
+        *,
+        permission_book=None,
+    ) -> None:
         self._store = store
+        self._permission_book = permission_book
         if name_neutrality_check is None:
             from st_agent.contracts.neutrality import NeutralityGuard
             guard = NeutralityGuard()
@@ -284,6 +298,10 @@ class SkillRegistry:
             removed.append(descriptor.skill_id)
         if marker in self._store.list_files("config"):
             self._store.delete("config", marker)
+        if self._permission_book is not None:
+            # 批准随能力走：base 可被复用（重注册同名 base），旧批准不回收即静默
+            # 套用到新实体——与已闭 B2 同型。forget 幂等，未声明过的 base 是 no-op。
+            self._permission_book.forget(base)
         return tuple(removed)
 
     # ───────────────────────── 读取：单个 / 最新 / 列表 / 待检查 ─────────

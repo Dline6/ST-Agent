@@ -5,9 +5,9 @@
 假设 `A5`、`T-UI-001.3` 同口径）。信封一律用 [01 §5] 的**合法工厂**构造、描述一律经
 [01 §12] 的 `UiDescription` 构造，故它们同时也是契约形状的活样本；本模块不进发布构建。
 
-**L3 四型经真描述件产出**（`T-L3-004.1` / `.2`）：`trace_timeline` / `context_card` /
-`config_draft_card` / `conflict_adjudication_card` 的走查样本由 [`l3.render`][r] 的四个
-描述件从**真视图数据**生成，而不是在这里手抄一份槽结构——手抄的样本会在描述件改动后
+**L3 五型经真描述件产出**（`T-L3-004.1` / `.2` / `T-L3-006`）：`trace_timeline` / `context_card` /
+`config_draft_card` / `conflict_adjudication_card` / `permission_approval_card` 的走查样本由
+[`l3.render`][r] 的五个描述件从**真视图数据**生成，而不是在这里手抄一份槽结构——手抄的样本会在描述件改动后
 静默漂移，走查也就查不出东西。窗口返回 `None` 的样本即不出现在页面上（不摆假样本）。
 
 [r]: ../../l3/render/__init__.py
@@ -26,6 +26,11 @@ from st_agent.l2.memory.reader import SliceQuery
 from st_agent.l3.config.draft import ConfigDraft, OpenQuestion
 from st_agent.l3.config.handling import PanelView
 from st_agent.l3.config.registry import ChannelParam
+from st_agent.l3.approval.panel import (
+    ApprovalRequest,
+    CapabilityApprovalPanel,
+)
+from st_agent.contracts.permissions import PermissionApproval
 from st_agent.l3.conflict.adjudication import (
     ACTION_LABELS,
     ADJUDICATION_HEADER,
@@ -50,6 +55,7 @@ from st_agent.l3.home.card import (
 )
 from st_agent.l3.render import (
     describe_adjudication,
+    describe_approval,
     describe_context_card,
     describe_draft,
     describe_trace,
@@ -105,12 +111,13 @@ DESCRIPTION_KINDS: tuple[str, ...] = (
     "config_draft_card",
     "config_draft_panel",
     "conflict_adjudication_card",
+    "permission_approval_card",
     "extra-slot",
     "reserved",
     "generated-violation",
     "data-violation",
 )
-"""组件面的走查路径（前七条正常渲染、第八条走「未识别槽」降级、第九条走未实现类型降级、
+"""组件面的走查路径（前八条正常渲染、第九条走「未识别槽」降级、第十条走未实现类型降级、
 后两条验证中性分栏）。"""
 
 
@@ -193,11 +200,11 @@ def _handwritten() -> dict[str, UiDescription]:
     }
 
 
-# ── L3 四型的走查样本（经真描述件产出） ────────────────────────────────────────
+# ── L3 五型的走查样本（经真描述件产出） ────────────────────────────────────────
 
 
 def _from_l3() -> dict[str, UiDescription]:
-    """L3 四型：真视图数据 → 真描述件 → 描述（**不手抄槽结构**）。"""
+    """L3 五型：真视图数据 → 真描述件 → 描述（**不手抄槽结构**）。"""
     samples: dict[str, UiDescription] = {}
     for kind, envelope in (
         ("trace_timeline", describe_trace(_trace())),
@@ -205,10 +212,56 @@ def _from_l3() -> dict[str, UiDescription]:
         ("config_draft_card", describe_draft(_draft())),
         ("config_draft_panel", describe_draft(_panel_view())),
         ("conflict_adjudication_card", describe_adjudication(_adjudication())),
+        ("permission_approval_card", describe_approval(_approval_view())),
     ):
         if envelope.status == "ok":
             samples[kind] = envelope.data
     return samples
+
+
+class _StubPermissionBook:
+    """dev 面的假批准账本：只回显固定批准态，不触盘（走查用，不进发布构建）。"""
+
+    def __init__(self, approvals: dict[str, tuple[PermissionApproval, ...]]) -> None:
+        self._approvals = approvals
+
+    def declare(self, key, permissions):  # noqa: ARG002 - 走查面只读回显
+        return self._approvals.get(key, ())
+
+    def approvals(self, key):
+        return self._approvals.get(key, ())
+
+    def approve(self, key, permission):  # noqa: ARG002
+        return self._approvals[key][0]
+
+    def reject(self, key, permission):  # noqa: ARG002
+        return self._approvals[key][0]
+
+
+def _approval_view():
+    """审批面视图：一条已批准、一条仍待批（不合并成一句话，01 §10）。"""
+    approvals = {
+        "sk_demo_watch": (
+            PermissionApproval(
+                permission="local_read:<data/cache/**>",
+                decision="approved",
+                decided_at=_NOW,
+            ),
+            PermissionApproval(
+                permission="net_access:<*.baostock.com>",
+                decision="pending",
+            ),
+        ),
+    }
+    panel = CapabilityApprovalPanel(book=_StubPermissionBook(approvals))
+    envelope = panel.open(
+        ApprovalRequest(
+            key="sk_demo_watch",
+            source="skill",
+            permissions=tuple(a.permission for a in approvals["sk_demo_watch"]),
+        )
+    )
+    return envelope.data
 
 
 def _trace() -> Trace:

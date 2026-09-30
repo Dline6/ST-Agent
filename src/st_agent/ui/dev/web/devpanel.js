@@ -24,6 +24,7 @@ const DESCRIPTIONS = [
   'config_draft_card',
   'config_draft_panel',
   'conflict_adjudication_card',
+  'permission_approval_card',
   'extra-slot',
   'reserved',
   'generated-violation',

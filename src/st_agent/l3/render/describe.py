@@ -1,4 +1,4 @@
-"""四个 L3 特有组件的**描述件**（[05 §6](../../../../docs/技术架构-v2/05-L3-对话主入口.md) / [§7](../../../../docs/技术架构-v2/05-L3-对话主入口.md) / [§9](../../../../docs/技术架构-v2/05-L3-对话主入口.md)；[01 §12](../../../../docs/技术架构-v2/01-平台共享契约.md)）。
+"""五个 L3 特有组件的**描述件**（[05 §6](../../../../docs/技术架构-v2/05-L3-对话主入口.md) / [§7](../../../../docs/技术架构-v2/05-L3-对话主入口.md) / [§9](../../../../docs/技术架构-v2/05-L3-对话主入口.md)；[01 §12](../../../../docs/技术架构-v2/01-平台共享契约.md)）。
 
 | 描述件 | 组件类型 | 输入（上游已交付的视图数据） |
 | --- | --- | --- |
@@ -6,6 +6,7 @@
 | :func:`describe_context_card` | ``context_card`` | [`l3.home.card.ContextCard`](../home/card.py)（[05 §2](../../../../docs/技术架构-v2/05-L3-对话主入口.md)） |
 | :func:`describe_draft` | ``config_draft_card`` | [`l3.config.draft.ConfigDraft`](../config/draft.py) / [`l3.config.handling.PanelView`](../config/handling.py)（[05 §5](../../../../docs/技术架构-v2/05-L3-对话主入口.md)） |
 | :func:`describe_adjudication` | ``conflict_adjudication_card`` | [`l3.conflict.adjudication.ConflictAdjudication`](../conflict/adjudication.py)（[05 §9](../../../../docs/技术架构-v2/05-L3-对话主入口.md)） |
+| :func:`describe_approval` | ``permission_approval_card`` | [`l3.approval.panel.CapabilityApprovalView`](../approval/panel.py)（[01 §10](../../../../docs/技术架构-v2/01-平台共享契约.md)；[T-L3-006](../../../../项目管理/tasks/T-L3-006-能力安装与导入审批面.md)） |
 
 **中性口径的切分**（[D-053](../../../../项目管理/决策日志.md) / [D-064](../../../../项目管理/决策日志.md)）：
 本模块**不**对生成文案做构造期复检——上游（上下文卡片 / 草稿 / 裁决卡）在构造时已各自
@@ -32,6 +33,7 @@ from st_agent.contracts.errors import ContractViolation
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.trace import Trace, TraceStep
 from st_agent.contracts.ui_description import UiDescription, checked_description, new_description_id
+from st_agent.l3.approval.panel import CapabilityApprovalView
 from st_agent.l3.config.draft import OPEN_QUESTION_LABELS, ConfigDraft
 from st_agent.l3.config.handling import PanelView
 from st_agent.l3.conflict.adjudication import (
@@ -48,6 +50,7 @@ __all__ = [
     "TRACE_ABSENT_REASON",
     "TRACE_EMPTY_REASON",
     "describe_adjudication",
+    "describe_approval",
     "describe_context_card",
     "describe_draft",
     "describe_trace",
@@ -400,3 +403,54 @@ def _side_slot(side: ConflictSide) -> dict[str, Any]:
         "dimension": side.dimension,
         "fields": dict(side.fields),
     }
+
+
+# ───────────────────────── permission_approval_card（01 §10 / 03 §5.1 / 09 §3） ─────────────────────────
+
+
+def describe_approval(view: CapabilityApprovalView, *, now: datetime | None = None) -> ResultEnvelope:
+    """审批面视图 → ``permission_approval_card`` 描述（[01 §10](../../../../docs/技术架构-v2/01-平台共享契约.md)）。
+
+    **逐条、不合并**（GWT-1）：``items`` 是每条权限的声明形态与批准态（数据槽，
+    含 `permission` / `state` / `panel_field`——控件只给形态、不代用户表态）；
+    中性措辞与状态标签（`description` / `chat_text`）走**同一下标**的 ``labels``
+    （生成文案槽）——两处并联，[01 §12](../../../../docs/技术架构-v2/01-平台共享契约.md) 的分槽切分（[D-064](../../../../项目管理/决策日志.md)）。
+
+    抬头只说「这是谁的权限申请」（来源标签，生成文案），**不含任何建议**——
+    [01 §10](../../../../docs/技术架构-v2/01-平台共享契约.md) 只要求「这个能力想做什么」，
+    批与不批是用户的决定。
+    """
+    return _envelope(
+        component_type="permission_approval_card",
+        title=f"{view.source_label}权限申请",
+        slots={
+            "key": view.key,
+            "source": view.source,
+            "items": [
+                {
+                    "permission": item.permission,
+                    "state": item.state,
+                    "decided_at": (
+                        item.decided_at.isoformat() if item.decided_at is not None else None
+                    ),
+                    "panel_field": item.panel_field,
+                }
+                for item in view.items
+            ],
+            "labels": {
+                item.permission: {
+                    "description": item.description,
+                    "chat_text": item.chat_text,
+                }
+                for item in view.items
+            },
+        },
+        text_kinds={
+            "key": "data",
+            "source": "data",
+            # permission 声明原文是注册期数据（不是 L3 生成文案），随 items 归数据槽
+            "items": "data",
+            "labels": "generated",
+        },
+        as_of=now if now is not None else _now(),
+    )

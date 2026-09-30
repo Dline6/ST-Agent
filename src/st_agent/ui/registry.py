@@ -34,6 +34,9 @@ REQUIRED_SLOTS: dict[str, tuple[str, ...]] = {
     # `summary` 只在草稿分支存在（面板视图无摘要），不能作必填（[D-064]）。
     "config_draft_card": ("target", "panels"),
     "conflict_adjudication_card": ("sides", "question"),
+    # 逐条权限在 `items`（数据槽：声明原文 + 批准态 + 面板控件），中性措辞 / 对话文案在
+    # `labels`（生成文案槽，按 `permission` 与 `items` 并联）——缺任一处出不了完整审批面。
+    "permission_approval_card": ("items", "labels"),
 }
 """每型的必填槽——新增实现型时**必须**在此表态（下面的断言会拦住漏填）。"""
 

@@ -50,6 +50,7 @@ ComponentType = Literal[
     "context_card",
     "config_draft_card",
     "conflict_adjudication_card",
+    "permission_approval_card",
     # 已登记、本期不实现——提前登记使后续补这些形态属于「实现」而非「改契约」
     "divergence_map",
     "heatmap",
@@ -69,6 +70,7 @@ IMPLEMENTED_COMPONENT_TYPES: tuple[str, ...] = (
     "context_card",
     "config_draft_card",
     "conflict_adjudication_card",
+    "permission_approval_card",
 )
 """**本期实现**的类型（渲染方有对应渲染件）；其余登记型一律走**显式降级占位**。"""
 
