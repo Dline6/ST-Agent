@@ -8,7 +8,7 @@ milestone: M2
 depends_on: [T-SC-001, T-L1-001]
 status: done
 decisions: []
-verify: 按范围 `pytest tests/contracts tests/test_layering.py tests/test_tools.py tests/integration tests/l4` → 416 passed（含 tests/l4 26 条新用例）；无 LLM 出网面（纯本地定义层），live 子集不适用；`verify_docs.py --strict` 通过；执行日志 [T-L4-001] 2026-09-30
+verify: 按范围 `pytest tests/contracts tests/test_layering.py tests/test_tools.py tests/integration tests/l4` → 416 passed（含 tests/l4 26 条新用例）；无 LLM 出网面（纯本地定义层），live 子集不适用；`verify_docs.py --strict` 通过；入库 `4acd50b` + [PR #72](https://github.com/Dline6/ST-Agent/pull/72)（`173b24f` 干净 squash）· 见执行日志 [T-L4-001] 2026-09-30
 ---
 
 # T-L4-001 · 视角模型 Lens + 常设阵容（用户可增删）
