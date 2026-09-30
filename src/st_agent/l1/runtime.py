@@ -302,7 +302,11 @@ def build_l1_runtime(
     freshness = (
         MarketFreshnessOracle(freshness_source) if freshness_source is not None else None
     )
-    skills = SkillRegistry(store)
+    # 账本先于注册表构造并注入——`unregister` 据此回收该 base 的批准记录
+    # （T-L3-006 销 L1 册 D2 回收半；对位 McpServerRegistry.remove_server 的
+    # permissions.forget）。同一实例经 L1Runtime.skill_permissions 对外供给。
+    skill_permissions = SkillPermissionBook(store)
+    skills = SkillRegistry(store, permission_book=skill_permissions)
     sandbox = SkillSandbox(store, endpoints=endpoints, provider_hosts=provider_hosts)
     outputs = OutputRegistry(store, freshness=freshness)
     runner = SkillRunner(
@@ -337,7 +341,6 @@ def build_l1_runtime(
     mapper = McpSkillMapper(store, servers=mcp_servers, skills=skills)
     machine = McpHubStateMachine(store, servers=mcp_servers, skills=skills, sandbox=sandbox)
 
-    skill_permissions = SkillPermissionBook(store)
     permission_source = (
         permissions
         if permissions is not None

@@ -1,7 +1,7 @@
 """L3 描述件（[05 §6–§7](../../../docs/技术架构-v2/05-L3-对话主入口.md)；[01 §12](../../../docs/技术架构-v2/01-平台共享契约.md)）。
 
 把本层已交付的**结构化视图数据**转成符合 [01 §12](../../../docs/技术架构-v2/01-平台共享契约.md)
-的 UI 描述，供表现层的组件注册表渲染。四个描述件都是**纯函数**：不落盘、不起服务、
+的 UI 描述，供表现层的组件注册表渲染。五个描述件都是**纯函数**：不落盘、不起服务、
 **不 import `st_agent.ui`**（[铁律 7](../../../项目管理/工程宪法.md)；`ui` 是客户端组合根，
 L3 与它之间不引入反向依赖）。
 
@@ -22,6 +22,7 @@ from st_agent.l3.render.describe import (
     TRACE_ABSENT_REASON,
     TRACE_EMPTY_REASON,
     describe_adjudication,
+    describe_approval,
     describe_context_card,
     describe_draft,
     describe_trace,
@@ -35,6 +36,7 @@ __all__ = [
     "TRACE_ABSENT_REASON",
     "TRACE_EMPTY_REASON",
     "describe_adjudication",
+    "describe_approval",
     "describe_context_card",
     "describe_draft",
     "describe_trace",

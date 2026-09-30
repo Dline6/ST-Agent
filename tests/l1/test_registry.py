@@ -302,3 +302,31 @@ class TestUnregister:
         with pytest.raises(SkillNotFoundError):
             registry.get("sk_demo_thing_v1.0")
         assert "audit/x.json" in registry._store.list_files("execution_log")
+
+    def test_unregister_forgets_permission_ledger(self, tmp_path):
+        """T-L3-006 销 L1 册 `D2` 回收半：注销 base 时批准记录同批回收。
+
+        base 可被复用（重注册同名 base），旧批准不回收即静默套用到新实体——与已闭 `B2`
+        同型。对位 `McpServerRegistry.remove_server → permissions.forget`。
+        """
+        from st_agent.l1.skills.permissions import SkillPermissionBook
+
+        store = Store.create(tmp_path / "root", PASS)
+        book = SkillPermissionBook(store)
+        wired = SkillRegistry(store, permission_book=book)
+        wired.register(**minimal(permissions=("net_access:<*.baostock.com>",)))
+        book.declare("sk_demo_thing", ("net_access:<*.baostock.com>",))
+        book.approve("sk_demo_thing", "net_access:<*.baostock.com>")
+        assert book.approved_permissions("sk_demo_thing") == ("net_access:<*.baostock.com>",)
+
+        wired.unregister("sk_demo_thing")
+
+        # 批准随能力走：注销后账本空（重注册同名 base 不继承旧批准）
+        assert book.approved_permissions("sk_demo_thing") == ()
+        assert "skill-permissions/sk_demo_thing.json" not in store.list_files("config")
+
+    def test_unregister_without_book_is_noop(self, registry):
+        """未注入账本（缺省）时行为逐字节不变——不抛错、不假设账本存在。"""
+        registry.register(**minimal())
+        removed = registry.unregister("sk_demo_thing")
+        assert removed == ("sk_demo_thing_v1.0",)

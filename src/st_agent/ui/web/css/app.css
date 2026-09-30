@@ -172,3 +172,11 @@ main {
 .conflict-side__label { margin: 0 0 .25rem; font-size: .95rem; }
 .conflict-directions { margin: .25rem 0; padding-left: 1.1rem; }
 .conflict-actions { margin: .25rem 0; }
+
+/* permission_approval_card（01 §10 / 03 §5.1 / 09 §3）：逐条并列、不合并 */
+.approval-items { margin: .5rem 0; padding: 0; list-style: none; }
+.approval-item { padding: .5rem .75rem; border: 1px solid var(--line); border-radius: 8px; margin-bottom: .4rem; }
+.approval-item__desc { margin: 0 0 .25rem; }
+.approval-item__state--pending { color: var(--delayed); border-color: var(--delayed); }
+.approval-item__state--approved { color: var(--ok); border-color: var(--ok); }
+.approval-item__state--rejected { color: var(--error); border-color: var(--error); }
