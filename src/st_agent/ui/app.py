@@ -11,6 +11,7 @@ dev 面的开关是**构建期**语义：``st_agent.ui.dev`` 子包在发布构�
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,11 @@ _VERSION = "0.1.0"
 """与 `pyproject.toml` 的 `project.version` 保持一致。"""
 
 
+def _now() -> datetime:
+    """带时区的当前时刻（01 §8：内部传输时间锚点带时区）。"""
+    return datetime.now().astimezone()
+
+
 def _load_dev() -> Any | None:
     """尝试加载 dev 子包；发布构建里它不存在，返回 ``None``。"""
     try:
@@ -53,11 +59,56 @@ class UiApp:
     web_root: Path = WEB_ROOT
     dev_package: Any = None
     neutrality_gate: NeutralityGate = field(default_factory=NeutralityGate)
+    chat: Any = None
+    """对话门面（鸭子类型 ``turn(body) -> dict``）；缺省 ``None`` → 对话端点 fail-closed。
+
+    由 M1 关卡的组合根注入（`ui` **不 import** `st_agent.app`，只经此鸭子端口消费，
+    否则破 `test_ui_is_client_only`；见 [T-INT-002] 假设 A2）。
+    """
 
     @property
     def dev_enabled(self) -> bool:
         """dev 面是否**在本进程内真实可用**（开关打开 **且** 子包在盘上）。"""
         return self.dev and self.dev_package is not None
+
+    def api_chat(self, body: dict[str, Any]) -> dict[str, Any]:
+        """对话端点：经注入的门面走一段反向流，出站点仍过**同一条**校验。
+
+        门面的返回含 `reply`（`ResultEnvelope`，附六态渲染语义）与可选
+        `description`（`UiDescription`，走 :meth:`api_description` 的中性化门与必填槽）。
+        未注入门面 → `unavailable` + 点名（不伪造，同 `api_health` 之外的各 fail-closed 面）。
+        """
+        if self.chat is None:
+            return envelope_payload(
+                ResultEnvelope.unavailable(
+                    "未接入对话门面，/api/chat 不可用（装配归组合根）",
+                    last_updated_at=_now(),
+                )
+            )
+        result = self.chat.turn(body)
+        reply = result.get("reply")
+        payload = envelope_payload(reply) if isinstance(reply, ResultEnvelope) else {
+            "status": "failed", "reason": "对话门面返回非法结构", "render": {},
+        }
+        payload["session_id"] = result.get("session_id")
+        payload["needs_confirmation"] = bool(result.get("needs_confirmation"))
+        description = result.get("description")
+        if description is not None:
+            described = envelope_payload(ResultEnvelope.ok(description))
+            gaps = slot_gaps(description)
+            verdict = self.neutrality_gate.check(description)
+            if gaps or not verdict.passed:
+                payload["description"] = envelope_payload(
+                    ResultEnvelope.validation_failed(
+                        "、".join(gaps) if gaps else verdict.reason
+                    )
+                )
+            else:
+                payload["description"] = described
+        else:
+            payload["description"] = None
+        return payload
+
 
     def api_health(self) -> dict[str, Any]:
         """健康面：恒为 `ok`——本叶不接真实数据（任务假设 `A5`）。"""
@@ -123,11 +174,15 @@ def build_ui(
     dev: bool = False,
     token: str | None = None,
     web_root: Path | None = None,
+    chat: Any = None,
 ) -> UiApp:
     """按已绑定的 ``host`` / ``port`` 装配表现层。
 
     ``dev=True`` 而 dev 子包不可用时抛 :class:`DevSurfaceUnavailable`——发布构建里
     「带 dev 跑」是配置错误，必须响，不能装作正常。
+
+    ``chat``：对话门面（鸭子类型 ``turn(body) -> dict``），由组合根注入；缺省 ``None``
+    时 `/api/chat` fail-closed（[T-INT-002]：`ui` 不 import `app`，只经此端口消费）。
     """
     dev_package = _load_dev() if dev else None
     if dev and dev_package is None:
@@ -139,4 +194,5 @@ def build_ui(
         dev=dev,
         web_root=web_root or WEB_ROOT,
         dev_package=dev_package,
+        chat=chat,
     )

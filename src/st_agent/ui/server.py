@@ -23,8 +23,10 @@ __all__ = ["RunningUi", "UiServer", "serve"]
 
 _LOG = logging.getLogger("st_agent.ui.server")
 
-_CONTENT_TYPES = {
-    ".html": "text/html; charset=utf-8",
+_MAX_BODY_BYTES = 256 * 1024
+"""对话请求体的读取上限（回环本机、单轮文本；超限截断后按畸形处理，不整块吃进内存）。"""
+
+_CONTENT_TYPES = {    ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
     ".json": "application/json; charset=utf-8",
@@ -90,7 +92,41 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             return
         self._send_file(asset)
 
+    def do_POST(self) -> None:  # noqa: N802 —— http.server 规定的接口名
+        """仅对话端点：`POST /api/chat`（[T-INT-002]；其余 POST 一律 404）。
+
+        校验与 GET 同一档——`/api/*` 必带令牌（`Origin` 校验防 DNS rebinding）；
+        组合根未注入门面时门面自身回 `unavailable`（不伪造，见 `UiApp.api_chat`）。
+        """
+        parsed = urlsplit(self.path)
+        path = unquote(parsed.path)
+
+        verdict = self.app.guard.check(self.headers, require_token=path.startswith("/api/"))
+        if not verdict.allowed:
+            self._send_json(verdict.status, {"error": verdict.reason})
+            return
+
+        if path != "/api/chat":
+            self._send_text(404, "未找到")
+            return
+        self._send_json(200, self.app.api_chat(self._read_json_body()))
+
     # ── 发送 ────────────────────────────────────────────────────────────────
+    def _read_json_body(self) -> dict:
+        """读并解析 JSON 请求体（畸形 / 超大一律回空体，由门面 fail-closed）。"""
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            return {}
+        if length <= 0:
+            return {}
+        raw = self.rfile.read(min(length, _MAX_BODY_BYTES))
+        try:
+            parsed = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError):
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+
     def _send_json(self, status: int, payload: dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self._send_bytes(status, body, "application/json; charset=utf-8")
@@ -157,11 +193,12 @@ def serve(
     port: int = 0,
     dev: bool = False,
     token: str | None = None,
+    chat: object = None,
 ) -> RunningUi:
     """绑定 → 按**实际端口**装配 → 起服务线程 → 返回句柄。
 
     端口取 ``0`` 时由 OS 分配；守卫必须拿到真实端口才能校验 ``Host`` / ``Origin``，
-    故顺序是「先绑、后装配」。
+    故顺序是「先绑、后装配」。``chat`` 透传给 :func:`build_ui`（组合根注入门面）。
     """
     resolved_token = token or new_token()
     server = UiServer((host, port), UiRequestHandler)
@@ -170,6 +207,7 @@ def serve(
         port=int(server.server_address[1]),
         dev=dev,
         token=resolved_token,
+        chat=chat,
     )
     server.RequestHandlerClass = type("BoundUiRequestHandler", (UiRequestHandler,), {"app": app})
     threading.Thread(target=server.serve_forever, name="st-agent-ui", daemon=True).start()

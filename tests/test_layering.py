@@ -115,3 +115,37 @@ def test_ui_is_client_only():
                 f"{rel}:{lineno} 反向 import 了表现层——UI 是客户端，层不得依赖它"
                 "（铁律 7 的同型约束；D-060 ⑤）"
             )
+
+
+# ── 顶层组合根 `src/st_agent/app.py`（M1 关卡 T-INT-002）的依赖约束 ─────────────
+# `app` 是**装配 L0–L3 的组合根，不是第七层**（同 `ui`，D-060 ⑤）：它不进 `LAYER_ORDER`
+# （否则把「不是层」反向编码），其约束由下面这组用例承担（任务 A2）。
+
+APP_PATH = SRC / "app.py"
+
+#: 组合根只可向下装配这些层（M1 反向流触及 L0–L3；l4/l5/l6/eco 尚未开工，装配它们属越界）。
+APP_ALLOWED_IMPORTS = {"contracts", "l0", "l1", "l2", "l3"}
+
+
+def test_app_is_composition_root_only():
+    """`app` 只向下 import L0–L3 + contracts；任何层与 `ui` 都不得反向 import 它。"""
+    if not APP_PATH.is_file():
+        pytest.skip("M1 组合根尚未交付")
+    for module, lineno in _imports(APP_PATH):
+        if not module.startswith("st_agent."):
+            continue  # __future__ / 标准库 / 第三方（pydantic）不属层间约束
+        target = _layer_of(module)
+        assert target is not None and target in APP_ALLOWED_IMPORTS, (
+            f"app.py:{lineno} import 了 {module}——组合根只可向下装配 "
+            f"{sorted(APP_ALLOWED_IMPORTS)}（M1 反向流面；T-INT-002 A2）"
+        )
+
+    for path in sorted(SRC.rglob("*.py")):
+        if path == APP_PATH:
+            continue
+        rel = str(path.relative_to(SRC)).replace("\\", "/")
+        for module, lineno in _imports(path):
+            assert module != "st_agent.app" and not module.startswith("st_agent.app."), (
+                f"{rel}:{lineno} 反向 import 了组合根 app——装配根不被任何层/表现层依赖"
+                "（对话面经鸭子端口注入，ui 不 import app，T-INT-002 A2）"
+            )
