@@ -37,6 +37,7 @@ from st_agent.l2.memory import (
     SliceQuery,
     WritePolicy,
     checked_node,
+    memory_policy_family,
     new_node_id,
 )
 from st_agent.l3.chat import SessionStore
@@ -332,6 +333,21 @@ def build_m1_runtime(
     deleter = MemoryDeleter(graph, now=now)
     onboarding = OnboardingProtocol(graph, writer, now=now)
 
+    # ── 01 §7 统一配置注册表：L2 侧 `memory-policy` 族由本根注入 ──────────────
+    # L1 不 import L2（铁律 7），故适配器住 L2、在此注册；该族**只读**——取值为
+    # 对象 / 列表，不在统一标量落值面内，写面归各 owner 的 `set_*` API（01 §7）。
+    runtime.config_registry.register_family(
+        memory_policy_family(
+            store,
+            declarations=lambda: (
+                confidence.baseline_entry(),
+                confidence.dynamics_entry(),
+                policy.entry(),
+                onboarding.question_entry(),
+            ),
+        )
+    )
+
     # ── L3（会话落 chat_history） ────────────────────────────────────────────
     sessions = SessionStore(store)
     commands = CommandRegistry()
@@ -345,8 +361,11 @@ def build_m1_runtime(
         descriptors=runtime.skills,
         workflow=WorkflowDraftBuilder(descriptors=runtime.skills),
     )
-    # registry 无真实统一门面（L1 册 E1 待人立项）→ accept 落值 fail-closed（任务 A5）
-    handling = ConfigDraftHandling(descriptors=runtime.skills)
+    # 统一配置注册表门面已交付（T-L1-012 / D-067）→ 双通道同源由「声明面回落」
+    # 升为「真登记项」（accept 经门面落值并产生真 change_id）
+    handling = ConfigDraftHandling(
+        descriptors=runtime.skills, registry=runtime.config_registry
+    )
     adjudicator = ConflictAdjudicator(queue=queue, graph=graph)
     feedback = FeedbackCollector(now=now)
     bus = DispatchBus(runner=runtime.runner, configs=configs, adjudications=adjudicator)

@@ -117,6 +117,7 @@ from st_agent.l2.memory.reader import (
     MemorySliceResult,
     SliceQuery,
 )
+from st_agent.l2.memory.registry_adapter import MemoryPolicyFamily, memory_policy_family
 from st_agent.l2.memory.sharing import (
     EXPORTABLE_PRIVACY_LEVELS,
     SHARE_CONFIRMATION,
@@ -193,6 +194,7 @@ __all__ = [
     "MemoryGraph",
     "MemoryNode",
     "MemoryNotFoundError",
+    "MemoryPolicyFamily",
     "MemoryPolicyStore",
     "MemoryReader",
     "MemoryShare",
@@ -222,5 +224,6 @@ __all__ = [
     "new_import_id",
     "new_node_id",
     "node_text",
+    "memory_policy_family",
     "parse_node",
 ]
