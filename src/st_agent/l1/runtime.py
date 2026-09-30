@@ -49,10 +49,18 @@ from st_agent.l1.mcp.permissions import McpPermissionBook
 from st_agent.l1.mcp.registry import McpServerRegistry
 from st_agent.l1.reuse.freshness import MarketFreshnessOracle
 from st_agent.l1.reuse.registry import OutputRegistry
+from st_agent.l1.registry.facade import ConfigRegistryFacade
+from st_agent.l1.registry.families import (
+    McpHubPolicyFamily,
+    ProviderHostFamily,
+    RetentionFamily,
+    SchedulerPolicyFamily,
+)
 from st_agent.l1.runner.runner import SkillRunner
 from st_agent.l1.sandbox.provider_hosts import ProviderHostRegistry
 from st_agent.l1.sandbox.sandbox import SkillSandbox
 from st_agent.l1.scheduler.models import ScheduledRun
+from st_agent.l1.scheduler.policy import SchedulerPolicy
 from st_agent.l1.scheduler.scheduler import Scheduler, skill_of
 from st_agent.l1.skills.ids import base_of
 from st_agent.l1.skills.official.install import install_official_pack
@@ -207,6 +215,10 @@ class L1Runtime:
     mcp_machine: McpHubStateMachine
     skill_permissions: SkillPermissionBook
     scheduler: Scheduler
+    config_registry: ConfigRegistryFacade
+    """统一配置注册表门面（[01 §7](../../../docs/技术架构-v2/01-平台共享契约.md)；
+    决策 [D-067](../../../项目管理/决策日志.md)）。跨层消费方（L3 对话即配置）经它
+    取登记项与落值；L2 侧 ``memory-policy`` 族由 app 组合根追加注入。"""
 
     def remove_mcp_server(self, server_id: str, *, trace_id: str | None = None) -> None:
         """移除一台 MCP Server（03 §5.2 的完整序列）。
@@ -352,9 +364,15 @@ def build_l1_runtime(
         )
     )
 
+    scheduler_policy = SchedulerPolicy(store)
     scheduler = Scheduler(
         store, workflows=workflows, skills=skills, sandbox=sandbox,
         runner=runner, permissions=permission_source, gateway=gateway,
+        policy=scheduler_policy,
+    )
+    config_registry = _build_config_registry(
+        store, skills=skills, scheduler_policy=scheduler_policy,
+        mcp_config=machine.config, provider_hosts=provider_hosts,
     )
 
     return L1Runtime(
@@ -375,7 +393,33 @@ def build_l1_runtime(
         mcp_machine=machine,
         skill_permissions=skill_permissions,
         scheduler=scheduler,
+        config_registry=config_registry,
     )
+
+
+def _build_config_registry(
+    store: Store,
+    *,
+    skills: SkillRegistry,
+    scheduler_policy: SchedulerPolicy,
+    mcp_config,
+    provider_hosts: ProviderHostRegistry,
+) -> ConfigRegistryFacade:
+    """装配统一配置注册表门面 + L0 / L1 侧各族（[01 §7]；决策 [D-067]）。
+
+    作用域参数族（skill / workflow）的描述体来源取 ``SkillRegistry.get_latest``；
+    L2 侧 ``memory-policy`` 族**不在此注册**——L1 不 import L2（[铁律 7]），
+    由 app 组合根追加注入。
+
+    构造**不写盘**：各族只读既有条目，落值发生在 ``apply`` 时（故重复装配
+    不重置任何用户配置，与 :func:`build_l1_runtime` 的既有口径一致）。
+    """
+    facade = ConfigRegistryFacade(store, resolve=skills.get_latest)
+    facade.register_family(RetentionFamily(store))
+    facade.register_family(SchedulerPolicyFamily(scheduler_policy))
+    facade.register_family(McpHubPolicyFamily(mcp_config))
+    facade.register_family(ProviderHostFamily(provider_hosts, store))
+    return facade
 
 
 def open_runtime(

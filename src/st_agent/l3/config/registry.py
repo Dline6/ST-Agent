@@ -28,6 +28,7 @@ from pydantic import BaseModel, ConfigDict
 from st_agent.contracts.capability_types import ParameterSpec
 from st_agent.contracts.registry_types import ConfigEntry, ConfigScope, PanelField
 from st_agent.contracts.result_envelope import ResultEnvelope
+from st_agent.l1.registry.panel import panel_field_for as _panel_field_for
 
 __all__ = [
     "DESCRIPTORS_ABSENT_REASON",
@@ -49,15 +50,6 @@ DESCRIPTORS_ABSENT_REASON = (
 
 ParamOrigin = Literal["registry", "declared"]
 """一个参数的解析来源：``registry`` 取自 01 §7 登记项 / ``declared`` 回落到声明参数。"""
-
-_WIDGET_BY_TYPE: dict[str, str] = {
-    "string": "text",
-    "number": "number",
-    "integer": "number",
-    "boolean": "toggle",
-    "enum": "select",
-}
-"""``ParameterSpec.type`` → 面板控件（[01 §7](../../../../docs/技术架构-v2/01-平台共享契约.md) ``panel_form_spec``）。"""
 
 
 def _now() -> datetime:
@@ -91,16 +83,11 @@ class ConfigRegistryPort(Protocol):
 def panel_field_for(spec: ParameterSpec) -> PanelField:
     """声明参数 → 面板字段（[01 §7](../../../../docs/技术架构-v2/01-平台共享契约.md) ``panel_form_spec``）。
 
-    映射取 ``type``：string→text · number / integer→number · boolean→toggle ·
-    enum→select（携 ``choices``）。``help_text`` 取该参数的 ``description``
-    （与对话通道同一份说明，只是通道不同）。
+    实现为**唯一一份**、住在 L1（``st_agent.l1.registry.panel``）——登记项的物化
+    与双通道视图必须同一口径；层间只向下依赖（[铁律 7](../../../../项目管理/工程宪法.md)），
+    故 L3 由此再导出，不各造一套。
     """
-    return PanelField(
-        widget=_WIDGET_BY_TYPE[spec.type],
-        label=spec.name,
-        help_text=spec.description,
-        choices=tuple(spec.choices),
-    )
+    return _panel_field_for(spec)
 
 
 class ChannelParam(BaseModel):

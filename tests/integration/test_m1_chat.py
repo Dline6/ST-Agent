@@ -3,7 +3,7 @@
 只测**装配关系与跨层数据流**（[00 §5 反向流]），不重复各任务单测：
 - GWT-1 生产组合根可用（L0/L1/L2/L3 装到同一个 `Store`，L3 编排器用真实依赖构造）
 - GWT-2 反向流端到端（query 去向经**注入的 L1 SkillRunner** 跑通一次官方 Skill + Trace 可展开）
-- GWT-3 配置草稿去向（configure 生成草稿 + 双通道视图；落值面如实 fail-closed，见 A5）
+- GWT-3 配置草稿去向（configure 生成草稿 + 双通道视图；统一门面已交付（T-L1-012）故落值真生效）
 - GWT-4 冲突裁决联动（L2 冲突 → `MemoryConflictDetected` → L3 裁决卡 → 落地，进程内直递，见 A3）
 - GWT-5 memory_op 偏好写入支（[05 §9] / [D-062] 显式指派给本关卡的欠账，`user_stated` 直写）
 - GWT-6 三态渲染送达回环对话面（`POST /api/chat` 真 HTTP，未注入门面 fail-closed）
@@ -68,7 +68,7 @@ def test_gwt2_reverse_flow_query_dispatches_official_skill(rig: M1Rig) -> None:
 # ─────────────────────────────── GWT-3 配置草稿 ───────────────────────────────
 
 def test_gwt3_configure_generates_draft_and_dual_channel(rig: M1Rig) -> None:
-    """`configure` 经注入的生成面产出草稿 + 双通道视图；落值面**如实** fail-closed（A5）。"""
+    """`configure` 经注入的生成面产出草稿 + 双通道视图；统一门面已交付（T-L1-012）故落值真生效。"""
     turn = rig.m1.chat.post("把盯盘阈值配置一下")
     outcome = rig.m1.chat.confirm_and_dispatch(turn.session_id)
     assert outcome.intent == "configure" and outcome.wired
@@ -77,14 +77,19 @@ def test_gwt3_configure_generates_draft_and_dual_channel(rig: M1Rig) -> None:
 
     from st_agent.l3.config import dual_channel_view
 
-    view = dual_channel_view("sk_risk_alert_v1.0", descriptors=rig.m1.runtime.skills)
+    view = dual_channel_view(
+        "sk_risk_alert_v1.0", descriptors=rig.m1.runtime.skills,
+        registry=rig.m1.runtime.config_registry,
+    )
     assert view.status == "ok"
-    # 无真实统一门面（L1 册 E1）→ 两通道一致走声明面，不视为失败
-    assert all(p.origin == "declared" for p in view.data.params)
+    # 统一配置注册表门面已交付（T-L1-012 / D-067）→ 已声明参数取到**真登记项**，
+    # 两通道同源由「声明面回落」升为「registry」（E1 已闭）
+    assert view.data.params and all(p.origin == "registry" for p in view.data.params)
 
-    # 草稿**落值**依赖的门面不存在 → accept 显式未接线，不假装已落 change_id
+    # 草稿落值经门面生效并产生真 `change_id`（此前因无门面恒 fail-closed）
     accepted = rig.m1.handling.accept(outcome.draft)
-    assert accepted.status == "unavailable"
+    assert accepted.status == "ok", accepted.reason
+    assert all(r.change_id.startswith("chg_") for r in accepted.data.records)
 
 
 # ─────────────────────────────── GWT-4 冲突裁决联动 ───────────────────────────────
