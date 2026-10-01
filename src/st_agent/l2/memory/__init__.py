@@ -12,6 +12,7 @@
 - :mod:`st_agent.l2.memory.onboarding` —— Onboarding 协议与空状态（§7）
 - :mod:`st_agent.l2.memory.sharing` —— 片段导出：隐私过滤 / 清单 / 确认门（§8）
 - :mod:`st_agent.l2.memory.importer` —— 片段导入 / 继承：他人公开片段入库（§8）
+- :mod:`st_agent.l2.memory.statement_import` —— 券商账单导入初始画像（§8 末条）
 - :mod:`st_agent.l2.memory.errors` —— 子系统错误类型
 
 对外统一从 ``st_agent.l2.memory`` import。
@@ -125,6 +126,24 @@ from st_agent.l2.memory.sharing import (
     FragmentPlan,
     MemoryShare,
 )
+from st_agent.l2.memory.statement_import import (
+    MAPPING_FIELDS,
+    REQUIRED_MAPPING_FIELDS,
+    STATEMENT_CONFIRMATION,
+    STATEMENT_IMPORT_PREFIX,
+    STATEMENT_PRIVACY_LEVELS,
+    ColumnMapping,
+    ResolvedMapping,
+    StatementImportOutcome,
+    StatementImportRecord,
+    StatementImporter,
+    StatementPreview,
+    StatementTable,
+    checked_mapping,
+    new_statement_import_id,
+    normalize_stock_id,
+    read_table,
+)
 from st_agent.l2.memory.write_policy import (
     DEFAULT_WRITE_WHITELIST,
     WRITE_WHITELIST_CONFIG_ID,
@@ -151,6 +170,7 @@ __all__ = [
     "EMPTY_STATE_HINT",
     "EXPORTABLE_PRIVACY_LEVELS",
     "INTERNAL_EDGE_TYPES",
+    "MAPPING_FIELDS",
     "MAX_ONBOARDING_QUESTIONS",
     "MEMORY_NODE_ADAPTER",
     "NODE_PREFIX",
@@ -158,12 +178,17 @@ __all__ = [
     "ONBOARDING_CONFIG_ID",
     "PRIVACY_LEVELS",
     "REQUIRED_DIMENSIONS",
+    "REQUIRED_MAPPING_FIELDS",
     "SHARE_CONFIRMATION",
     "SOURCES",
+    "STATEMENT_CONFIRMATION",
+    "STATEMENT_IMPORT_PREFIX",
+    "STATEMENT_PRIVACY_LEVELS",
     "TASK_TYPE_AFFINITY",
     "WRITE_WHITELIST_CONFIG_ID",
     "AnyNode",
     "AttentionNode",
+    "ColumnMapping",
     "ConfidenceBaseline",
     "ConfidenceDynamics",
     "ConfidenceModel",
@@ -206,8 +231,14 @@ __all__ = [
     "OnboardingQuestion",
     "PatternNode",
     "Provenance",
+    "ResolvedMapping",
     "RevisionEntry",
     "SliceQuery",
+    "StatementImportOutcome",
+    "StatementImportRecord",
+    "StatementImporter",
+    "StatementPreview",
+    "StatementTable",
     "ThesisNode",
     "WriteDecision",
     "WritePolicy",
@@ -215,6 +246,7 @@ __all__ = [
     "checked_baseline",
     "checked_dynamics",
     "checked_edge",
+    "checked_mapping",
     "checked_node",
     "checked_origin",
     "checked_questions",
@@ -223,7 +255,10 @@ __all__ = [
     "new_change_id",
     "new_import_id",
     "new_node_id",
+    "new_statement_import_id",
     "node_text",
+    "normalize_stock_id",
     "memory_policy_family",
     "parse_node",
+    "read_table",
 ]
