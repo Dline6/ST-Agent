@@ -110,6 +110,7 @@ from st_agent.l2.memory.onboarding import (
     OnboardingQuestion,
     checked_questions,
 )
+from st_agent.l2.memory.pack import ONBOARDING_KIND, official_onboarding_entry
 from st_agent.l2.memory.reader import (
     DEFAULT_TOKEN_BUDGET,
     TASK_TYPE_AFFINITY,
@@ -176,6 +177,7 @@ __all__ = [
     "NODE_PREFIX",
     "NODE_TYPES",
     "ONBOARDING_CONFIG_ID",
+    "ONBOARDING_KIND",
     "PRIVACY_LEVELS",
     "REQUIRED_DIMENSIONS",
     "REQUIRED_MAPPING_FIELDS",
@@ -250,6 +252,7 @@ __all__ = [
     "checked_node",
     "checked_origin",
     "checked_questions",
+    "official_onboarding_entry",
     "checked_record",
     "edge_key",
     "new_change_id",

@@ -24,9 +24,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from st_agent.contracts.neutrality import (
+    RULEPACK_KIND,
+    default_rulepack,
+    set_official_rulepack,
+)
+from st_agent.contracts.registry_types import SemVer
 from st_agent.contracts.result_envelope import ResultEnvelope
+from st_agent.l1.pack import OfficialPack, ResourceEntry, load_official_pack
 from st_agent.l1.runtime import L1Runtime, open_runtime
+from st_agent.l1.skills.pack import ensure_official_pack
 from st_agent.l2.memory import (
+    ONBOARDING_KIND,
     ConfidenceModel,
     ConflictQueue,
     MemoryDeleter,
@@ -39,9 +48,10 @@ from st_agent.l2.memory import (
     checked_node,
     memory_policy_family,
     new_node_id,
+    official_onboarding_entry,
 )
 from st_agent.l3.chat import SessionStore
-from st_agent.l3.commands import CommandRegistry
+from st_agent.l3.commands import COMMAND_KIND, CommandRegistry, official_command_entry
 from st_agent.l3.config import ConfigDraftHandling, ConfigDraftProtocol, WorkflowDraftBuilder
 from st_agent.l3.conflict import ConflictAdjudicator
 from st_agent.l3.dispatch import DispatchBus, DispatchOutcome
@@ -369,6 +379,25 @@ def build_m1_runtime(
     adjudicator = ConflictAdjudicator(queue=queue, graph=graph)
     feedback = FeedbackCollector(now=now)
     bus = DispatchBus(runner=runtime.runner, configs=configs, adjudications=adjudicator)
+
+    # ── 官方资源包（01 §13）：类型化容器按 kind 分发到各消费方 ─────────────────
+    # 容器自带 L1 自有的 `skill`；本根贡献 `rulepack`（取自 contracts 的官方缺省）
+    # 与 L3 的 `command`、L2 的 `onboarding_questions`。每条 kind 一个 loader，
+    # 未注册即由容器显式拒——这里给全，故装载必成。
+    # `skill` 的播种已在 `open_runtime` 内经 `install_official_pack` 完成，此处
+    # `ensure_official_pack` 幂等复入（同一真相源，不重复落盘）。
+    pack = OfficialPack()
+    pack.add(ResourceEntry(
+        kind=RULEPACK_KIND, version=SemVer(major=1, minor=0), payload=default_rulepack(),
+    ))
+    pack.add(official_command_entry())
+    pack.add(official_onboarding_entry())
+    load_official_pack(pack, {
+        "skill": lambda _entry: ensure_official_pack(runtime.skills),
+        COMMAND_KIND: lambda entry: commands.register_source("official", entry.payload),
+        RULEPACK_KIND: lambda entry: set_official_rulepack(entry.payload),
+        ONBOARDING_KIND: lambda entry: onboarding.set_official_default(entry.payload),
+    })
 
     chat = DialogFacade(
         sessions=sessions, reader=reader, writer=writer, intent=intent,

@@ -33,8 +33,18 @@ __all__ = [
     "NeutralityFinding",
     "NeutralityGuard",
     "NeutralityVerdict",
+    "RULEPACK_KIND",
     "default_rulepack",
+    "official_rulepack",
+    "set_official_rulepack",
 ]
+
+RULEPACK_KIND = "rulepack"
+"""中立性规则库的官方资源包 kind（[01 §13](技术架构-v2/01-平台共享契约.md)）。
+
+规则库的「官方缺省」经官方 Pack 的该 kind 承载、由装配层注入（见
+:func:`set_official_rulepack`）——本模块是最底层，不自持 Pack（[铁律 7]）。
+"""
 
 ViolationKind = Literal[
     "person_name",      # 人名
@@ -112,6 +122,39 @@ def default_rulepack() -> RulePack:
     )
 
 
+_official_rulepack: "RulePack | None" = None
+_builtin_rulepack: "RulePack | None" = None
+
+
+def set_official_rulepack(rulepack: "RulePack | None") -> None:
+    """装配层设置**官方 Pack** 的规则库（[01 §13](技术架构-v2/01-平台共享契约.md)）。
+
+    ``None`` 清除、回到内置缺省。该设置对**全部**未显式传规则库的
+    :class:`NeutralityGuard` 生效——含 import 期即构造的模块级常量（如 L4 的
+    ``_OUTPUT_CHECK``），故 :class:`NeutralityGuard` **取用时**解析，而非构造时固化。
+
+    本模块是最底层、不自持 Pack（[铁律 7]）——值由装配层（组合根）经官方 Pack 的
+    ``rulepack`` kind loader 注入。
+    """
+    global _official_rulepack
+    _official_rulepack = rulepack
+
+
+def official_rulepack() -> "RulePack | None":
+    """当前生效的官方 Pack 规则库；未设置 → ``None``（回落到内置缺省）。"""
+    return _official_rulepack
+
+
+def _resolved_rulepack() -> "RulePack":
+    """未显式传规则库时的取值面：官方 Pack 规则库优先，否则内置缺省。"""
+    global _builtin_rulepack
+    if _official_rulepack is not None:
+        return _official_rulepack
+    if _builtin_rulepack is None:
+        _builtin_rulepack = default_rulepack()
+    return _builtin_rulepack
+
+
 class NeutralityGuard:
     """§6 校验器。三个强制执行点各为一个方法；**不存在启用/关闭开关**。
 
@@ -121,8 +164,19 @@ class NeutralityGuard:
     """
 
     def __init__(self, rulepack: RulePack | None = None) -> None:
-        # 校验点不可配置关闭：构造参数只有规则库，无 bypass/enabled 形参
-        self._rules = rulepack or default_rulepack()
+        # 校验点不可配置关闭：构造参数只有规则库，无 bypass/enabled 形参。
+        # rulepack 为 None 时**取用时**解析（官方 Pack 规则库优先，否则内置缺省）
+        # ——见 :func:`set_official_rulepack` 与 ``_rules``。
+        self._explicit = rulepack
+
+    @property
+    def _rules(self) -> RulePack:
+        """生效规则库：显式传入者优先；否则官方 Pack（经注入）→ 内置缺省。
+
+        取用时解析，故装配层设置官方规则库对其后**及之前**构造的守卫都生效——
+        含 import 期固化的模块级常量。
+        """
+        return self._explicit if self._explicit is not None else _resolved_rulepack()
 
     # ── 执行点 1：命名校验 ──────────────────────────────────────────
     def check_name(self, name: str, *, description: str | None = None) -> NeutralityVerdict:

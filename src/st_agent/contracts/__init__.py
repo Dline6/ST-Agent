@@ -58,10 +58,13 @@ from st_agent.contracts.permissions import (
     describe_permission,
 )
 from st_agent.contracts.neutrality import (
+    RULEPACK_KIND,
     NeutralityFinding,
     NeutralityGuard,
     NeutralityVerdict,
     default_rulepack,
+    official_rulepack,
+    set_official_rulepack,
 )
 from st_agent.contracts.registry_types import (
     ChangePolicy,
@@ -168,6 +171,9 @@ __all__ = [
     "check_payload",
     "checked_description",
     "default_rulepack",
+    "official_rulepack",
+    "set_official_rulepack",
+    "RULEPACK_KIND",
     "describe_permission",
     "digest_of",
     "new_description_id",

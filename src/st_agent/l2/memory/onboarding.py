@@ -244,16 +244,45 @@ class OnboardingProtocol:
         self._writer = writer
         self._store = MemoryPolicyStore(graph.store, now=now)
         self._now = _system_now if now is None else now
+        self._official_default: tuple[OnboardingQuestion, ...] | None = None
+
+    # ───────────────────────── 官方 Pack 缺省（01 §13） ─────────────────────────
+
+    def set_official_default(
+        self, questions: tuple[OnboardingQuestion, ...]
+    ) -> tuple[OnboardingQuestion, ...]:
+        """装配层注入官方 Pack 的问题清单缺省（[01 §13](../../../docs/技术架构-v2/01-平台共享契约.md)）。
+
+        [04 §7](../../../docs/技术架构-v2/04-L2-记忆图谱.md) 的清单「可随官方 Pack 更新」
+        ——官方缺省经官方 Pack 的 ``onboarding_questions`` kind 承载、由组合根经此注入。
+        **未注入时**回落到内置 :data:`DEFAULT_ONBOARDING_QUESTIONS`（父任务假设 `A2`）。
+        清单同样过 :func:`checked_questions`（≤10 条、字段在目标节点上、id 不重复）。
+        """
+        self._official_default = checked_questions(
+            [q.model_dump(mode="json") for q in questions]
+        )
+        return self._official_default
+
+    def _default_questions(self) -> tuple[OnboardingQuestion, ...]:
+        """生效的缺省清单：官方 Pack 注入者优先，否则内置缺省。"""
+        return (
+            self._official_default
+            if self._official_default is not None
+            else DEFAULT_ONBOARDING_QUESTIONS
+        )
+
+    def _default_serialized(self) -> list[dict[str, str]]:
+        return [q.model_dump(mode="json") for q in self._default_questions()]
 
     # ───────────────────────── 读 ─────────────────────────
 
     def questions(self) -> tuple[OnboardingQuestion, ...]:
         """当前问题清单（条目缺失或损坏 → 缺省清单，不因一条配置读不动就停摆）。"""
-        raw = self._store.current(ONBOARDING_CONFIG_ID, DEFAULT_SERIALIZED)
+        raw = self._store.current(ONBOARDING_CONFIG_ID, self._default_serialized())
         try:
             return checked_questions(raw)
         except MemoryValidationError:
-            return DEFAULT_ONBOARDING_QUESTIONS
+            return self._default_questions()
 
     def question_entry(self) -> ConfigEntry:
         """问题清单条目的登记形态（01 §7 七字段；供配置注册表面浏览）。"""
