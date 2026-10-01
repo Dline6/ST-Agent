@@ -18,6 +18,7 @@ from st_agent.l2.memory import (
     MemoryShare,
     MemoryWriter,
     OnboardingProtocol,
+    StatementImporter,
     WritePolicy,
 )
 
@@ -80,3 +81,8 @@ def share(graph: MemoryGraph) -> MemoryShare:
 @pytest.fixture()
 def importer(graph: MemoryGraph, writer: MemoryWriter) -> FragmentImporter:
     return FragmentImporter(graph, writer, now=lambda: NOW)
+
+
+@pytest.fixture()
+def statement_importer(graph: MemoryGraph, writer: MemoryWriter) -> StatementImporter:
+    return StatementImporter(graph, writer, now=lambda: NOW)
