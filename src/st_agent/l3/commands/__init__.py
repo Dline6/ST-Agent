@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from st_agent.l3.commands.pack import COMMAND_KIND, official_command_entry
 from st_agent.l3.commands.registry import (
     COMMAND_PREFIX,
     DEFAULT_COMMANDS,
@@ -18,6 +19,7 @@ from st_agent.l3.commands.registry import (
 )
 
 __all__ = [
+    "COMMAND_KIND",
     "COMMAND_PREFIX",
     "DEFAULT_COMMANDS",
     "INTENT_KINDS",
@@ -27,4 +29,5 @@ __all__ = [
     "IntentKind",
     "ParamValue",
     "QuickCommand",
+    "official_command_entry",
 ]
