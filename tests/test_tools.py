@@ -255,6 +255,31 @@ def test_retarget_leaves_broken_link_alone(tmp_path):
     assert rl._retarget(text, str(here), lambda p: [str(here / p)]) == text
 
 
+def test_retarget_handles_link_text_containing_brackets(tmp_path):
+    """链接文字里的行内代码常带方括号（`list[str]` / `Mapping[str, Any]`）——正则不得提前收口。
+
+    回归（2026-10-04 归档 M2 实测）：链接文字用 ``[^\\]]*`` 会在 ``Any]`` 处截断、与 ``](``
+    失配，整条链接被**静默漏改**（``verify_docs`` 仍报得出，因为它先 ``strip_code`` 去掉
+    行内代码、文字退化为空；本处要逐字节保留原文，故不能照搬那一步）。
+    """
+    here = tmp_path / "项目管理/tasks/done/M2"           # 比 tasks/ 深两层
+    here.mkdir(parents=True)
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src/r.py").write_text("x", encoding="utf-8")
+
+    def cands(p):
+        return [str(here / p), str(tmp_path / "项目管理/tasks" / p)]
+
+    text = (
+        "见 [`run(..., Mapping[str, Any])`](../../src/r.py) "
+        "与 [`codes: tuple[str, ...]`](../../src/r.py)。"
+    )
+    fixed = rl._retarget(text, str(here), cands)
+    assert fixed.count("(../../../../src/r.py)") == 2, "两条链接都要改到"
+    assert "](../../src/r.py)" not in fixed
+    assert rl._retarget(fixed, str(here), cands) == fixed          # 幂等
+
+
 def _mini_repo(tmp_path):
     """迷你仓库：一个已完成 M0 任务（带两类相对链接）+ 一个 M1 任务 + 一个外部引用页。"""
     (tmp_path / "docs").mkdir()
