@@ -340,7 +340,7 @@ class TestGwt5MemoryOpRoute:
         assert outcome.envelope.status == "empty"
 
     def test_other_pending_routes_are_untouched(self) -> None:
-        for intent in ("analyze", "train"):
+        for intent in ("train",):
             outcome = DispatchBus().dispatch(_card(intent, "sk_probe_v1.0"))
             assert outcome.envelope.status == "unavailable"
             assert outcome.wired is False

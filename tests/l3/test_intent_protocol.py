@@ -22,6 +22,7 @@ from st_agent.l3.errors import IntentValidationError
 from st_agent.l3.intent import (
     CLARIFICATION_BUDGET,
     DIRECTION_LIMIT,
+    INTENT_PARAM_SPECS,
     INTENT_TARGETS,
     UNSPECIFIED_LABEL,
     IntentDraft,
@@ -337,3 +338,83 @@ class TestLlmUnderstander:
     def test_code_fence_is_tolerated(self) -> None:
         body = '```json\n{"intent": "explain", "directions": []}\n```'
         assert parse_understanding(body).data.intent == "explain"
+
+
+# ─────────── T-INT-003：无 target Skill 的意图取「意图级参数声明」（05 §3.2） ───────────
+
+
+class TestIntentLevelParams:
+    """`analyze` 的派发目标是整条 L4 流程、**没有**被调用的 Skill，故它问不出
+    `SkillDescriptor.parameters`——「模式询问」（[06 §2.1]）由 [`INTENT_PARAM_SPECS`]
+    承载，规则与 Skill 侧逐条相同。"""
+
+    def test_declared_intents_are_real_intents(self) -> None:
+        assert set(INTENT_PARAM_SPECS) <= set(INTENT_KINDS)
+
+    def _protocol(self, draft: IntentDraft, skills: SkillRegistry, **kw) -> IntentProtocol:
+        return IntentProtocol(
+            understander=_Understander(ResultEnvelope.ok(draft)),
+            descriptors=skills, **kw,
+        )
+
+    def test_analyze_gets_a_mode_question(self, skills: SkillRegistry) -> None:
+        protocol = self._protocol(
+            checked_draft(intent="analyze", target=None, understood={"topic": "sh.600000"}),
+            skills,
+        )
+        understood = protocol.understand("分析下 sh.600000")
+        assert understood.status == "ok"
+        draft = understood.data
+        assert draft.open_questions == ("mode",), "无 target 也须补出意图级问项"
+
+        round_ = protocol.clarify(draft)
+        assert [q.name for q in round_.questions] == ["mode"]
+        assert round_.questions[0].choices == ("quick", "deep")
+        assert round_.questions[0].default == "deep"
+        assert round_.questions[0].skippable is True
+
+    def test_mode_answer_lands_in_values_and_skip_takes_the_default(
+        self, skills: SkillRegistry
+    ) -> None:
+        protocol = self._protocol(
+            checked_draft(intent="analyze", target=None, understood={"topic": "sh.600000"}),
+            skills,
+        )
+        draft = protocol.understand("分析下 sh.600000").data
+        assert protocol.confirm(draft).values == {"topic": "sh.600000", "mode": "deep"}
+        answered = protocol.confirm(draft, {"mode": "quick"})
+        assert answered.values == {"topic": "sh.600000", "mode": "quick"}
+        assert any(item.value == "quick" for item in answered.items)
+
+    def test_mode_prefilled_by_the_understander_is_not_asked_again(
+        self, skills: SkillRegistry
+    ) -> None:
+        protocol = self._protocol(
+            checked_draft(
+                intent="analyze", target=None,
+                understood={"topic": "x", "mode": "quick"},
+            ),
+            skills,
+        )
+        draft = protocol.understand("分析下 x").data
+        assert draft.open_questions == ()
+        assert protocol.clarify(draft).questions == ()
+
+    def test_shortcut_to_analyze_also_asks_the_mode(self, skills: SkillRegistry) -> None:
+        """§8 快捷指令（`/回测` `压测`）落 `analyze`——同样受意图级声明覆盖。"""
+        protocol = self._protocol(
+            checked_draft(intent="query", target=None), skills, commands=CommandRegistry(),
+        )
+        resolved = protocol.understand("/回测 sh.600000")
+        assert resolved.data.intent == "analyze"
+        assert resolved.data.open_questions == ("mode",)
+
+    def test_other_targetless_intents_gain_no_phantom_questions(
+        self, skills: SkillRegistry
+    ) -> None:
+        """未声明的意图（如无 target 的 `query`）行为**逐字节不变**：不凭空产问项。"""
+        protocol = self._protocol(checked_draft(intent="query", target=None), skills)
+        draft = protocol.understand("看看").data
+        assert draft.open_questions == ()
+        round_ = protocol.clarify(draft)
+        assert round_.questions == () and round_.envelope.status == "empty"

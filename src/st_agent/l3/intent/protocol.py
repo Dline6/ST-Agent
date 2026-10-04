@@ -11,10 +11,12 @@
 路径——它的失败一律走信封（端点不可用 → ``unavailable``，与 [05 §4](../../../../docs/技术架构-v2/05-L3-对话主入口.md)
 的「显式降级告知」同源）。
 
-**澄清问项取自目标 Skill 的声明参数**（假设 A2）：一条问项 ＝ ``SkillDescriptor
-.parameters`` 中**未给出值**的一项；「跳过」即取该参数的 ``default``；超出预算者
-以默认值填充并在确认卡上标注来源。故「跳过用默认值继续」有确定的来源，而非由
-理解方自由产问题。
+**澄清问项取自声明参数**（假设 A2）：一条问项 ＝ ``SkillDescriptor.parameters`` 中
+**未给出值**的一项；「跳过」即取该参数的 ``default``；超出预算者以默认值填充并在
+确认卡上标注来源。故「跳过用默认值继续」有确定的来源，而非由理解方自由产问题。
+**无 target Skill 的意图**（`analyze`——其派发目标是整条 L4 流程）改取**意图级参数
+声明** [`INTENT_PARAM_SPECS`]，规则逐条同 Skill 侧（见 [05 §3.2](../../../../docs/技术架构-v2/05-L3-对话主入口.md)
+的「无 target Skill 的意图」条）。
 
 **方向候选取自理解产物**（假设 A3）：本层只裁剪到 ≤3 条 + 中性改述；理解端口
 不可用时**不给**方向（无从给出），走 ``unavailable`` + 原因。
@@ -53,6 +55,7 @@ __all__ = [
     "CONFIRMATION_HEADER",
     "DIRECTIONS_HEADER",
     "DIRECTION_LIMIT",
+    "INTENT_PARAM_SPECS",
     "INTENT_TARGETS",
     "NO_DIRECTIONS_REASON",
     "UNDERSTANDER_ABSENT_REASON",
@@ -113,6 +116,26 @@ INTENT_TARGETS: dict[str, str] = {
     "explain": "Trace 展开渲染",
 }
 """[05 §3.1](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 分类表的机器可读副本（同 ``INTENT_KINDS`` 的写法）。"""
+
+INTENT_PARAM_SPECS: dict[str, tuple[ParameterSpec, ...]] = {
+    "analyze": (
+        ParameterSpec(
+            name="mode", type="enum", default="deep", choices=("quick", "deep"),
+            description="分析模式（快速 = 核心少数视角，深度 = 全部启用视角）",
+        ),
+    ),
+}
+"""**意图级参数声明**——**没有**被调用 Skill 的意图（[05 §3.2](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的问项来源）。
+
+[05 §3.2](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的问项来源是「目标 Skill 的
+``SkillDescriptor.parameters`` 中未给出值的一项」，而 ``analyze`` 的派发目标是**整条
+[06-L4](../../../../docs/技术架构-v2/06-L4-多视角推理.md) 流程**、非某个 Skill，故它没有
+``parameters`` 可问——[06 §2.1](../../../../docs/技术架构-v2/06-L4-多视角推理.md)「询问模式
+（快速 / 深度）」会因此空悬。本表即该情形的承载者：形态与问项来源规则**逐条同
+Skill 侧**（一问一参、取值域取自 ``ParameterSpec``、跳过取 ``default``、超预算落
+默认值并标注来源），只是声明处从 Skill 描述体换成了意图自身。见 [05 §3.2](../../../../docs/技术架构-v2/05-L3-对话主入口.md)
+的「无 target Skill 的意图」条（[`T-INT-003`](../../../项目管理/tasks/T-INT-003-M2集成关卡多视角决策闭环.md) 交付）。
+"""
 
 
 def _now() -> datetime:
@@ -335,7 +358,7 @@ class IntentProtocol:
             return resolution.envelope
         command = resolution.command
         target = self._match(f"{command.name} {command.description}")
-        specs = self._specs(target)
+        specs = self._params_for(command.intent, target)
         open_questions = tuple(
             s.name for s in specs if s.name not in command.param_defaults
         )
@@ -346,15 +369,19 @@ class IntentProtocol:
         ))
 
     def _filled(self, draft: IntentDraft) -> IntentDraft:
-        """补齐 ``open_questions``（理解端口可只给 target 与已提取值）。"""
-        if draft.open_questions or draft.target is None:
+        """补齐 ``open_questions``（理解端口可只给 target 与已提取值）。
+
+        参数源含**意图级声明**（[`INTENT_PARAM_SPECS`]）——故 `analyze` 这类无
+        ``target`` 的意图也能得到 ``mode`` 问项，而非因「无目标 Skill」被静默略过。
+        """
+        specs = self._params_for(draft.intent, draft.target)
+        if draft.open_questions or not specs:
             return draft
         return checked_draft(
             intent=draft.intent, target=draft.target,
             understood=dict(draft.understood),
             open_questions=tuple(
-                s.name for s in self._specs(draft.target)
-                if s.name not in draft.understood
+                s.name for s in specs if s.name not in draft.understood
             ),
             directions=draft.directions, reason=draft.reason,
             via_shortcut=draft.via_shortcut,
@@ -378,6 +405,19 @@ class IntentProtocol:
             return ()
         return tuple(getattr(descriptor, "parameters", ()) or ())
 
+    def _params_for(
+        self, intent: IntentKind | None, skill_id: str | None
+    ) -> tuple[ParameterSpec, ...]:
+        """澄清 / 补值的**参数源**：意图级声明 ∪ 目标 Skill 的 ``parameters``。
+
+        同名时 **Skill 侧覆盖**意图级声明（描述体是更具体的来源）；顺序取声明在先、
+        故问项次序稳定（`analyze` 的 `mode` 恒为首问）。见 [`INTENT_PARAM_SPECS`]。
+        """
+        ordered = {s.name: s for s in INTENT_PARAM_SPECS.get(intent or "", ())}
+        for spec in self._specs(skill_id):
+            ordered[spec.name] = spec
+        return tuple(ordered.values())
+
     # ───────────────────────── §3.2 澄清 ─────────────────────────
 
     def clarify(self, draft: IntentDraft) -> ClarificationRound:
@@ -395,7 +435,7 @@ class IntentProtocol:
                 ),
                 directions=directions,
             )
-        specs = {s.name: s for s in self._specs(draft.target)}
+        specs = {s.name: s for s in self._params_for(draft.intent, draft.target)}
         asked = draft.open_questions[:CLARIFICATION_BUDGET]
         deferred = tuple(
             n for n in draft.open_questions[CLARIFICATION_BUDGET:] if n in specs
@@ -434,7 +474,7 @@ class IntentProtocol:
         if draft.intent is None:
             raise IntentValidationError(NO_DIRECTIONS_REASON)
         given = dict(answers or {})
-        specs = {s.name: s for s in self._specs(draft.target)}
+        specs = {s.name: s for s in self._params_for(draft.intent, draft.target)}
         values: dict[str, Any] = {}
         items: list[ConfirmationItem] = [self._intent_item(draft)]
 

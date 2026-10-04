@@ -19,6 +19,7 @@ from st_agent.l1.runner import SkillRunner
 from st_agent.l1.skills import SkillRegistry
 from st_agent.l3.commands import INTENT_KINDS
 from st_agent.l3.dispatch import (
+    ANALYZE_ABSENT_REASON,
     LLM_DEGRADED_NOTICE,
     RENDER_SEMANTICS,
     ROUTE_BY_INTENT,
@@ -164,7 +165,7 @@ class TestGwt3PendingRoutes:
     def test_route_table_matches_05_3_1(self) -> None:
         assert tuple(spec.intent for spec in ROUTE_SPECS) == INTENT_KINDS
 
-    @pytest.mark.parametrize("intent", ["analyze", "train"])
+    @pytest.mark.parametrize("intent", ["train"])
     def test_pending_route_names_its_owner(self, intent: str) -> None:
         outcome = DispatchBus().dispatch(_card(intent, SKILL))
         assert outcome.envelope.status == "unavailable"
@@ -172,16 +173,27 @@ class TestGwt3PendingRoutes:
         assert outcome.owner == ROUTE_BY_INTENT[intent].owner
         assert outcome.owner in outcome.envelope.reason
 
+    def test_analyze_route_is_wired_but_fail_closed_without_its_port(self) -> None:
+        """`analyze` 由 T-INT-003 接活（`wired=True`，无归属任务可点名）；未注入编排面
+        仍 fail-closed + 原因，**不伪造**执行。"""
+        spec = ROUTE_BY_INTENT["analyze"]
+        assert spec.wired is True and spec.owner is None
+        outcome = DispatchBus().dispatch(_card("analyze", SKILL))
+        assert outcome.envelope.status == "unavailable"
+        assert outcome.envelope.reason == ANALYZE_ABSENT_REASON
+        assert outcome.analysis is None
+
     def test_pending_route_disclaims_the_timestamp(self) -> None:
-        outcome = DispatchBus( ).dispatch(_card("analyze", SKILL), now=NOW)
+        outcome = DispatchBus().dispatch(_card("train", SKILL), now=NOW)
         assert outcome.envelope.last_updated_at == NOW
         assert "不代表数据截止时间" in outcome.envelope.reason
 
-    def test_wired_routes_are_query_explain_configure_and_memory_op(self) -> None:
+    def test_wired_routes_are_query_explain_configure_memory_op_and_analyze(self) -> None:
         """`configure` 由 T-L3-003.1 接活（原登记 `owner=T-L3-003`）；`memory_op` 由
-        T-L3-005.1 接活（原登记 `owner=T-L3-005`）。"""
+        T-L3-005.1 接活（原登记 `owner=T-L3-005`）；`analyze` 由 T-INT-003（M2 关卡）
+        接活（原登记 `owner=T-L4-002`，**陈旧指针**，随接线一并订正）。"""
         assert {s.intent for s in ROUTE_SPECS if s.wired} == {
-            "query", "explain", "configure", "memory_op"
+            "query", "explain", "configure", "memory_op", "analyze"
         }
 
 
