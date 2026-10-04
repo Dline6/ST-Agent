@@ -52,6 +52,7 @@ from st_agent.l1.reuse.registry import OutputRegistry
 from st_agent.l1.registry.facade import ConfigRegistryFacade
 from st_agent.l1.registry.families import (
     McpHubPolicyFamily,
+    NetAuditFamily,
     ProviderHostFamily,
     RetentionFamily,
     SchedulerPolicyFamily,
@@ -261,6 +262,7 @@ def build_l1_runtime(
     mcp_env_resolver: Any | None = None,
     permissions: Any | None = None,
     online: bool = True,
+    audit: bool | None = None,
 ) -> L1Runtime:
     """装配 L1 运行时（L0 面 + L1 能力面 + MCP 面；调度接线见 ``.4``）。
 
@@ -296,8 +298,11 @@ def build_l1_runtime(
         （``D-039`` 已否决「取声明即视为已批准」）。``T-L1-009`` 之前该事实无落点
         （L1 册 `D1`）
     :param online: 初始在线态（断网时经 ``L1Runtime.set_online`` 翻转）
+    :param audit: 出网审计开关的覆盖入口；缺省 ``None`` ⇒ 取 01 §7 条目
+        ``net-audit/enabled`` 的口径（**缺省关**，02 §6 / D-073）。变更走配置注册表
+        门面（``net-audit/*`` 族）即热切换本网关
     """
-    gateway = EgressGateway(store, sender=sender, online=online)
+    gateway = EgressGateway(store, sender=sender, online=online, audit=audit)
     endpoints = EndpointRegistry(store)
     vault = CredentialVault(store)
     provider_hosts = ProviderHostRegistry(store)
@@ -372,7 +377,7 @@ def build_l1_runtime(
     )
     config_registry = _build_config_registry(
         store, skills=skills, scheduler_policy=scheduler_policy,
-        mcp_config=machine.config, provider_hosts=provider_hosts,
+        mcp_config=machine.config, provider_hosts=provider_hosts, gateway=gateway,
     )
 
     return L1Runtime(
@@ -404,6 +409,7 @@ def _build_config_registry(
     scheduler_policy: SchedulerPolicy,
     mcp_config,
     provider_hosts: ProviderHostRegistry,
+    gateway: EgressGateway,
 ) -> ConfigRegistryFacade:
     """装配统一配置注册表门面 + L0 / L1 侧各族（[01 §7]；决策 [D-067]）。
 
@@ -413,18 +419,21 @@ def _build_config_registry(
 
     构造**不写盘**：各族只读既有条目，落值发生在 ``apply`` 时（故重复装配
     不重置任何用户配置，与 :func:`build_l1_runtime` 的既有口径一致）。
+
+    ``gateway`` 进 ``NetAuditFamily``：审计开关落值即热切换该网关（02 §6）。
     """
     facade = ConfigRegistryFacade(store, resolve=skills.get_latest)
     facade.register_family(RetentionFamily(store))
     facade.register_family(SchedulerPolicyFamily(scheduler_policy))
     facade.register_family(McpHubPolicyFamily(mcp_config))
     facade.register_family(ProviderHostFamily(provider_hosts, store))
+    facade.register_family(NetAuditFamily(store, gateway=gateway))
     return facade
 
 
 def open_runtime(
     root: Path | str,
-    passphrase: str,
+    passphrase: str | None = None,
     *,
     create: bool = False,
     llm_env: Mapping[str, str] | None = None,
@@ -433,6 +442,9 @@ def open_runtime(
 ) -> L1Runtime:
     """会话入口：解锁存储**一次**并装配运行时。
 
+    :param passphrase: 主密码；**缺省 ``None`` ⇒ 明文存储**（02 §2.2 默认不加密，
+        免口令）。加密根必须给出（否则 L0 显式拒绝）；明文根给出时按凭据口令
+        解锁 `secrets`（凭据恒加密，§3）
     :param create: 盘上无存储时是否先初始化（``Store.create``）；缺省 ``False``
         即只打开既有存储（不存在或口令错 → L0 的 ``StorageOpenError``）
     :param llm_env: 引导装载的取值面（``LLM_API_KEY`` / ``LLM_BASE_URL`` /

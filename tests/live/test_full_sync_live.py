@@ -43,7 +43,7 @@ def test_full_sync_live(tmp_path) -> None:
     from st_agent.l0.storage import Store
 
     store = Store.create(tmp_path / "root", passphrase)
-    gateway = EgressGateway(store)
+    gateway = EgressGateway(store, audit=True)
     with BaoStockFetcher() as fetcher:
         sync = BaoStockSync(MarketDb(store), gateway, fetcher)
         summary = summarize_run(sync)

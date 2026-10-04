@@ -39,6 +39,9 @@ _FAKE_MARKET = _FakeMarketQuery()
 
 
 def _build(store: Store, **kwargs) -> L1Runtime:
+    # 本套件断言「经网关的出网面」，故显式开审计——产品缺省是**关**（02 §6 / D-073），
+    # 默认关的语义由 tests/l0/test_gateway_audit_mode.py 覆盖。
+    kwargs.setdefault("audit", True)
     return build_l1_runtime(store, market_query=_FAKE_MARKET, **kwargs)
 
 

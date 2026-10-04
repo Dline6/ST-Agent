@@ -3,12 +3,14 @@
 - 打开存储的统一失败：``StorageOpenError``（密码错 / 结构坏）
 - 损坏检测的显式载体：``StorageCorruptionError``（分区级定位，02 §2.3）
 - 加密原语失败：``CryptoError``（GCM 认证失败等）
+- 惰性解锁未就绪：``StorageSecretsLockedError``（明文模式下 `secrets` 未解锁，02 §2.2）
 """
 
 __all__ = [
     "CryptoError",
     "StorageCorruptionError",
     "StorageOpenError",
+    "StorageSecretsLockedError",
 ]
 
 
@@ -22,6 +24,15 @@ class CryptoError(StorageError):
 
 class StorageOpenError(StorageError):
     """打开存储失败（主密码错误 / 存储结构损坏）。"""
+
+
+class StorageSecretsLockedError(StorageError):
+    """`secrets` 分区未解锁（明文模式的惰性解锁口径，02 §2.2）。
+
+    凭据恒加密：明文根对其余分区免口令，访问 `secrets` 时才要口令。本异常是
+    「尚未给出凭据口令」的**显式**载体——调用方须 `Store.unlock_secrets(口令)`，
+    不得把未解锁当作空分区继续。
+    """
 
 
 class StorageCorruptionError(StorageError):

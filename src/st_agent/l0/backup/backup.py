@@ -113,6 +113,7 @@ def _unlock_unchecked(root: Path, passphrase: str) -> Store:
     """密码正确但分区损坏的目标解锁（跳过 _verify_all；恢复覆盖写即修复）。
 
     错密码仍拒绝（校验锚认证失败 → StorageOpenError，不触碰数据）。
+    只走**加密根**（本函数按 keyfile 的主锚校验，明文根走 ``Store.open`` 分派）。
     """
     try:
         meta = json.loads((root / _KEYFILE).read_text(encoding="utf-8"))
@@ -127,7 +128,9 @@ def _unlock_unchecked(root: Path, passphrase: str) -> Store:
     if not (check_verifier(master, verifier)
             and check_verifier(secrets_key, verifier_secrets)):
         raise StorageOpenError("主密码错误（校验锚认证失败）；目标数据未动")
-    return Store._unlock(root, master, secrets_key)
+    return Store._unlock(root, master, secrets_key,
+                         secrets_salt=secrets_salt,
+                         secrets_verifier=verifier_secrets)
 
 
 class RetentionSweepReport(BaseModel):

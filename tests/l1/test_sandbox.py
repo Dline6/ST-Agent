@@ -68,7 +68,7 @@ def make_gateway(store: Store, calls: list):
     def sender(kind, host, timeout_ms):
         calls.append((kind, host))
         return (0, 12, ())
-    return EgressGateway(store, sender=sender)
+    return EgressGateway(store, sender=sender, audit=True)
 
 
 # ───────────────────────── GWT-S1 文件越界拦截 ─────────────────────────

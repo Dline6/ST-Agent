@@ -62,7 +62,7 @@ def test_real_endpoint_streams(tmp_path: Path) -> None:
 
     root = tmp_path / "root"
     store = Store.create(root, THROWAWAY_PASS)
-    gateway = EgressGateway(store)                       # 构造期无 sender：全走按次
+    gateway = EgressGateway(store, audit=True)                       # 构造期无 sender：全走按次
     vault = CredentialVault(store)
     vault.add("live-key", "llm_api_key", key)
     registry = EndpointRegistry(store)
@@ -113,7 +113,10 @@ def test_open_runtime_bootstraps_from_dotenv(tmp_path: Path) -> None:
             raise AssertionError("本用例不取数")
 
     root = tmp_path / "bootstrapped"
-    rt = open_runtime(root, THROWAWAY_PASS, create=True, market_query=_Feed())
+    # audit=True：本用例断言「真实调用经网关并留下审计记录」；产品缺省是**关**
+    # （02 §6 / D-073）——默认关的语义由 tests/l0/test_gateway_audit_mode.py 覆盖。
+    rt = open_runtime(root, THROWAWAY_PASS, create=True, market_query=_Feed(),
+                      audit=True)
 
     assert rt.endpoints.get("cloud-main").credential_id == "llm-api-key"
     assert rt.provider_hosts.resolve("openai-compatible") == urlsplit(

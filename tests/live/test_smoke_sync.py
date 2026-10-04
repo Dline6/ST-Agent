@@ -55,7 +55,7 @@ def test_real_chain_smoke(tmp_path) -> None:
     keyfile_cost = round(time.perf_counter() - t0, 2)
 
     db = MarketDb(store)
-    gateway = EgressGateway(store)
+    gateway = EgressGateway(store, audit=True)
 
     with BaoStockFetcher() as fetcher:              # 真实 login/logout
         sync = BaoStockSync(db, gateway, fetcher)
@@ -144,7 +144,7 @@ def test_real_window_and_batch_smoke(tmp_path) -> None:
     root = tmp_path / "root"
     store = Store.create(root, passphrase)
     db = MarketDb(store)
-    gateway = EgressGateway(store)
+    gateway = EgressGateway(store, audit=True)
 
     with BaoStockFetcher() as fetcher:
         sync = BaoStockSync(db, gateway, fetcher)

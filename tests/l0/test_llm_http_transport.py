@@ -86,7 +86,7 @@ def root(tmp_path: Path) -> Path:
 @pytest.fixture()
 def gateway(store: Store) -> EgressGateway:
     """**不**注入构造期 sender——真实路径全靠按次 sender（缺则 ``unavailable``）。"""
-    return EgressGateway(store)
+    return EgressGateway(store, audit=True)
 
 
 def make_client(store: Store, gateway: EgressGateway, post, *, routes=None,
