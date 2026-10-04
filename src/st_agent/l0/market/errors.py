@@ -27,8 +27,26 @@ class MarketValidationError(MarketError, ValueError):
 
 
 class FetchError(MarketError):
-    """抓取器执行失败基类（同步闭包译为 ``EgressError`` → ``failed`` 信封）。"""
+    """抓取器执行失败基类（同步闭包译为 ``EgressError`` → ``failed`` 信封）。
+
+    :param error_code: 源端错误码原文（无则 ``None``）。**保留它是为了可判定**——
+    只留 ``error_msg`` 时，「网络/会话类可重试」与「调用方参数类不可重试」在调用侧
+    无从区分（T-L0-017.2 GWT-1）。
+    :param retryable: 该错误是否值得重试（由抓取器按源端语义判定，见
+        ``live.RETRYABLE_ERROR_CODES``）；同步引擎只读此标记，不解析错误码。
+    """
+
+    def __init__(self, message: str, *, error_code: str | None = None,
+                 retryable: bool = False) -> None:
+        super().__init__(message)
+        self.error_code = error_code
+        self.retryable = retryable
 
 
 class FetchUnavailableError(FetchError):
-    """数据源不可达（同步闭包译为 ``EgressUnavailableError`` → ``unavailable`` 信封）。"""
+    """数据源不可达（同步闭包译为 ``EgressUnavailableError`` → ``unavailable`` 信封）。
+
+    与 :class:`FetchError` 的区别在**信封落点**（``unavailable`` vs ``failed``），
+    不在可否重试——登录失败、连接被拒这类瞬时故障同属可重试面（``retryable=True``），
+    重试用尽后仍按原语义抛本异常，信封口径不变。
+    """

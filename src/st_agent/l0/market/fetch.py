@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+from functools import lru_cache
 from typing import Any, Protocol
 
 from st_agent.l0.market.cleaning import (
@@ -57,10 +58,46 @@ __all__ = [
     "map_macro_reserve",
     "map_performance_express",
     "map_security_basic",
+    "result_shape",
+    "source_page_size",
+    "truncation_suspect",
 ]
 
 FetchResult = tuple[list[str], list[list[Any]]]
 """抓取器返回：(API 原始字段名, 字符串行)。"""
+
+# ───────────── 结果集完整性判据（静默截断防护，T-L0-017.2 GWT-5） ─────────────
+# 源端分批取数：翻页收发失败时客户端 ``next()`` 返回 ``False`` 而 ``error_code``
+# 仍为 ``0``——**半截结果集与正常收尾同形**（2026-10-04 真网实测：``sz.000001``
+# 首次只返 4000 行＝恰 2 页，重测两次均 8664 行）。唯一可判定的形态是「行数恰为
+# 整页」：正常收尾的末页必然不足一页，故对可疑形态复核一次，不一致即判失败。
+
+_PAGE_SIZE_FALLBACK = 2000
+
+
+@lru_cache(maxsize=1)
+def source_page_size() -> int:
+    """源端每页条数（取自 baostock 常量表；包不可用时用当前实测值兜底）。"""
+    try:
+        from baostock.common.contants import BAOSTOCK_PER_PAGE_COUNT
+        return int(BAOSTOCK_PER_PAGE_COUNT)
+    except Exception:  # noqa: BLE001 — 兜底值即实测值，缺包不该改变形态判定
+        return _PAGE_SIZE_FALLBACK
+
+
+def truncation_suspect(row_count: int, page_size: int) -> bool:
+    """行数是否落在「与静默截断不可区分」的形态上（恰为整页；0 行除外）。
+
+    0 行不算：退市 / 未上市 / 窗口内无成交的码本就返回空集，且这类码数量可观，
+    逐只复核会把代价翻倍却抓不到任何东西。
+    """
+    return row_count > 0 and row_count % page_size == 0
+
+
+def result_shape(result: FetchResult) -> tuple:
+    """结果集指纹（字段序 + 行数 + 末行）——复核的一致性判据。"""
+    fields, rows = result
+    return (tuple(fields), len(rows), tuple(rows[-1]) if rows else ())
 
 
 class Fetcher(Protocol):
