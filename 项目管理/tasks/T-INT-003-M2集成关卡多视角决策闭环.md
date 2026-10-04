@@ -10,7 +10,7 @@ milestone: M2
 depends_on: [T-L4-001, T-L4-002, T-L4-003, T-L4-004, T-L4-004.1, T-L4-004.2, T-L0-010.1, T-L0-010.2, T-L0-010.3, T-L0-010.4, T-L0-010.5, T-L0-012, T-L0-013, T-L0-014, T-L0-015.1, T-L0-015.2, T-L1-010.1, T-L1-010.2, T-L1-012.1, T-L1-012.2, T-L1-012.3, T-L1-013.1, T-L1-013.2, T-L1-013.3, T-L1-013.4, T-L2-005, T-L3-006, T-INT-002]
 status: done
 decisions: [D-072]
-verify: 全量 pytest **2407 passed / 9 deselected**（437s）；`tests/integration/test_m2_deliberation.py` 14 例（GWT-1..8 离线端到端）+ `tests/l4/test_analyze.py` 11 + `tests/l4/test_ports.py` 20 + `tests/l1/test_official_dimensions.py` 4 + `tests/l3/test_intent_protocol.py` +6 · live 子集 **3 passed**（`test_llm_deliberation_live.py`：真端点经 `LlmOpinionSynthesizer` 出方向观点 + `LlmEvidenceReviewer` 真研判，出网审计 2 条）· `verify_docs.py --strict` 检查 1–9 全 0（208 文件 / 6583 链接 / 0 断链）· 红-绿已验（意图级声明短路 → 4 例转红；门面 analyze 分支短路 → GWT-6 转红）· 入库 `feat/T-INT-003-m2-deliberation-loop` + PR · 见执行日志 [T-INT-003]
+verify: 全量 pytest **2407 passed / 9 deselected**（437s）；`tests/integration/test_m2_deliberation.py` 14 例（GWT-1..8 离线端到端）+ `tests/l4/test_analyze.py` 11 + `tests/l4/test_ports.py` 20 + `tests/l1/test_official_dimensions.py` 4 + `tests/l3/test_intent_protocol.py` +6 · live 子集 **3 passed**（`test_llm_deliberation_live.py`：真端点经 `LlmOpinionSynthesizer` 出方向观点 + `LlmEvidenceReviewer` 真研判，出网审计 2 条）· `verify_docs.py --strict` 检查 1–9 全 0（208 文件 / 6583 链接 / 0 断链）· 红-绿已验（意图级声明短路 → 4 例转红；门面 analyze 分支短路 → GWT-6 转红）· 入库 `cf4f02c` + [PR #81](https://github.com/Dline6/ST-Agent/pull/81) · 见执行日志 [T-INT-003]
 ---
 
 # T-INT-003 · M2 集成关卡 · 多视角决策闭环（MVP）
