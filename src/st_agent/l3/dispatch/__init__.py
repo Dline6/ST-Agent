@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from st_agent.l3.dispatch.bus import (
+    ANALYZE_ABSENT_REASON,
     DISPATCH_INITIATOR,
     DISPATCH_PURPOSE,
     LLM_DEGRADED_NOTICE,
@@ -20,6 +21,7 @@ from st_agent.l3.dispatch.bus import (
 )
 
 __all__ = [
+    "ANALYZE_ABSENT_REASON",
     "DISPATCH_INITIATOR",
     "DISPATCH_PURPOSE",
     "LLM_DEGRADED_NOTICE",

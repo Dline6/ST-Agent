@@ -6,6 +6,7 @@
 - 权限批准态 → ``config`` 分区 ``skill-permissions/<base>.json``（T-L1-009.1）
 """
 
+from st_agent.l1.skills.dimensions import OFFICIAL_DIMENSIONS, DimensionSeed
 from st_agent.l1.skills.errors import (
     SkillError,
     SkillExistsError,
@@ -33,12 +34,14 @@ from st_agent.l1.skills.registry import (
 )
 
 __all__ = [
+    "OFFICIAL_DIMENSIONS",
     "OFFICIAL_PACK",
     "PERMISSION_PREFIX",
     "SKILL_BASE_PATTERN",
     "SKILL_ID_PATTERN",
     "SKILL_PREFIX",
     "UPDATE_PREFIX",
+    "DimensionSeed",
     "SkillError",
     "SkillExistsError",
     "SkillNotFoundError",

@@ -14,12 +14,18 @@
 与 ``memory_op``（经注入的**冲突裁决面**，见 [`l3.conflict.adjudication`](../conflict/adjudication.py)；
 裁决的承接 / 提交归 [`T-L3-005.1`](../../../项目管理/tasks/T-L3-005.1-冲突裁决承接事件与memory_op去向接线.md)，
 其**偏好写入支**归 L2 写入面、组合根装配归 [`T-INT-002`](../../../项目管理/tasks/T-INT-002-M1集成关卡首次可对话.md)）。
+``analyze`` 由 [`T-INT-003`](../../../项目管理/tasks/T-INT-003-M2集成关卡多视角决策闭环.md)（M2 关卡）接入——
+经注入的**多视角编排面**触发 [06-L4](06-L4-多视角推理.md) Deliberation；因 [铁律 7](../../../项目管理/工程宪法.md)
+禁 L3 import L4，该去向的载荷按**鸭子面**透出（本层只认其中的 `ResultEnvelope`，
+其余由渲染方按属性取值），见 :attr:`DispatchOutcome.analysis`。
 
 **`trace_id` 从哪来**（假设 A2）：[01 §1](../../../../docs/技术架构-v2/01-平台共享契约.md)
 登记其产生方为「L1 调度器」，故 ``query`` 去向的链**由 L1 产**、本层经
 ``RunOutcome.trace`` 取用；未接入去向无 Skill 执行，其链为**空链**（01 §4 的五类
 ``step_type`` 无「派发」一类，**不伪造步骤**）——链存在、步骤为空，如实反映
-「本次派发没有发生可追溯的动作」。
+「本次派发没有发生可追溯的动作」。``analyze`` 去向例外：其链取自**对照链**
+（L4 的 `aggregation` 步 + `divergence_map` 结论锚，[06 §3](../../../docs/技术架构-v2/06-L4-多视角推理.md)）——
+本次派发**确实**发生了可追溯的动作，故如实关联而非留空链。
 
 **LLM 降级**（假设 A4）：真正调 LLM 的在 [`.1`](../intent/protocol.py) 的理解端口，
 总线自身无 LLM 调用。故本模块只规定其**渲染口径**——``unavailable`` 若源于 LLM
@@ -48,6 +54,7 @@ from st_agent.l3.errors import IntentValidationError
 from st_agent.l3.intent.protocol import IntentConfirmation
 
 __all__ = [
+    "ANALYZE_ABSENT_REASON",
     "DISPATCH_INITIATOR",
     "DISPATCH_PURPOSE",
     "LLM_DEGRADED_NOTICE",
@@ -62,6 +69,8 @@ __all__ = [
 
 DISPATCH_INITIATOR = "l3-dispatch"
 DISPATCH_PURPOSE = "对话意图派发"
+
+ANALYZE_ABSENT_REASON = "未注入多视角编排面，无法派发 analyze 去向（05 §4）"
 
 LLM_DEGRADED_NOTICE = (
     "云端 LLM 端点暂不可用；可改用本地推理模式（能力受限），或稍后重试。"
@@ -101,8 +110,8 @@ ROUTE_SPECS: tuple[RouteSpec, ...] = (
         note="经注入的配置草稿生成面产出 ConfigDraft（05 §5）；落值与三态归 T-L3-003.2",
     ),
     RouteSpec(
-        intent="analyze", wired=False, owner="T-L4-002",
-        note="多视角执行编排（06 §2）",
+        intent="analyze", wired=True,
+        note="经注入的多视角编排面触发 06-L4 Deliberation（载荷按鸭子面透出，L3 不 import L4）",
     ),
     RouteSpec(
         intent="memory_op", wired=True,
@@ -192,6 +201,14 @@ class DispatchOutcome(BaseModel):
     adjudications: tuple[ConflictAdjudication, ...] = ()
     """``memory_op`` 去向的裁决卡（[05 §9](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）；
     其余去向为空元组。**渲染**该卡的归 [`T-L3-004`](../../../项目管理/tasks/T-L3-004-GenerativeUI推理链可视化.md)。"""
+    analysis: Any = None
+    """``analyze`` 去向的**多视角载荷**（[05 §3.1](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的
+    「触发 06-L4 Deliberation」）；其余去向为 `None`。
+
+    **鸭子类型**（本层不 import L4，[铁律 7](../../../项目管理/工程宪法.md)；`LAYER_ORDER` 为
+    `l3 < l4`）：只要求含 `envelope`（本层已核为 `ResultEnvelope`）；视图 / 观点 / 链
+    等 L4 产物由**渲染方按属性取值**（同 [`describe_divergence_map`](../render/describe.py)
+    消费 L4 视图的先例）。"""
     trace: Trace | None = None
     """本次派发关联的链（``explain`` 去向即其载荷；未接入去向为**空链**）。"""
 
@@ -229,14 +246,20 @@ class DispatchBus:
         ``card_for(conflict_id) -> ResultEnvelope`` / ``cards() -> ResultEnvelope``，
         如 :class:`~st_agent.l3.conflict.adjudication.ConflictAdjudicator`）；
         缺省 ``None`` → ``memory_op`` 去向 fail-closed（``unavailable`` + 点名），**不臆测**
+    :param deliberations: 注入的多视角编排面（鸭子类型
+        ``analyze(confirmation, *, values=None, now=None) -> 含 envelope 的载荷``，
+        如 L4 的 ``AnalyzeService``——组合根注入，本层不 import L4）；
+        缺省 ``None`` → ``analyze`` 去向 fail-closed（``unavailable`` + 点名），**不臆测**
     """
 
     def __init__(
-        self, *, runner: Any = None, configs: Any = None, adjudications: Any = None
+        self, *, runner: Any = None, configs: Any = None, adjudications: Any = None,
+        deliberations: Any = None,
     ) -> None:
         self._runner = runner
         self._configs = configs
         self._adjudications = adjudications
+        self._deliberations = deliberations
 
     def dispatch(
         self,
@@ -276,6 +299,8 @@ class DispatchBus:
             return self._dispatch_configure(confirmation, spec, structure, moment)
         if confirmation.intent == "memory_op":
             return self._dispatch_memory_op(confirmation, spec, moment)
+        if confirmation.intent == "analyze":
+            return self._dispatch_analyze(confirmation, spec, values, moment)
         return self._pending(spec, moment)
 
     # ───────────────────────── 去向实现 ─────────────────────────
@@ -430,6 +455,50 @@ class DispatchBus:
             trace_id=chain.trace_id.value,
             intent=confirmation.intent, route=confirmation.intent,
             wired=spec.wired, adjudications=cards, trace=chain,
+        )
+
+    def _dispatch_analyze(
+        self,
+        confirmation: IntentConfirmation,
+        spec: RouteSpec,
+        values: Mapping[str, Any] | None,
+        moment: datetime,
+    ) -> DispatchOutcome:
+        """``analyze`` 去向：经注入的多视角编排面触发 L4 Deliberation（§3.1）。
+
+        未注入编排面 → ``unavailable`` + 原因（同 ``query`` 去向「未注入 Skill 执行面」
+        的写法），**不伪造**；编排面返回的载荷按**鸭子面**消费——只核其 ``envelope``
+        为 ``ResultEnvelope``（形状不合即 ``dependency_failed``），其余字段原样承载
+        给渲染方（本层不 import L4）。编排面的失败信封（``empty`` / ``unavailable`` /
+        ``validation_failed``）**原样透出**，不重包、不改 status、不吞 reason。
+
+        链取自载荷里的**对照链**（若给出）——本次派发确有可追溯动作（[06 §3](../../../docs/技术架构-v2/06-L4-多视角推理.md)
+        的 ``aggregation`` 步 + `divergence_map` 结论锚）；编排未跑成时退为空链
+        （不伪造步骤，同其余去向）。
+        """
+        chain = Trace(trace_id=TraceId.generate())
+        if self._deliberations is None:
+            return self._outcome(
+                ResultEnvelope.unavailable(ANALYZE_ABSENT_REASON, last_updated_at=moment),
+                chain, spec,
+            )
+        payload = self._deliberations.analyze(confirmation, values=values, now=moment)
+        envelope = getattr(payload, "envelope", None)
+        if not isinstance(envelope, ResultEnvelope):
+            return self._outcome(
+                ResultEnvelope.dependency_failed(
+                    "多视角编排面返回非法结构（须含 envelope: ResultEnvelope）："
+                    f"{type(payload).__name__}"
+                ),
+                chain, spec,
+            )
+        trace = getattr(getattr(payload, "map", None), "trace", None)
+        if not isinstance(trace, Trace):
+            trace = chain
+        return DispatchOutcome(
+            envelope=envelope, trace_id=trace.trace_id.value,
+            intent=confirmation.intent, route=confirmation.intent,
+            wired=spec.wired, analysis=payload, trace=trace,
         )
 
     def _pending(self, spec: RouteSpec, moment: datetime) -> DispatchOutcome:

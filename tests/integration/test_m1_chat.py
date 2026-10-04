@@ -23,6 +23,7 @@ from rig_m1 import M1Rig, seeded_m1
 
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.l2.memory import checked_node, new_node_id
+from st_agent.l3.dispatch import ANALYZE_ABSENT_REASON
 from st_agent.ui.security import TOKEN_HEADER
 
 
@@ -194,13 +195,20 @@ def test_gwt6_chat_endpoint_serves_reverse_flow(rig: M1Rig) -> None:
         assert d2["description"]["data"]["component_type"] == "trace_timeline"
 
 
-def test_gwt6_analyze_reports_not_wired_without_fabricating(rig: M1Rig) -> None:
-    """未接入去向如实报 `unavailable` + 归属 `T-L4-002`，不伪造（[05 §4]）。"""
+def test_gwt6_analyze_route_is_fail_closed_without_the_l4_port(rig: M1Rig) -> None:
+    """`analyze` 去向在 M1 组合根（未注入 L4 编排端口）下如实 `unavailable`，不伪造。
+
+    2026-10-04 随 [`T-INT-003`](../项目管理/tasks/T-INT-003-M2集成关卡多视角决策闭环.md)（M2 关卡）
+    改实：该去向**已接入**（原登记 `owner="T-L4-002"` 是陈旧指针，随接线一并订正），
+    故不再是「未接入 + 点名归属」，而是「已接入、但 M1 组合根未注入端口」——
+    `owner` 为 `None`、原因点名缺失的编排面。真链路由 M2 关卡用例覆盖。
+    """
     turn = rig.m1.chat.post("分析下 sh.600000 的趋势")
     assert turn.needs_confirmation is True
     outcome = rig.m1.chat.confirm_and_dispatch(turn.session_id)
     assert outcome.envelope.status == "unavailable"
-    assert outcome.owner == "T-L4-002"
+    assert outcome.owner is None
+    assert ANALYZE_ABSENT_REASON in outcome.envelope.reason
 
 
 def test_gwt6_chat_endpoint_without_facade_is_fail_closed(tmp_path: Path) -> None:

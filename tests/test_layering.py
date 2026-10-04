@@ -117,27 +117,28 @@ def test_ui_is_client_only():
             )
 
 
-# ── 顶层组合根 `src/st_agent/app.py`（M1 关卡 T-INT-002）的依赖约束 ─────────────
-# `app` 是**装配 L0–L3 的组合根，不是第七层**（同 `ui`，D-060 ⑤）：它不进 `LAYER_ORDER`
-# （否则把「不是层」反向编码），其约束由下面这组用例承担（任务 A2）。
+# ── 顶层组合根 `src/st_agent/app.py`（M1 关卡 T-INT-002 / M2 关卡 T-INT-003）的依赖约束 ─
+# `app` 是**装配各层的组合根，不是第七层**（同 `ui`，D-060 ⑤）：它不进 `LAYER_ORDER`
+# （否则把「不是层」反向编码），其约束由下面这组用例承担（T-INT-002 A2）。
 
 APP_PATH = SRC / "app.py"
 
-#: 组合根只可向下装配这些层（M1 反向流触及 L0–L3；l4/l5/l6/eco 尚未开工，装配它们属越界）。
-APP_ALLOWED_IMPORTS = {"contracts", "l0", "l1", "l2", "l3"}
+#: 组合根只可向下装配这些层（M1 反向流触及 L0–L3，M2 关卡加 L4；
+#: l5/l6/eco 尚未开工，装配它们属越界）。
+APP_ALLOWED_IMPORTS = {"contracts", "l0", "l1", "l2", "l3", "l4"}
 
 
 def test_app_is_composition_root_only():
-    """`app` 只向下 import L0–L3 + contracts；任何层与 `ui` 都不得反向 import 它。"""
+    """`app` 只向下 import 已开工的层 + contracts；任何层与 `ui` 都不得反向 import 它。"""
     if not APP_PATH.is_file():
-        pytest.skip("M1 组合根尚未交付")
+        pytest.skip("组合根尚未交付")
     for module, lineno in _imports(APP_PATH):
         if not module.startswith("st_agent."):
             continue  # __future__ / 标准库 / 第三方（pydantic）不属层间约束
         target = _layer_of(module)
         assert target is not None and target in APP_ALLOWED_IMPORTS, (
             f"app.py:{lineno} import 了 {module}——组合根只可向下装配 "
-            f"{sorted(APP_ALLOWED_IMPORTS)}（M1 反向流面；T-INT-002 A2）"
+            f"{sorted(APP_ALLOWED_IMPORTS)}（M1/M2 反向流面；T-INT-002 A2 / T-INT-003 A1）"
         )
 
     for path in sorted(SRC.rglob("*.py")):
@@ -149,3 +150,21 @@ def test_app_is_composition_root_only():
                 f"{rel}:{lineno} 反向 import 了组合根 app——装配根不被任何层/表现层依赖"
                 "（对话面经鸭子端口注入，ui 不 import app，T-INT-002 A2）"
             )
+
+
+# ── `analyze` 去向的跨层边界（M2 关卡 T-INT-003 A5）─────────────────────────────
+# L4 的编排件由组合根经**鸭子端口**注入总线：L3 不得 import L4（铁律 7；`LAYER_ORDER`
+# 为 `l3 < l4`）。`test_only_downward_dependencies` 已按层号兜住，这里再**点名**钉住
+# `analyze` 去向所在模块——它的载荷面（`DispatchOutcome.analysis`）最容易被顺手写成
+# 具体 L4 类型，从而在不知不觉间把这条边反向。
+
+BUS_PATH = SRC / "l3" / "dispatch" / "bus.py"
+
+
+def test_analyze_route_stays_duck_typed():
+    """总线模块不 import `st_agent.l4`——`analyze` 载荷按鸭子面承载（T-INT-003 A5）。"""
+    for module, lineno in _imports(BUS_PATH):
+        assert not module.startswith("st_agent.l4"), (
+            f"l3/dispatch/bus.py:{lineno} import 了 {module}——`analyze` 去向的编排件"
+            "由组合根按鸭子端口注入（铁律 7；T-INT-003 A5）"
+        )
