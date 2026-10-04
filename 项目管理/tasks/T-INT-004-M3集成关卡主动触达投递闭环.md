@@ -35,7 +35,7 @@ verify:
 
 ## 参考
 - Story（What）：[PRD 索引](../../docs/PRD-v2-Agent/README.md)
-- 前置关卡：[T-INT-003](T-INT-003-M2集成关卡多视角决策闭环.md)
+- 前置关卡：[T-INT-003](done/M2/T-INT-003-M2集成关卡多视角决策闭环.md)
 
 ## 备注
 不重复单任务单测；渠道投递用 Fake 适配器离线跑，真实 SMTP/Webhook 标 `live`。实现细节留给代码 / commit / 执行日志。
