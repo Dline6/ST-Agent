@@ -138,8 +138,12 @@ def assemble(root: Path, *, create: bool = False) -> Rig:
     """
     feed = MarketData()
     sender = RecordingSender()
+    # ``audit=True``：本 rig 的用例断言「声明的出网经网关被登记」，故显式开审计。
+    # 产品缺省是**关**（02 §6 / D-073）——默认关的语义由 tests/l0/test_gateway_audit_mode.py
+    # 与 T-L0-018.2 覆盖，不靠本 rig 体现。
     runtime = open_runtime(
         root, PASS, create=create, market_query=feed, sender=sender, llm_env={},
+        audit=True,
     )
     feed.bind(runtime.store)
     return Rig(root=root, runtime=runtime, feed=feed, sender=sender)

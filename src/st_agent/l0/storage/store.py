@@ -1,20 +1,32 @@
 """存储主入口 ``Store``（02 §2 的对外门面）。
 
-生命周期：
-- ``Store.create(root, passphrase)`` —— 首次初始化：生成 salt（主 + secrets
-  独立两把）、写校验锚、建七个空分区（各含空清单）
-- ``Store.open(root, passphrase)`` —— 校验密码（锚点 GCM 认证）→ 逐分区
-  校验（§2.3）：清单打开失败 / 文件丢失 / 校验和不符 → 该分区标记损坏，
-  其余分区照常可用，``StorageCorruptionError`` 携带逐分区明细
-- 冷启动重建：``reset_partition(name)`` —— 删目录重建空分区（§2.3「无备份 →
-  明确告知丢失范围，进入冷启动流程」；备份恢复路径由 T-L0-006 在分区级
-  校验和口径之上叠加）
+生命周期（三种起点）：
+- ``Store.create(root)`` —— 首次初始化，**不加密**（默认）：只生成 `secrets`
+  用的独立 salt；六分区明文落盘、免口令读写
+- ``Store.create(root, 口令)`` —— 首次初始化并**开启加密**：生成 salt（主 +
+  secrets 独立两把）、写校验锚，七分区全部加密
+- ``Store.open(root[, 口令])`` —— 按存储根里的**格式标记**自行分派（02 §2.2）：
+  明文根免口令；加密根必须给主密码（锚点 GCM 认证失败即拒）。逐分区校验
+  （§2.3）：清单打开失败 / 文件丢失 / 校验和不符 → 该分区标记损坏，其余分区
+  照常可用，``StorageCorruptionError`` 携带逐分区明细
+- 冷启动重建：``reset_partition(name)`` —— 删目录重建空分区（§2.3）；备份恢复
+  路径由 T-L0-006 在分区级校验和口径之上叠加
+
+**凭据恒加密、惰性解锁**（02 §2.2 / §3）：`secrets` 分区无论存储整体是否加密
+一律密文落盘，且**未解锁时不可读写**（``StorageSecretsLockedError``）。解锁靠
+`unlock_secrets(口令)`；明文根的该口令**首次解锁时设定**（TOFU——此时凭据分区
+必为空，故不会顶替任何既有数据）。加密根在 `open` 给出主密码时，若该密码同时
+满足凭据校验锚则一并解锁，否则凭据保持锁定（凭据口令可与主密码不同；转换
+（:meth:`Store.convert`）原样搬运凭据材料，故转换不改凭据口令）。
 
 读写（加密对上层透明，GWT-3）：
 - ``put(partition, name, data)`` / ``get(partition, name)`` / ``delete``
 - ``export_partition(partition)`` → ``{name: bytes}``（§2.1 独立导出）
 - ``wipe_partition(partition)`` → 清空重建（§2.1 独立清空）
-- ``partition_state(name)`` → ok / corrupted（损坏范围查询）
+- ``partition_state(name)`` → ok / corrupted / locked（损坏范围与解锁态查询）
+
+**「不加密」不等于「不校验」**（§2.3）：明文模式照旧保留逐文件校验和、分区
+清单与原子替换，降的只是机密性。
 
 并发（02 §2.4）：
 - 同一进程内，同一分区的读写以**分区级互斥锁**串行化——并发写不丢清单条目，
@@ -27,15 +39,17 @@
 物理布局（④ 对齐）::
 
     root/
-      keyfile.json        # salt(master/secrets) + verifier 密文（明文元数据，无用户数据）
+      store.json          # 格式标记（明文：格式名 + 模式，无密钥材料）
+      keyfile.json        # 加密根：主 + secrets 两把 salt 与校验锚；
+                          # 明文根：只有 secrets_salt（+ 首次解锁后补的校验锚）
       .st-agent-tmp/      # 原子替换的中间产物（仅密文；open 时整体回收）
-      memory/    manifest.bin, <加密文件>...
+      memory/    manifest.bin, <文件>...       # 明文根 = 明文；加密根 = 密文
       config/    ...
       chat_history/ ...
       execution_log/ ...
       reflection/ ...
       data_cache/ ...     # SQLite 单文件作为 opaque blob 存
-      secrets/   ...      # 独立 salt 派生的独立密钥（§2.2 单独隔离）
+      secrets/   ...      # 恒密文（独立 salt 派生的独立密钥，§2.2 单独隔离）
 """
 
 from __future__ import annotations
@@ -57,7 +71,18 @@ from st_agent.l0.storage.crypto import (
     open_bytes,
     seal_bytes,
 )
-from st_agent.l0.storage.errors import StorageCorruptionError, StorageOpenError
+from st_agent.l0.storage.errors import (
+    StorageCorruptionError,
+    StorageOpenError,
+    StorageSecretsLockedError,
+)
+from st_agent.l0.storage.format import (
+    MODE_ENCRYPTED,
+    MODE_PLAIN,
+    STORE_MARKER,
+    read_mode,
+    write_marker,
+)
 from st_agent.l0.storage.manifest import (
     MANIFEST_NAME,
     ManifestEntry,
@@ -79,7 +104,9 @@ __all__ = [
 ]
 
 _KEYFILE = "keyfile.json"
+_SECRETS = "secrets"
 _AAD_FILE = b"st-agent/file/v1"
+_AAD_MANIFEST = b"st-agent/manifest"
 
 TMP_DIR_NAME = ".st-agent-tmp"
 """原子替换的中间产物目录名（存储根下；`Store.open` 时整体回收，见 02 §2.4）。
@@ -94,14 +121,22 @@ _REPLACE_ATTEMPTS = 3
 _REPLACE_BACKOFF_S = 0.02
 """重试间隔基数（第 n 次前停 ``n × 基数``）。"""
 
+KEYFILE_ITERATIONS_HINT = 600_000
+"""写入 keyfile 的迭代次数提示（与 crypto.MASTER_KDF_ITERATIONS 同源）。"""
+
 
 class StorageState(BaseModel):
-    """存储与分区状态快照（GWT-5「明确报告损坏范围」的数据形态）。"""
+    """存储与分区状态快照（GWT-5「明确报告损坏范围」的数据形态）。
+
+    ``locked`` ＝ 该分区未解锁（明文模式的 `secrets`；02 §2.2 惰性解锁）——
+    与 ``ok`` / ``corrupted`` 三态**互不混淆**：未解锁既不报告为损坏，也不
+    谎报为空分区（``file_count`` 此时恒 0 且 ``detail`` 写明原因）。
+    """
 
     model_config = ConfigDict(frozen=True)
 
     partition: PartitionName
-    state: str = Field(pattern="^(ok|corrupted|missing)$")
+    state: str = Field(pattern="^(ok|corrupted|missing|locked)$")
     file_count: int = 0
     detail: str = ""
 
@@ -125,6 +160,7 @@ class StoreCorruptionReport(BaseModel):
 
     corrupted: tuple[CorruptedPartitionReport, ...]
     healthy: tuple[PartitionName, ...]
+    """已校验通过的分区（未解锁的分区**不计入**——它没被校验过，02 §2.2）。"""
 
     @property
     def is_clean(self) -> bool:
@@ -134,16 +170,128 @@ class StoreCorruptionReport(BaseModel):
 class Store:
     """已解锁的存储句柄（02 §2 门面；不可 pickle——持内存密钥）。"""
 
-    def __init__(self, root: Path, keys: dict[str, bytes]) -> None:
+    def __init__(
+        self,
+        root: Path,
+        keys: dict[str, bytes],
+        *,
+        mode: str = MODE_ENCRYPTED,
+        secrets_salt: bytes | None = None,
+        secrets_verifier: bytes | None = None,
+    ) -> None:
         self._root = Path(root)
-        self._keys = keys  # 分区名 → 分区密钥（secrets 为独立派生）
+        self._mode = mode
+        self._keys = keys  # 加密分区名 → 分区密钥（明文分区分区不在其中）
+        self._secrets_salt = secrets_salt
+        self._secrets_verifier = secrets_verifier
         self._manifests: dict[str, PartitionManifest] = {}
-        self._states: dict[str, str] = {p.name: "ok" for p in PARTITIONS}
+        self._states: dict[str, str] = {
+            p.name: "locked" if self._is_locked(p.name) else "ok" for p in PARTITIONS
+        }
         self._reports: dict[str, CorruptedPartitionReport] = {}
         self._tmp_dir = self._root / TMP_DIR_NAME  # 原子替换的中间产物（同卷，见 02 §2.4）
         # 分区级互斥（02 §2.4）：同分区读写串行化，分区间互不阻塞
         self._part_locks: dict[str, threading.RLock] = {}
         self._part_locks_guard = threading.Lock()
+
+    # ───────────────────────── 格式与解锁态 ─────────────────────────
+
+    @property
+    def mode(self) -> str:
+        """本根的落盘格式（``plain`` / ``encrypted``；02 §2.2）。"""
+        return self._mode
+
+    @property
+    def secrets_unlocked(self) -> bool:
+        """`secrets` 分区当前是否可读写（惰性解锁态）。"""
+        return not self._is_locked(_SECRETS)
+
+    def _is_locked(self, partition: PartitionName) -> bool:
+        """该分区是否因未解锁而不可读写（只有 `secrets` 可能出现，02 §2.2）。"""
+        return partition == _SECRETS and partition not in self._keys
+
+    def _part_key(self, partition: PartitionName) -> bytes | None:
+        """该分区的落盘密钥；``None`` ＝ 明文分区（免密钥，02 §2.2）。
+
+        未解锁的 `secrets` → :class:`StorageSecretsLockedError`（显式，不静默）。
+        """
+        if partition == _SECRETS:
+            key = self._keys.get(partition)
+            if key is None:
+                raise StorageSecretsLockedError(
+                    "secrets 分区未解锁（凭据恒加密、惰性解锁，02 §2.2）；"
+                    "请先 Store.unlock_secrets(凭据口令)"
+                )
+            return key
+        if self._mode == MODE_PLAIN:
+            return None
+        return self._keys[partition]
+
+    def unlock_secrets(self, passphrase: str) -> None:
+        """解锁 `secrets` 分区（02 §2.2 / §3 惰性解锁）。
+
+        明文根的该口令**首次解锁时设定**（TOFU）：此时凭据分区必为空（写入
+        凭据的前提就是已解锁），故不会顶替任何既有数据；此后错口令即拒。
+        解密后的 `secrets` 若有损坏，随本调用显式上抛。
+        """
+        if not isinstance(passphrase, str) or not passphrase.strip():
+            raise StorageOpenError("凭据口令不得为空")
+        if self._secrets_salt is None:
+            raise StorageOpenError("存储缺少 secrets salt，无法解锁凭据分区")
+        key = derive_master_key(passphrase, self._secrets_salt)
+        if self._secrets_verifier is None:
+            if self._has_any_file(_SECRETS):
+                raise StorageOpenError(
+                    "凭据分区有数据却无校验锚：存储结构异常，拒绝解锁（02 §2.3）"
+                )
+            self._secrets_verifier = make_verifier(key)
+            self._write_keyfile()
+        elif not check_verifier(key, self._secrets_verifier):
+            raise StorageOpenError(
+                "凭据口令错误（校验锚认证失败）；凭据口令丢失即该分区不可恢复"
+            )
+        self._keys[_SECRETS] = key
+        self._states[_SECRETS] = "ok"
+        self._reports.pop(_SECRETS, None)
+        # 明文根首次解锁：凭据清单随密钥一并就位（create 时尚无密钥可封清单）。
+        # 若清单缺失而数据文件已在，那是清单真丢了 —— 按 §2.3 报损坏，不静默重建。
+        if not (self._root / _SECRETS / MANIFEST_NAME).is_file():
+            if self._has_any_file(_SECRETS):
+                report = CorruptedPartitionReport(
+                    partition=_SECRETS, reason="分区清单缺失（数据文件仍在）",
+                    affected_files=(),
+                )
+                self._states[_SECRETS] = "corrupted"
+                self._reports[_SECRETS] = report
+                raise StorageCorruptionError(self.storage_report())
+            self._write_manifest(_SECRETS, PartitionManifest(entries=()))
+        report = self._verify_partition(_SECRETS)
+        if report is not None:
+            self._states[_SECRETS] = "corrupted"
+            self._reports[_SECRETS] = report
+            raise StorageCorruptionError(self.storage_report())
+
+    def _has_any_file(self, partition: PartitionName) -> bool:
+        """分区目录下是否存在清单之外的数据文件（TOFU 前置判定用，不解密）。
+
+        递归查找：凭据按 ``cred/<id>.json`` 分层落盘，只看顶层目录会把
+        「清单丢了但数据还在」误判成空分区。
+        """
+        d = self._root / partition
+        return d.is_dir() and any(
+            p.is_file() and p.name != MANIFEST_NAME for p in d.rglob("*")
+        )
+
+    def _write_keyfile(self) -> None:
+        """回写 keyfile（仅在补写凭据校验锚时发生；主字段原样保留）。"""
+        kf = self._root / _KEYFILE
+        try:
+            meta = json.loads(kf.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise StorageOpenError(f"keyfile 损坏，无法写入校验锚: {exc}") from exc
+        if self._secrets_verifier is not None:
+            meta["verifier_secrets"] = self._secrets_verifier.hex()
+        self._atomic_write(kf, json.dumps(meta, indent=2).encode("utf-8"))
 
     def _part_lock(self, partition: PartitionName) -> threading.RLock:
         """取该分区的互斥锁（延迟创建 + 双检；``_part_locks`` 自身由 guard 保护）。
@@ -164,8 +312,9 @@ class Store:
         """(重)建中间产物目录并清空其中的崩溃残留（02 §2.4）。
 
         整目录回收而非按文件名模式匹配：该目录**只**由 ``_atomic_write`` 写入，
-        故清空不可能触及用户数据。残留仅含密文（``seal_bytes`` 先于落盘），
-        回收不涉明文数据主权。
+        故清空不可能触及用户数据。明文根下残留可能是明文（明文分区不经
+        ``seal_bytes``），但该目录**只**承载「正在替换中的临时副本」，与目标
+        文件同源同权限，不引入新的暴露面；回收不涉数据主权。
         """
         if self._tmp_dir.exists():
             shutil.rmtree(self._tmp_dir)
@@ -203,43 +352,62 @@ class Store:
     # ───────────────────────── 初始化与打开 ─────────────────────────
 
     @classmethod
-    def create(cls, root: Path | str, passphrase: str) -> "Store":
-        """首次初始化（盘上无存储时）。已存在 keyfile 则拒绝（防误覆盖）。"""
+    def create(cls, root: Path | str, passphrase: str | None = None) -> "Store":
+        """首次初始化（盘上无存储时）。已存在存储则拒绝（防误覆盖）。
+
+        ``passphrase=None`` ⇒ **明文模式（默认）**：免口令、六分区明文落盘；
+        给出 ⇒ **加密模式**：全部分区由该主密码派生的密钥加密（与现状同）。
+        """
         root = Path(root)
         kf = root / _KEYFILE
-        if kf.exists():
+        if kf.exists() or (root / STORE_MARKER).exists():
             raise StorageOpenError(
-                f"{root} 已有存储（keyfile 存在）；初始化新存储请换目录或先完全清空"
+                f"{root} 已有存储（keyfile / store.json 存在）；初始化新存储请换目录或先完全清空"
             )
-        salt = os.urandom(32)
         secrets_salt = os.urandom(32)                     # §2.2 单独隔离
-        master = derive_master_key(passphrase, salt)
-        secrets_key = derive_master_key(passphrase, secrets_salt)
-        keyfile = {
-            "version": 1,
-            "kdf": "pbkdf2-sha256",
-            "iterations_hint": 600000,
-            "salt": salt.hex(),
-            "secrets_salt": secrets_salt.hex(),
-            "verifier": make_verifier(master).hex(),
-            "verifier_secrets": make_verifier(secrets_key).hex(),
-        }
         root.mkdir(parents=True, exist_ok=True)
-        kf.write_text(json.dumps(keyfile, indent=2), encoding="utf-8")
-        store = cls._unlock(root, master, secrets_key)
+        if passphrase is None:
+            write_marker(root, MODE_PLAIN)
+            kf.write_text(json.dumps({
+                "version": 1,
+                "kdf": "pbkdf2-sha256",
+                "iterations_hint": KEYFILE_ITERATIONS_HINT,
+                "secrets_salt": secrets_salt.hex(),
+            }, indent=2), encoding="utf-8")
+            store = cls(root, {}, mode=MODE_PLAIN, secrets_salt=secrets_salt)
+        else:
+            if not passphrase.strip():
+                raise StorageOpenError("主密码不得为空串（要不加密请不传口令）")
+            salt = os.urandom(32)
+            master = derive_master_key(passphrase, salt)
+            secrets_key = derive_master_key(passphrase, secrets_salt)
+            write_marker(root, MODE_ENCRYPTED)
+            kf.write_text(json.dumps({
+                "version": 1,
+                "kdf": "pbkdf2-sha256",
+                "iterations_hint": KEYFILE_ITERATIONS_HINT,
+                "salt": salt.hex(),
+                "secrets_salt": secrets_salt.hex(),
+                "verifier": make_verifier(master).hex(),
+                "verifier_secrets": make_verifier(secrets_key).hex(),
+            }, indent=2), encoding="utf-8")
+            store = cls._unlock(root, master, secrets_key, secrets_salt=secrets_salt)
         store._reset_tmp_dir()          # 中间产物目录（02 §2.4）须先于任何写入就位
         for p in PARTITIONS:
             d = root / p.name
             d.mkdir(exist_ok=True)
+            if p.name == _SECRETS and not store.secrets_unlocked:
+                continue        # 凭据分区无密钥 → 其清单在首次解锁时就位（TOFU）
             store._write_manifest(p.name, PartitionManifest(entries=()))
         return store
 
     @classmethod
-    def open(cls, root: Path | str, passphrase: str) -> "Store":
-        """打开既有存储：密码错 → 拒绝；分区损坏 → 详见异常报告。
+    def open(cls, root: Path | str, passphrase: str | None = None) -> "Store":
+        """打开既有存储：按格式标记分派；密码错 → 拒绝；分区损坏 → 详见异常报告。
 
-        打开时**回收**中间产物目录（02 §2.4）：上次进程被强杀留下的原子写残留
-        在此清除，并使早于该机制的既有存储自动补建该目录。
+        明文根免口令（02 §2.2）；加密根必须给主密码，且标记缺失的历史根按加密
+        口径读（A2）。给出主密码时若该密码同时满足凭据校验锚则一并解锁 `secrets`，
+        否则凭据保持锁定（02 §3）。打开时**回收**中间产物目录（02 §2.4）。
         """
         root = Path(root)
         kf = root / _KEYFILE
@@ -249,37 +417,180 @@ class Store:
             meta = json.loads(kf.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
             raise StorageOpenError(f"keyfile 损坏，无法打开存储: {exc}") from exc
+        mode = read_mode(root)
+        encrypted = mode == MODE_ENCRYPTED or (mode is None and "salt" in meta)
         try:
-            salt = bytes.fromhex(meta["salt"])
             secrets_salt = bytes.fromhex(meta["secrets_salt"])
-            verifier = bytes.fromhex(meta["verifier"])
-            verifier_secrets = bytes.fromhex(meta["verifier_secrets"])
         except (KeyError, ValueError) as exc:
-            raise StorageOpenError(f"keyfile 字段缺失或非法: {exc}") from exc
-        master = derive_master_key(passphrase, salt)
-        secrets_key = derive_master_key(passphrase, secrets_salt)
-        if not (check_verifier(master, verifier)
-                and check_verifier(secrets_key, verifier_secrets)):
-            raise StorageOpenError(
-                "主密码错误（校验锚认证失败）；密码丢失即数据不可恢复（02 §2.2，"
-                "无产品方恢复通道）"
-            )
-        store = cls._unlock(root, master, secrets_key)
-        store._reset_tmp_dir()                 # 回收上次的崩溃残留（E2 / 02 §2.4）
+            raise StorageOpenError(f"keyfile 字段缺失或非法（secrets_salt）: {exc}") from exc
+        if encrypted:
+            if passphrase is None:
+                raise StorageOpenError(
+                    "该存储为加密格式，打开需提供主密码（02 §2.2）"
+                )
+            try:
+                salt = bytes.fromhex(meta["salt"])
+                verifier = bytes.fromhex(meta["verifier"])
+            except (KeyError, ValueError) as exc:
+                raise StorageOpenError(f"keyfile 字段缺失或非法: {exc}") from exc
+            # 凭据校验锚**可缺**：源明文根从未设过凭据口令时，转换到加密根也不带锚，
+            # 待首次 unlock_secrets 时补写（TOFU，02 §3）——故此处不当作损坏。
+            raw_secrets = meta.get("verifier_secrets")
+            try:
+                verifier_secrets = (bytes.fromhex(raw_secrets)
+                                    if raw_secrets else None)
+            except ValueError as exc:
+                raise StorageOpenError(f"keyfile 字段非法（verifier_secrets）: {exc}") from exc
+            master = derive_master_key(passphrase, salt)
+            if not check_verifier(master, verifier):
+                raise StorageOpenError(
+                    "主密码错误（校验锚认证失败）；密码丢失即数据不可恢复（02 §2.2，"
+                    "无产品方恢复通道）"
+                )
+            store = cls._unlock(root, master, None, secrets_salt=secrets_salt,
+                                secrets_verifier=verifier_secrets)
+            store._reset_tmp_dir()                 # 回收上次的崩溃残留（E2 / 02 §2.4）
+            store._try_unlock_secrets(passphrase)  # 凭据口令可与主密码不同（§3）
+        else:
+            try:
+                raw_verifier = meta.get("verifier_secrets")
+                secrets_verifier = (bytes.fromhex(raw_verifier)
+                                    if raw_verifier else None)
+            except ValueError as exc:
+                raise StorageOpenError(f"keyfile 字段非法（verifier_secrets）: {exc}") from exc
+            store = cls(root, {}, mode=MODE_PLAIN, secrets_salt=secrets_salt,
+                        secrets_verifier=secrets_verifier)
+            store._reset_tmp_dir()
+            if passphrase is not None:
+                store.unlock_secrets(passphrase)   # 惰性解锁（TOFU，§2.2）
         report = store._verify_all()
         if not report.is_clean:
             raise StorageCorruptionError(report)
         return store
 
+    def _try_unlock_secrets(self, passphrase: str) -> None:
+        """加密根上尝试解锁凭据分区：口令不匹配凭据锚 ⇒ 保持锁定（不报错）。
+
+        既有加密根（主密码 = 凭据口令）行为逐字节不变：两锚同时通过 → 全解锁。
+        凭据口令与主密码不同的根（转换产物，见 :meth:`convert`）在此保持
+        `secrets` 锁定，由调用方显式 ``unlock_secrets``。
+        """
+        if self._secrets_verifier is None or self._secrets_salt is None:
+            return
+        key = derive_master_key(passphrase, self._secrets_salt)
+        if not check_verifier(key, self._secrets_verifier):
+            return
+        self._keys[_SECRETS] = key
+        self._states[_SECRETS] = "ok"
+
     @classmethod
-    def _unlock(cls, root: Path, master: bytes, secrets_key: bytes) -> "Store":
+    def _unlock(
+        cls,
+        root: Path,
+        master: bytes,
+        secrets_key: bytes | None,
+        *,
+        secrets_salt: bytes | None = None,
+        secrets_verifier: bytes | None = None,
+    ) -> "Store":
+        """加密根的句柄构造：逐分区派生密钥（secrets 用独立盐派生的那把）。"""
         keys: dict[str, bytes] = {}
         for p in PARTITIONS:
             if p.secrets_isolated:
-                keys[p.name] = secrets_key          # 独立派生，不混入主密钥树
+                if secrets_key is not None:
+                    keys[p.name] = secrets_key
             else:
                 keys[p.name] = derive_partition_key(master, p.name)
-        return cls(root, keys)
+        return cls(root, keys, mode=MODE_ENCRYPTED,
+                   secrets_salt=secrets_salt, secrets_verifier=secrets_verifier)
+
+    # ───────────────────────── 明密双向转换（GWT-2） ─────────────────────────
+
+    @classmethod
+    def convert(
+        cls,
+        source: Path | str,
+        target: Path | str,
+        *,
+        to_format: str,
+        source_passphrase: str | None = None,
+        target_passphrase: str | None = None,
+    ) -> "Store":
+        """把 ``source`` 根转换到 ``target`` 格式（**源不动、写新根**，A4）。
+
+        - `to_format="plain"` ⇒ 目标六分区明文；``target_passphrase`` 不需要
+        - `to_format="encrypted"` ⇒ 全分区加密，``target_passphrase`` 必填
+        - ``source_passphrase``：加密源必填（要读六分区）；明文源不需要
+
+        `secrets` 分区的**密钥材料与密文原样搬运**，故**转换不改凭据口令**；
+        加密目标上凭据口令与目标主密码不同时，目标根的 `secrets` 保持锁定，
+        由调用方 ``unlock_secrets`` 打开（02 §3）。
+
+        中断安全：全过程写在一个临时目录，收尾整目录 ``os.replace`` —— 要么
+        完整新根、要么无（不留半格式根）。
+        """
+        if to_format not in (MODE_PLAIN, MODE_ENCRYPTED):
+            raise StorageOpenError(
+                f"to_format 须为 {MODE_PLAIN!r} 或 {MODE_ENCRYPTED!r}：{to_format!r}"
+            )
+        if to_format == MODE_ENCRYPTED and not (target_passphrase or "").strip():
+            # 不设口令就等于建出**明文**根——静默偏离调用方的「要加密」意图，
+            # 属安全面不得发生：显式拒绝（既不空口令加密，也不悄悄降级）
+            raise StorageOpenError(
+                "to_format='encrypted' 须给出 target_passphrase（目标根主密码）"
+            )
+        source, target = Path(source), Path(target)
+        if not (source / _KEYFILE).exists():
+            raise StorageOpenError(f"源 {source} 无存储（keyfile 不存在）")
+        if source.resolve() == target.resolve():
+            raise StorageOpenError("源与目标不得为同一目录（转换恒「源不动、写新根」）")
+        if target.exists():
+            if any(target.iterdir()):
+                raise StorageOpenError(f"目标根 {target} 非空；转换只写全新根")
+            target.rmdir()
+        staging = target.parent / f".{target.name}.convert-{os.urandom(6).hex()}"
+        src = cls.open(source, source_passphrase)
+        try:
+            cls._copy_into(src, staging, to_format, target_passphrase)
+            os.replace(staging, target)
+        except BaseException:
+            shutil.rmtree(staging, ignore_errors=True)
+            raise
+        return cls.open(target, target_passphrase if to_format == MODE_ENCRYPTED else None)
+
+    @classmethod
+    def _copy_into(
+        cls, src: "Store", staging: Path, to_format: str, target_passphrase: str | None
+    ) -> None:
+        """在 ``staging`` 建出目标根：六分区按目标格式重写，`secrets` 原样搬运。"""
+        target = cls.create(staging, target_passphrase if to_format == MODE_ENCRYPTED else None)
+        # 凭据材料原样搬运：salt + 校验锚（+ 若无锚则目标也无锚，保持 TOFU 语义）
+        src_meta = json.loads((src._root / _KEYFILE).read_text(encoding="utf-8"))
+        target_meta = json.loads((staging / _KEYFILE).read_text(encoding="utf-8"))
+        target_meta["secrets_salt"] = src_meta["secrets_salt"]
+        if "verifier_secrets" in src_meta:
+            target_meta["verifier_secrets"] = src_meta["verifier_secrets"]
+        else:
+            target_meta.pop("verifier_secrets", None)
+        (staging / _KEYFILE).write_text(
+            json.dumps(target_meta, indent=2), encoding="utf-8"
+        )
+        for p in PARTITIONS:
+            if p.name == _SECRETS:
+                continue
+            for name in src.list_files(p.name):
+                target.put(p.name, name, src.get(p.name, name))
+        # secrets 目录整目录原样搬运（含其清单密文）；目标分区目录已由 create 建出。
+        # 目标句柄自此作废（其内存清单/密钥与搬运后的盘上内容不再一致），
+        # 故 :meth:`convert` 收尾一律重新 ``open`` 目标根取新句柄。
+        secrets_dir = staging / _SECRETS
+        if secrets_dir.exists():
+            shutil.rmtree(secrets_dir)
+        src_secrets = src._root / _SECRETS
+        if src_secrets.exists():
+            shutil.copytree(src_secrets, secrets_dir)
+        else:  # pragma: no cover - create 必建该目录
+            secrets_dir.mkdir(parents=True, exist_ok=True)
 
     # ───────────────────────── 读写（加密透明） ─────────────────────────
 
@@ -290,7 +601,7 @@ class Store:
             self._require_ok(partition)
             self._check_rel_name(name)
             manifest = self._manifest(partition)
-            sealed = seal_bytes(self._keys[partition], data, aad=_AAD_FILE)
+            sealed = self._seal(partition, data)
             target = self._root / partition / name
             target.parent.mkdir(parents=True, exist_ok=True)
             self._atomic_write(target, sealed)
@@ -308,7 +619,7 @@ class Store:
             if entry is None:
                 raise KeyError(f"分区 {partition} 无文件 {name!r}")
             sealed = (self._root / partition / name).read_bytes()
-            plain = open_bytes(self._keys[partition], sealed, aad=_AAD_FILE)
+            plain = self._open(partition, sealed)
             if compute_digest(plain) != entry.digest or len(plain) != entry.size:
                 raise StorageCorruptionError(
                     StoreCorruptionReport(corrupted=(CorruptedPartitionReport(
@@ -342,10 +653,15 @@ class Store:
         """列出分区内全部文件（清单口径，非目录扫描）。"""
         validate_partition_name(partition)
         with self._part_lock(partition):
+            self._require_ok(partition)
             return tuple(sorted(self._manifest(partition).paths()))
 
     def sealed_mtime(self, partition: PartitionName, name: str) -> float:
-        """分区内文件的落盘密文 mtime（epoch 秒；T-L0-006 留存年龄口径）。"""
+        """分区内文件的**落盘** mtime（epoch 秒；T-L0-006 留存年龄口径）。
+
+        明文根下该文件是明文，故名字里的「sealed」只表示「落盘形态」——
+        口径本身（按落盘文件的实际时间计龄）不变。
+        """
         validate_partition_name(partition)
         with self._part_lock(partition):
             if self._manifest(partition).entry_for(name) is None:
@@ -386,7 +702,7 @@ class Store:
             return report
 
     def partition_state(self, partition: PartitionName) -> StorageState:
-        """查询分区状态（ok / corrupted；GWT-5 损坏范围查询）。"""
+        """查询分区状态（ok / corrupted / locked；GWT-5 损坏范围查询）。"""
         validate_partition_name(partition)
         with self._part_lock(partition):
             report = self._reports.get(partition)
@@ -395,6 +711,11 @@ class Store:
                     partition=partition, state="corrupted",
                     file_count=len(self._manifests.get(partition, PartitionManifest()).entries),
                     detail=report.reason,
+                )
+            if self._states.get(partition) == "locked":
+                return StorageState(
+                    partition=partition, state="locked", file_count=0,
+                    detail="未解锁（凭据恒加密、惰性解锁；请先 unlock_secrets 提供凭据口令）",
                 )
             return StorageState(
                 partition=partition, state="ok",
@@ -414,11 +735,15 @@ class Store:
     def _verify_all(self) -> StoreCorruptionReport:
         """逐分区校验：清单可解 + 文件齐全 + 逐文件校验和一致。
 
-        单分区失败不影响其余分区（GWT-5「其余分区不受影响」）。
+        单分区失败不影响其余分区（GWT-5「其余分区不受影响」）。未解锁的分区
+        **不校验、不报告损坏**——它既没被读，也不该被谎报为健康（02 §2.2）。
         """
         reports: list[CorruptedPartitionReport] = []
         healthy: list[PartitionName] = []
         for p in PARTITIONS:
+            if self._is_locked(p.name):
+                self._states[p.name] = "locked"
+                continue
             rep = self._verify_partition(p.name)
             if rep is None:
                 healthy.append(p.name)
@@ -440,7 +765,7 @@ class Store:
                 partition=partition, reason="分区清单缺失", affected_files=()
             )
         try:
-            manifest = PartitionManifest.open(self._keys[partition], mf.read_bytes())
+            manifest = self._load_manifest(partition, mf.read_bytes())
         except Exception as exc:
             return CorruptedPartitionReport(
                 partition=partition,
@@ -456,7 +781,7 @@ class Store:
                 missing.append(e.path)
                 continue
             try:
-                plain = open_bytes(self._keys[partition], f.read_bytes(), aad=_AAD_FILE)
+                plain = self._open(partition, f.read_bytes())
             except Exception:
                 mismatched.append(e.path)
                 continue
@@ -472,18 +797,39 @@ class Store:
 
     # ───────────────────────── 内部工具 ─────────────────────────
 
+    def _seal(self, partition: PartitionName, plaintext: bytes) -> bytes:
+        """文件载荷按分区格式落盘形态（明文分区分区原样）。"""
+        key = self._part_key(partition)
+        return plaintext if key is None else seal_bytes(key, plaintext, aad=_AAD_FILE)
+
+    def _open(self, partition: PartitionName, sealed: bytes) -> bytes:
+        """文件载荷的读回（明文分区原样；完整性由清单 digest 兜底，§2.3）。"""
+        key = self._part_key(partition)
+        return sealed if key is None else open_bytes(key, sealed, aad=_AAD_FILE)
+
+    def _load_manifest(self, partition: PartitionName, raw: bytes) -> PartitionManifest:
+        key = self._part_key(partition)
+        if key is None:
+            return PartitionManifest.from_json(raw.decode("utf-8"))
+        return PartitionManifest.open(key, raw)
+
+    def _dump_manifest(self, partition: PartitionName, manifest: PartitionManifest) -> bytes:
+        key = self._part_key(partition)
+        if key is None:
+            return manifest.to_json().encode("utf-8")
+        return seal_bytes(key, manifest.to_json().encode("utf-8"), aad=_AAD_MANIFEST)
+
     def _manifest(self, partition: PartitionName) -> PartitionManifest:
         m = self._manifests.get(partition)
         if m is None:
             mf = self._root / partition / MANIFEST_NAME
-            m = PartitionManifest.open(self._keys[partition], mf.read_bytes())
+            m = self._load_manifest(partition, mf.read_bytes())
             self._manifests[partition] = m
         return m
 
     def _write_manifest(self, partition: PartitionName, manifest: PartitionManifest) -> None:
-        self._atomic_write(
-            self._root / partition / MANIFEST_NAME, manifest.seal(self._keys[partition])
-        )
+        self._atomic_write(self._root / partition / MANIFEST_NAME,
+                           self._dump_manifest(partition, manifest))
         self._manifests[partition] = manifest
 
     def _rebuild_partition(self, partition: PartitionName) -> None:
@@ -497,6 +843,8 @@ class Store:
         self._reports.pop(partition, None)
 
     def _require_ok(self, partition: PartitionName) -> None:
+        if self._states.get(partition) == "locked":
+            self._part_key(partition)      # 抛 StorageSecretsLockedError（显式）
         if self._states.get(partition) != "ok":
             raise StorageCorruptionError(self.storage_report())
 

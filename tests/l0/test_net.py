@@ -50,7 +50,7 @@ def store(tmp_path: Path) -> Store:
 def gateway(store: Store) -> EgressGateway:
     def sender(kind, host, timeout_ms):
         return (12, 34, ("hello ", "world"))
-    return EgressGateway(store, sender=sender)
+    return EgressGateway(store, sender=sender, audit=True)
 
 
 def root_of(gateway: EgressGateway) -> Path:
@@ -157,7 +157,9 @@ class TestGwt2QueryExport:
         env = gateway.execute("channel_delivery", "smtp.example.com",
                               initiator="l5", purpose="触达投递")
         assert env.status == "unavailable"
-        (pending,) = gateway.pending_reconnect()
+        pending_env = gateway.pending_reconnect()
+        assert pending_env.status == "ok"
+        (pending,) = pending_env.data["events"]
         assert pending.target_host == "smtp.example.com"
 
 
@@ -238,7 +240,7 @@ class TestGwt4LlmAdapter:
         events = list(client.invoke("cloud-main", "你好", initiator="t", purpose="p"))
         assert events[0].kind == "error"
         assert events[0].error_envelope.status == "unavailable"
-        assert gateway.pending_reconnect() != ()
+        assert gateway.pending_reconnect().data["events"] != ()
 
     def test_llm_unknown_provider_is_unavailable(self, store, gateway):
         vault = CredentialVault(store)
@@ -271,7 +273,7 @@ class TestGwt4LlmAdapter:
 
 class TestGwt5FailureSemantics:
     def test_no_sender_is_unavailable(self, store):
-        gateway = EgressGateway(store, sender=None)
+        gateway = EgressGateway(store, sender=None, audit=True)
         env = gateway.execute("data_fetch", "a.example.com",
                               initiator="t", purpose="拉取")
         assert env.status == "unavailable"
@@ -283,7 +285,7 @@ class TestGwt5FailureSemantics:
         def sender(kind, host, timeout_ms):
             from st_agent.l0.net import EgressUnavailableError as EU
             raise EU("连接被拒绝")
-        gateway = EgressGateway(store, sender=sender)
+        gateway = EgressGateway(store, sender=sender, audit=True)
         env = gateway.execute("data_fetch", "down.example.com",
                               initiator="t", purpose="拉取")
         assert env.status == "unavailable"
@@ -293,7 +295,7 @@ class TestGwt5FailureSemantics:
         def sender(kind, host, timeout_ms):
             from st_agent.l0.net import EgressTimeoutError as ET
             raise ET("远端 3000ms 未响应")
-        gateway = EgressGateway(store, sender=sender)
+        gateway = EgressGateway(store, sender=sender, audit=True)
         env = gateway.execute("data_fetch", "slow.example.com",
                               initiator="t", purpose="拉取")
         assert env.status == "failed" and env.log_ref
@@ -315,7 +317,7 @@ class TestGwt5FailureSemantics:
     def test_stream_sender_crash_mapped(self, store):
         def sender(kind, host, timeout_ms):
             raise RuntimeError("socket boom")
-        gateway = EgressGateway(store, sender=sender)
+        gateway = EgressGateway(store, sender=sender, audit=True)
         with pytest.raises(EgressError, match="socket boom"):
             list(gateway.stream("data_fetch", "a.example.com",
                                 initiator="t", purpose="拉取"))
@@ -330,7 +332,7 @@ class TestGwt5FailureSemantics:
                 _t.sleep(0.05)
                 yield "y"
             return (0, 0, chunks())
-        gateway = EgressGateway(store, sender=sender)
+        gateway = EgressGateway(store, sender=sender, audit=True)
         with pytest.raises(EgressTimeoutError):
             list(gateway.stream("data_fetch", "a.example.com",
                                 initiator="t", purpose="拉取", timeout_ms=10))
@@ -345,9 +347,9 @@ class TestGwt5FailureSemantics:
         def sender(kind, host, timeout_ms):
             touched.append(host)
             return (0, 0, ("x",))
-        gateway = EgressGateway(store, sender=sender, online=False)
+        gateway = EgressGateway(store, sender=sender, online=False, audit=True)
         with pytest.raises(EgressUnavailableError):
             list(gateway.stream("data_fetch", "a.example.com",
                                 initiator="t", purpose="拉取"))
         assert touched == []
-        assert gateway.pending_reconnect() != ()
+        assert gateway.pending_reconnect().data["events"] != ()

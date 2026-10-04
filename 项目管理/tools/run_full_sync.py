@@ -338,8 +338,9 @@ def save_checkpoint(path: Path, data: dict[str, Any]) -> None:
 def count_audited_today(gateway: Any, now: datetime | None = None) -> int:
     """今天已发出的 ``data_fetch`` 审计条数（日预算的起算点）。
 
-    只调**一次** ``gateway.query``——它要逐条读并解密整个审计分区的记录，
-    按片调用会随条数变慢，故绝不放进逐片循环。
+    只调**一次** ``gateway.query(start, …)``，且带**今天 0 点**这条时间下界——
+    T-L0-018.2 起审计按**段**落盘（一段装多条、段名带起止时戳），故本次查询
+    **跳段**：只读今天那几段，不读全量历史（此前要逐条读并解密整个审计分区）。
     """
     start = (now or datetime.now().astimezone()).replace(
         hour=0, minute=0, second=0, microsecond=0)
@@ -449,7 +450,11 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     db = MarketDb(store)
-    gateway = EgressGateway(store)
+    # 审计**必须开**：本脚本的日请求预算是从审计记录里数出来的
+    # （``count_audited_today``）——关掉审计会静默丢掉这道「防源端拉黑」的护栏。
+    # 产品缺省是关（02 §6 / D-073），而 T-L0-018.2 已把审计落盘改为分段日志，
+    # 逐次留痕的 O(n²) 开销随之消失，故长跑照开。
+    gateway = EgressGateway(store, audit=True)
     checkpoint_path = _checkpoint_path(args, root)
 
     start = args.start or "1990-01-01"

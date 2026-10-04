@@ -541,3 +541,44 @@ def test_git_dir_is_not_scanned(tmp_path, monkeypatch):
 
     assert vd.check_links() == (0, 0, [])
 
+
+# ───────────────────────── convert_store CLI（T-L0-018.1） ─────────────────────────
+
+def test_convert_store_cli_roundtrip(tmp_path, monkeypatch):
+    """明 → 密 → 明：口令只经环境变量，读回内容不变。"""
+    import convert_store as cs
+    from st_agent.l0.storage import Store, read_mode
+
+    plain = tmp_path / "plain"
+    Store.create(plain).put("memory", "a.json", b"x")
+    enc, back = tmp_path / "enc", tmp_path / "back"
+    monkeypatch.setenv(cs.TARGET_PASSPHRASE_ENV, "target-pass")
+    assert cs.main(["--source", str(plain), "--target", str(enc), "--to", "encrypted"]) == 0
+    assert read_mode(enc) == "encrypted"
+
+    monkeypatch.delenv(cs.TARGET_PASSPHRASE_ENV)
+    monkeypatch.setenv(cs.SOURCE_PASSPHRASE_ENV, "target-pass")
+    assert cs.main(["--source", str(enc), "--target", str(back), "--to", "plain"]) == 0
+    assert Store.open(back).get("memory", "a.json") == b"x"
+
+
+def test_convert_store_cli_requires_target_passphrase(tmp_path, monkeypatch):
+    import convert_store as cs
+    from st_agent.l0.storage import Store
+
+    src = tmp_path / "p"
+    Store.create(src)
+    monkeypatch.delenv(cs.TARGET_PASSPHRASE_ENV, raising=False)
+    assert cs.main(["--source", str(src), "--target", str(tmp_path / "o"),
+                    "--to", "encrypted"]) == 2
+    assert not (tmp_path / "o").exists()          # 未开工即拒，不留半成品
+
+
+def test_convert_store_cli_refuses_passphrase_in_argv(tmp_path):
+    """口令**不得**经 argv（进程列表可见）——传了即用法错误。"""
+    import convert_store as cs
+
+    with pytest.raises(SystemExit):
+        cs.main(["--source", str(tmp_path), "--target", str(tmp_path / "o"),
+                 "--to", "plain", "--passphrase", "oops"])
+

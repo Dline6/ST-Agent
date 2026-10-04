@@ -62,14 +62,29 @@ def test_dual_channel_rises_from_declared_to_registry(rig: M1Rig) -> None:
 
 def test_global_families_are_reachable_from_the_assembled_root(rig: M1Rig) -> None:
     ids = {e.config_id for e in rig.m1.runtime.config_registry.list()}
-    # L0 孤儿（纳注册）+ L1 调度策略
+    # L0 孤儿（纳注册）+ L1 调度策略 + L0 出网审计开关（T-L0-018.2）
     assert {
         "retention.chat_history_days",
         "retention.execution_log_days",
         "scheduler-policy/offline-catch-up",
+        "net-audit/enabled",
     } <= ids
     # L2 族由 app 根注入（L1 不 import L2）
     assert any(i.startswith("memory-policy/") for i in ids)
+
+
+def test_audit_switch_is_registered_and_hot_switches_the_gateway(rig: M1Rig) -> None:
+    """T-L0-018.2 GWT-2：01 §7 条目可读可写，落值**不需重启进程**即生效。"""
+    facade = rig.m1.runtime.config_registry
+    entry = facade.entry("net-audit/enabled")
+    assert entry is not None and entry.default is False       # 缺省＝关（02 §6）
+    gateway = rig.m1.runtime.gateway
+    assert gateway.audit_enabled is False
+
+    change = facade.set("net-audit/enabled", True)
+    assert change is not None and change.new_value is True and change.change_id
+    assert gateway.audit_enabled is True                      # 热切换
+    assert facade.set("net-audit/enabled", True) is None      # 值未变 → 不留痕（01 §7）
 
 
 # ─────────────────────────── GWT-2 接受真落值 ───────────────────────────

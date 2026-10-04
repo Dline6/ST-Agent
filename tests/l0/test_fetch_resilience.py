@@ -110,7 +110,7 @@ def store(tmp_path: Path) -> Store:
 
 @pytest.fixture()
 def gateway(store: Store) -> EgressGateway:
-    return EgressGateway(store)
+    return EgressGateway(store, audit=True)
 
 
 def _one(db: MarketDb, sql: str) -> dict:

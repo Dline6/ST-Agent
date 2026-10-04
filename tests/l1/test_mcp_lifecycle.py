@@ -491,7 +491,7 @@ def test_cancel_signal_aborts_inflight_remote_call_end_to_end(store):
     互斥锁串行化（原「清单缓存无写并发保护」的 L0 遗留册 E1 随之关闭，回归用例见
     ``tests/l0/test_store_concurrency.py``）。
     """
-    gateway = EgressGateway(store)
+    gateway = EgressGateway(store, audit=True)
     registry = make_registry(store, gateway=gateway)
     add_remote(registry, permissions=(EXEC,))
     registry.permissions.approve("remote-one", EXEC)
@@ -580,7 +580,7 @@ def _echo_post(_url: str, body: str, _timeout_ms: int) -> str:
 
 
 def test_remote_egress_is_fully_audited_and_survives_removal(store):
-    gateway = EgressGateway(store)
+    gateway = EgressGateway(store, audit=True)
     registry = make_registry(store, gateway=gateway)
     add_remote(registry)
     hub = make_hub(store, registry)
@@ -604,7 +604,7 @@ def test_remote_egress_is_fully_audited_and_survives_removal(store):
 
 
 def test_audited_egress_carries_no_payload_plaintext(store):
-    gateway = EgressGateway(store)
+    gateway = EgressGateway(store, audit=True)
     registry = make_registry(store, gateway=gateway)
     add_remote(registry)
     _ = make_hub(store, registry)

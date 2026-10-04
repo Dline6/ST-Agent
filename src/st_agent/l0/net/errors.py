@@ -16,6 +16,7 @@ __all__ = [
     "EgressError",
     "EgressTimeoutError",
     "EgressUnavailableError",
+    "NetAuditConfigError",
     "NetError",
     "NetValidationError",
 ]
@@ -27,6 +28,10 @@ class NetError(Exception):
 
 class NetValidationError(NetError, ValueError):
     """网关调用参数 / 能力登记项非法（发起前校验，不产生审计记录）。"""
+
+
+class NetAuditConfigError(NetError):
+    """审计开关（01 §7 条目）取值非法或落盘损坏——显式抛，不静默回退默认值。"""
 
 
 class CapabilityExistsError(NetError):

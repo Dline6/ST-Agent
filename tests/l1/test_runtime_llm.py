@@ -77,6 +77,9 @@ def _clear_llm_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _build(store: Store, **kwargs):
     kwargs.setdefault("llm_config", LlmBootstrap.from_env(ENV))
+    # 本套件断言「LLM 调用经网关并留痕」，故显式开审计（产品缺省＝关，02 §6 / D-073；
+    # 默认关语义见 tests/l0/test_gateway_audit_mode.py）
+    kwargs.setdefault("audit", True)
     return build_l1_runtime(store, market_query=_FAKE_MARKET, **kwargs)
 
 

@@ -179,14 +179,14 @@ class TestLocalOnlyByDefault:
     """GWT-2：默认只允许本地 stdio。"""
 
     def test_remote_without_acknowledgement_is_rejected(self, store: Store):
-        registry = McpServerRegistry(store, gateway=EgressGateway(store))
+        registry = McpServerRegistry(store, gateway=EgressGateway(store, audit=True))
         with pytest.raises(McpValidationError) as excinfo:
             registry.add_server("srv_remote", display_name="远程 Server", transport="remote", url=URL)
         assert "离开本机" in str(excinfo.value)
         assert _persisted(store) == []
 
     def test_remote_url_requires_http_scheme(self, store: Store):
-        registry = McpServerRegistry(store, gateway=EgressGateway(store))
+        registry = McpServerRegistry(store, gateway=EgressGateway(store, audit=True))
         with pytest.raises(McpValidationError):
             registry.add_server(
                 "srv_remote", display_name="远程 Server", transport="remote",
@@ -205,7 +205,7 @@ class TestRemoteServer:
     """GWT-3：远程显式开启 + 风险标注 + 出网经网关登记。"""
 
     def test_acknowledged_remote_persists_and_audits(self, store: Store):
-        gateway = EgressGateway(store)
+        gateway = EgressGateway(store, audit=True)
         registry = McpServerRegistry(
             store, gateway=gateway,
             transport_factory=lambda r: HttpSseTransport(r.url, gateway, r.server_id, post=make_post()),

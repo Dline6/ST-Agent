@@ -10,7 +10,7 @@
 
 ## 契约 2 · 本地记忆持久化
 
-Memory Graph、Skill 配置、对话历史、执行日志、反思日志、用户偏好全部存本地加密文件，用户可随时导出/导入/删除。
+Memory Graph、Skill 配置、对话历史、执行日志、反思日志、用户偏好全部存本地文件（加密为可选项、默认关；凭据恒加密），用户可随时导出/导入/删除。
 → 记忆图谱的节点结构与编辑体验见 [story-03 Memory Graph](story-03-memory-graph.md)；加密与备份机制见 [story-05](story-05-local-first.md)。
 
 ## 契约 3 · LLM 调用抽象
