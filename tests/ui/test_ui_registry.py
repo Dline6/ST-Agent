@@ -85,6 +85,9 @@ def test_frontend_renderers_exist_as_files() -> None:
         ("context_card", {"sections": [], "labels": {}}),
         ("config_draft_card", {"target": "stock-watch", "panels": []}),
         ("conflict_adjudication_card", {"sides": [], "question": "选哪一条"}),
+        ("permission_approval_card", {"items": [], "labels": {}}),
+        # 06 §5 两视图均实现 → 矩阵与网络图同为必填槽
+        ("divergence_map", {"matrix": [], "network": {"nodes": [], "edges": []}}),
     ],
 )
 def test_complete_descriptions_have_no_slot_gaps(component_type: str, slots: dict) -> None:
@@ -96,6 +99,7 @@ def test_slot_gaps_reports_missing_required_slots() -> None:
     assert slot_gaps(_description("trace_timeline", {})) == ("steps",)
     assert slot_gaps(_description("context_card", {"sections": []})) == ("labels",)
     assert slot_gaps(_description("config_draft_card", {"summary": "草稿"})) == ("target", "panels")
+    assert slot_gaps(_description("divergence_map", {"matrix": []})) == ("network",)
 
 
 def test_reserved_type_is_not_judged_here() -> None:

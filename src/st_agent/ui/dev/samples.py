@@ -5,10 +5,12 @@
 假设 `A5`、`T-UI-001.3` 同口径）。信封一律用 [01 §5] 的**合法工厂**构造、描述一律经
 [01 §12] 的 `UiDescription` 构造，故它们同时也是契约形状的活样本；本模块不进发布构建。
 
-**L3 五型经真描述件产出**（`T-L3-004.1` / `.2` / `T-L3-006`）：`trace_timeline` / `context_card` /
-`config_draft_card` / `conflict_adjudication_card` / `permission_approval_card` 的走查样本由
-[`l3.render`][r] 的五个描述件从**真视图数据**生成，而不是在这里手抄一份槽结构——手抄的样本会在描述件改动后
-静默漂移，走查也就查不出东西。窗口返回 `None` 的样本即不出现在页面上（不摆假样本）。
+**L3 六型经真描述件产出**（`T-L3-004.1` / `.2` / `T-L3-006` / `T-L4-004.2`）：`trace_timeline` /
+`context_card` / `config_draft_card` / `conflict_adjudication_card` / `permission_approval_card` /
+`divergence_map` 的走查样本由 [`l3.render`][r] 的六个描述件从**真视图数据**生成，而不是在这里手抄
+一份槽结构——手抄的样本会在描述件改动后静默漂移，走查也就查不出东西。分歧图的两条走查分支更往前走了一段：
+视图由**真** L4 链路（`CrossExaminer` 对照 → `DivergenceViewer` 投影）产出，故样本与线上同源。
+窗口返回 `None` 的样本即不出现在页面上（不摆假样本）。
 
 [r]: ../../l3/render/__init__.py
 """
@@ -17,12 +19,17 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+from st_agent.contracts.capability_types import LensOpinion
 from st_agent.contracts.identifiers import TraceId
 from st_agent.contracts.registry_types import PanelField
 from st_agent.contracts.result_envelope import EvidenceRef, ResultEnvelope
 from st_agent.contracts.trace import ConclusionRef, Trace, TraceStep, digest_of
 from st_agent.contracts.ui_description import UiDescription, new_description_id
 from st_agent.l2.memory.reader import SliceQuery
+from st_agent.l4.crosscheck import CrossExaminer
+from st_agent.l4.deliberation import DeliberationResult
+from st_agent.l4.divergence_view import DivergenceViewer
+from st_agent.l4.lens import JudgingCriteria, Lens
 from st_agent.l3.config.draft import ConfigDraft, OpenQuestion
 from st_agent.l3.config.handling import PanelView
 from st_agent.l3.config.registry import ChannelParam
@@ -57,6 +64,7 @@ from st_agent.l3.render import (
     describe_adjudication,
     describe_approval,
     describe_context_card,
+    describe_divergence_map,
     describe_draft,
     describe_trace,
 )
@@ -112,13 +120,15 @@ DESCRIPTION_KINDS: tuple[str, ...] = (
     "config_draft_panel",
     "conflict_adjudication_card",
     "permission_approval_card",
+    "divergence_map",
+    "divergence_map_unanimous",
     "extra-slot",
     "reserved",
     "generated-violation",
     "data-violation",
 )
-"""组件面的走查路径（前八条正常渲染、第九条走「未识别槽」降级、第十条走未实现类型降级、
-后两条验证中性分栏）。"""
+"""组件面的走查路径（前十条正常渲染——含分歧图的两条分支：有冲突 / 全员一致；
+第十一条走「未识别槽」降级、第十二条走未实现类型降级、后两条验证中性分栏）。"""
 
 
 def _descriptions() -> dict[str, UiDescription]:
@@ -204,7 +214,7 @@ def _handwritten() -> dict[str, UiDescription]:
 
 
 def _from_l3() -> dict[str, UiDescription]:
-    """L3 五型：真视图数据 → 真描述件 → 描述（**不手抄槽结构**）。"""
+    """L3 六型：真视图数据 → 真描述件 → 描述（**不手抄槽结构**）。"""
     samples: dict[str, UiDescription] = {}
     for kind, envelope in (
         ("trace_timeline", describe_trace(_trace())),
@@ -213,10 +223,86 @@ def _from_l3() -> dict[str, UiDescription]:
         ("config_draft_panel", describe_draft(_panel_view())),
         ("conflict_adjudication_card", describe_adjudication(_adjudication())),
         ("permission_approval_card", describe_approval(_approval_view())),
+        ("divergence_map", describe_divergence_map(_divergence_view(unanimous=False))),
+        ("divergence_map_unanimous", describe_divergence_map(_divergence_view(unanimous=True))),
     ):
         if envelope.status == "ok":
             samples[kind] = envelope.data
     return samples
+
+
+# ── 分歧图的两条走查分支（06 §5–§6）：真 L4 投影 → 真 L3 描述件 ─────────────────
+
+
+_SAMPLE_TOPIC = "是否关注 sh.600000"
+_RUN_A = "run_" + "a" * 20
+_RUN_B = "run_" + "b" * 20
+_ANN_C = "ann_" + "c" * 20
+_SNAP_D = "snap_" + "d" * 20
+
+
+class _StubRoster:
+    """dev 面的假阵容：只按 id 回固定视角（走查用，不进发布构建）。"""
+
+    def __init__(self, lenses: tuple[Lens, ...]) -> None:
+        self._by_id = {lens.lens_id: lens for lens in lenses}
+
+    def get(self, lens_id: str) -> Lens:
+        return self._by_id[lens_id]
+
+
+def _sample_lens(name: str, bundle: tuple[str, ...]) -> Lens:
+    return Lens(
+        lens_id="lens_" + name.encode("utf-8").hex()[:16],
+        name=name, description=f"关注{name}维度", skill_bundle=bundle,
+        judging_criteria=JudgingCriteria(natural="以中性指标为准"),
+        kind="builtin", enabled=True,
+    )
+
+
+def _opinion(lens: Lens, stance: str, refs: tuple[str, ...], index: int) -> LensOpinion:
+    return LensOpinion(
+        lens_id=lens.lens_id, stance=stance,
+        key_reasons=(f"视角「{lens.name}」基于 {len(refs)} 条有效证据形成观点",),
+        evidence_refs=refs, confidence="medium",
+        skills_triggered=(), trace_id=f"tr_{index:020d}",
+    )
+
+
+def _divergence_view(*, unanimous: bool):
+    """走查视图：`unanimous=False` 出冲突（含 Mini Debate 段），`True` 出全员一致分支。
+
+    经**真**链路产出——[`CrossExaminer`] 对照 + [`DivergenceViewer`] 投影，故样本与
+    线上同源，描述件改动会立刻反映到走查页（手抄样本做不到这点）。
+    """
+    opp = _sample_lens("机会视角", ("sk_opportunity_mine_v1.0",))
+    sentiment = _sample_lens("情绪视角", ("sk_sentiment_flow_analysis_v1.0",))
+    risk = _sample_lens("风险视角", ("sk_risk_alert_v1.0",))
+    fundamental = _sample_lens("基本面视角", ("sk_fundamental_screening_v1.0",))
+
+    if unanimous:  # 全员同向 → 06 §6「罕见的高度一致」提示；证据仍完整
+        lenses = (opp, sentiment, fundamental)
+        opinions = (
+            _opinion(opp, "positive", (_RUN_A, _ANN_C), 1),
+            _opinion(sentiment, "positive", (_ANN_C,), 2),
+            _opinion(fundamental, "positive", (_ANN_C,), 3),
+        )
+    else:  # 机会/情绪同向成一致点，风险反向成分歧点（共享证据 → 触发 Mini Debate）
+        lenses = (opp, sentiment, risk)
+        opinions = (
+            _opinion(opp, "positive", (_RUN_A, _ANN_C), 1),
+            _opinion(sentiment, "positive", (_ANN_C,), 2),
+            _opinion(risk, "negative", (_RUN_A, _SNAP_D, _RUN_B), 3),
+        )
+
+    roster = _StubRoster(lenses)
+    result = DeliberationResult(
+        topic=_SAMPLE_TOPIC, mode="deep",
+        envelope=ResultEnvelope.ok([l.lens_id for l in lenses], as_of=_NOW),
+        opinions=opinions, lens_ids=tuple(l.lens_id for l in lenses),
+    )
+    examined = CrossExaminer(roster=roster, now=lambda: _NOW).cross_examine(result)
+    return DivergenceViewer(roster=roster).build(result, examined)
 
 
 class _StubPermissionBook:

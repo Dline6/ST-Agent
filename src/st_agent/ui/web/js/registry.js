@@ -11,6 +11,7 @@ import { renderTable } from './components/table.js';
 import { renderConfigDraftCard } from './plugins/l3/config_draft_card.js';
 import { renderConflictAdjudicationCard } from './plugins/l3/conflict_adjudication_card.js';
 import { renderContextCard } from './plugins/l3/context_card.js';
+import { renderDivergenceMap } from './plugins/l3/divergence_map.js';
 import { renderPermissionApprovalCard } from './plugins/l3/permission_approval_card.js';
 import { renderTraceTimeline } from './plugins/l3/trace_timeline.js';
 
@@ -22,6 +23,7 @@ export const RENDERERS = {
   config_draft_card: renderConfigDraftCard,
   conflict_adjudication_card: renderConflictAdjudicationCard,
   permission_approval_card: renderPermissionApprovalCard,
+  divergence_map: renderDivergenceMap,
 };
 
 /** 取一个类型的渲染件；未登记 / 未实现返回 null（由调度处显式降级）。 */

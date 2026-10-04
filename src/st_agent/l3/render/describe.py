@@ -1,4 +1,4 @@
-"""五个 L3 特有组件的**描述件**（[05 §6](../../../../docs/技术架构-v2/05-L3-对话主入口.md) / [§7](../../../../docs/技术架构-v2/05-L3-对话主入口.md) / [§9](../../../../docs/技术架构-v2/05-L3-对话主入口.md)；[01 §12](../../../../docs/技术架构-v2/01-平台共享契约.md)）。
+"""L3 特有组件的**描述件**（[05 §6](../../../../docs/技术架构-v2/05-L3-对话主入口.md) / [§7](../../../../docs/技术架构-v2/05-L3-对话主入口.md) / [§9](../../../../docs/技术架构-v2/05-L3-对话主入口.md)；[01 §12](../../../../docs/技术架构-v2/01-平台共享契约.md)）。
 
 | 描述件 | 组件类型 | 输入（上游已交付的视图数据） |
 | --- | --- | --- |
@@ -7,6 +7,7 @@
 | :func:`describe_draft` | ``config_draft_card`` | [`l3.config.draft.ConfigDraft`](../config/draft.py) / [`l3.config.handling.PanelView`](../config/handling.py)（[05 §5](../../../../docs/技术架构-v2/05-L3-对话主入口.md)） |
 | :func:`describe_adjudication` | ``conflict_adjudication_card`` | [`l3.conflict.adjudication.ConflictAdjudication`](../conflict/adjudication.py)（[05 §9](../../../../docs/技术架构-v2/05-L3-对话主入口.md)） |
 | :func:`describe_approval` | ``permission_approval_card`` | [`l3.approval.panel.CapabilityApprovalView`](../approval/panel.py)（[01 §10](../../../../docs/技术架构-v2/01-平台共享契约.md)；[T-L3-006](../../../../项目管理/tasks/T-L3-006-能力安装与导入审批面.md)） |
+| :func:`describe_divergence_map` | ``divergence_map`` | **L4 的视图投影件**（[`l4.divergence_view.DivergenceView`](../../l4/divergence_view.py)，[06 §5–§6](../../../../docs/技术架构-v2/06-L4-多视角推理.md)；[T-L4-004.2](../../../../项目管理/tasks/T-L4-004.2-divergence_map描述件与组件升真.md)）——**鸭子类型**：本层只按属性取值，**不 import `st_agent.l4`**（[铁律 7](../../../../项目管理/工程宪法.md)，`LAYER_ORDER` 为 `l3 < l4`） |
 
 **中性口径的切分**（[D-053](../../../../项目管理/决策日志.md) / [D-064](../../../../项目管理/决策日志.md)）：
 本模块**不**对生成文案做构造期复检——上游（上下文卡片 / 草稿 / 裁决卡）在构造时已各自
@@ -44,14 +45,19 @@ from st_agent.l3.conflict.adjudication import (
 from st_agent.l3.home.card import ContextCard
 
 __all__ = [
+    "DIVERGENCE_ABSENT_REASON",
+    "DIVERGENCE_EMPTY_REASON",
+    "DIVERGENCE_TITLE",
     "ORIGIN_LABELS",
     "SIDE_EXISTING_LABEL",
     "SIDE_PROPOSED_LABEL",
+    "STANCE_LABELS",
     "TRACE_ABSENT_REASON",
     "TRACE_EMPTY_REASON",
     "describe_adjudication",
     "describe_approval",
     "describe_context_card",
+    "describe_divergence_map",
     "describe_draft",
     "describe_trace",
 ]
@@ -61,6 +67,27 @@ TRACE_ABSENT_REASON = "本次没有可展开的推理链（05 §7）"
 
 TRACE_EMPTY_REASON = "该推理链尚无步骤（本次派发未发生可追溯的动作，05 §7）"
 """链**存在但为空**时的原因（05 §4：未接入去向的链存在、步骤为空，如实反映）。"""
+
+DIVERGENCE_TITLE = "分歧图"
+"""分歧图的卡片名（[06 §5](../../../../docs/技术架构-v2/06-L4-多视角推理.md)；生成文案，过 §6）。"""
+
+STANCE_LABELS: dict[str, str] = {
+    "positive": "看好",
+    "negative": "看空",
+    "neutral": "中性",
+    "insufficient-data": "数据不足",
+}
+"""立场的展示标签（Story 4 的输出枚举措辞；生成文案，过 §6）。
+
+放在**生成文案槽**里下发，而不是让前端按枚举键自己映射——前端不携词表（[01 §12](../../../../docs/技术架构-v2/01-平台共享契约.md)），
+由本层给出才能被回环边界的校验门看到（同 :data:`ORIGIN_LABELS`）。
+"""
+
+DIVERGENCE_ABSENT_REASON = "本次没有可呈现的分歧图（06 §5）"
+"""视图**缺失**（``None``）时的原因——不是「空图」，见 :data:`DIVERGENCE_EMPTY_REASON`。"""
+
+DIVERGENCE_EMPTY_REASON = "本次编排无参与视角，分歧图没有可呈现的视角行（06 §6；空态由渲染面呈现入口）"
+"""视图**存在但无矩阵行**时的原因（[06 §6](../../../../docs/技术架构-v2/06-L4-多视角推理.md)）。"""
 
 SIDE_EXISTING_LABEL = "既有记录"
 """裁决卡上「既有」一方的标签（生成文案，过 §6）。"""
@@ -453,4 +480,116 @@ def describe_approval(view: CapabilityApprovalView, *, now: datetime | None = No
             "labels": "generated",
         },
         as_of=now if now is not None else _now(),
+    )
+
+
+# ───────────────────────── divergence_map（06 §5–§6） ─────────────────────────
+
+
+def describe_divergence_map(view: Any, *, now: datetime | None = None) -> ResultEnvelope:
+    """分歧图视图 → ``divergence_map`` 描述（[06 §5](../../../../docs/技术架构-v2/06-L4-多视角推理.md)）。
+
+    **输入是鸭子类型**：视图由 L4 的投影件产出（矩阵行需全部参与视角的立场，只有 L4 有），
+    而 [铁律 7](../../../../项目管理/工程宪法.md) 禁 L3 import L4（`LAYER_ORDER` 为 `l3 < l4`），
+    故本件按**属性取值**消费——同 :func:`describe_trace` 收 `Trace` 之外的鸭子面一个道理
+    （任务 `A1`）。
+
+    **两视图均实现**（[06 §5](../../../../docs/技术架构-v2/06-L4-多视角推理.md)）：
+
+    - `matrix`（主视图）：视角 × 结论，逐行含 `stance` / `confidence` / `trace_id`——
+      后者即**追问接口**的取值面，渲染方据此调 :func:`describe_trace` 展开该视角完整链
+      （复用 [05 §7](../../../../docs/技术架构-v2/05-L3-对话主入口.md)，本件**不自造**链渲染）
+    - `network`（辅视图）：证据节点 + 引用边
+
+    **分槽按来源**（[D-064](../../../../项目管理/决策日志.md)）：Mini Debate 段把**结构化对照字段**
+    放 `conflicts`（数据）、把 `reasons` 与重评估 `note` 放 `conflict_texts`（生成文案，按
+    `key` 并联）——同槽混装会让生成文案躲开回环边界那一次 §6 复检（[D-053](../../../../项目管理/决策日志.md)）。
+    一致提示 `unanimity_notice` 与降级标注 `notes` 同为生成文案槽。
+    """
+    if view is None:
+        return ResultEnvelope.unavailable(
+            DIVERGENCE_ABSENT_REASON, last_updated_at=now if now is not None else _now()
+        )
+    try:
+        slots, text_kinds, as_of = _divergence_slots(view)
+    except (AttributeError, TypeError, KeyError) as exc:
+        return ResultEnvelope.validation_failed(
+            "divergence_map 描述收到的视图形状不合（须为 L4 视图投影的鸭子面，06 §5）："
+            f"{type(view).__name__} —— {exc}"
+        )
+    if not slots["matrix"]:
+        return ResultEnvelope.empty(DIVERGENCE_EMPTY_REASON, as_of=as_of)
+    return _envelope(
+        component_type="divergence_map",
+        title=DIVERGENCE_TITLE,
+        slots=slots, text_kinds=text_kinds, as_of=as_of,
+    )
+
+
+def _divergence_slots(view: Any) -> tuple[dict[str, Any], dict[str, str], datetime | None]:
+    """视图 → (槽值, 分栏, as_of)。属性缺失即抛，由调用方转 `validation_failed`（不吞错）。"""
+    conflicts: list[dict[str, Any]] = []
+    texts: dict[str, dict[str, list[str]]] = {}
+    for entry in view.conflicts:
+        analysis = entry.analysis
+        conflicts.append({
+            "key": entry.key,
+            "topic": analysis.topic,
+            "sides": [_json(side) for side in analysis.sides],
+            "shared_refs": list(analysis.shared_refs),
+            "premise_related": analysis.premise_related,
+            "shared_skills": list(analysis.shared_skills),
+            # 重评估的**结构化**字段入数据槽；其 `note` 是生成文案，另槽承载
+            "reviews": [
+                {"ref": review.ref, "validity": review.validity,
+                 "freshness": review.freshness, "weight": review.weight}
+                for review in analysis.reviews
+            ],
+        })
+        texts[entry.key] = {
+            "reasons": list(analysis.reasons),
+            "review_notes": [r.note for r in analysis.reviews if r.note],
+        }
+
+    matrix = [
+        {"lens_id": row.lens_id, "name": row.name, "stance": row.stance,
+         "confidence": row.confidence, "trace_id": row.trace_id}
+        for row in view.rows
+    ]
+    uniform_stance = getattr(view, "uniform_stance", None)
+    return (
+        {
+            "topic": view.topic,
+            "map_id": view.map_id,
+            "matrix": matrix,
+            "agreements": [_json(a) for a in view.agreements],
+            "disagreements": [_json(d) for d in view.disagreements],
+            "blind_spots": [_json(b) for b in view.blind_spots],
+            "network": _json(view.evidence_network),
+            "conflicts": conflicts,
+            "conflict_texts": texts,
+            "notes": list(view.notes),
+            "unanimous": bool(view.unanimous),
+            # 未一致时 `uniform_stance` 为 None——槽值原样承载（JSON 的 null），不改成空串
+            "uniform_stance": uniform_stance,
+            "unanimity_notice": view.unanimity_notice,
+            "stance_labels": dict(STANCE_LABELS),
+        },
+        {
+            "topic": "data",
+            "map_id": "data",
+            "matrix": "data",
+            "agreements": "data",
+            "disagreements": "data",
+            "blind_spots": "data",
+            "network": "data",
+            "conflicts": "data",
+            "conflict_texts": "generated",
+            "notes": "generated",
+            "unanimous": "data",
+            "uniform_stance": "data",
+            "unanimity_notice": "generated",
+            "stance_labels": "generated",
+        },
+        getattr(view, "as_of", None),
     )

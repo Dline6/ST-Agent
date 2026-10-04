@@ -15,29 +15,39 @@ L3 与它之间不引入反向依赖）。
 from __future__ import annotations
 
 from st_agent.l3.render.describe import (
+    DIVERGENCE_ABSENT_REASON,
+    DIVERGENCE_EMPTY_REASON,
+    DIVERGENCE_TITLE,
     DRAFT_TITLES,
     ORIGIN_LABELS,
     SIDE_EXISTING_LABEL,
     SIDE_PROPOSED_LABEL,
+    STANCE_LABELS,
     TRACE_ABSENT_REASON,
     TRACE_EMPTY_REASON,
     describe_adjudication,
     describe_approval,
     describe_context_card,
+    describe_divergence_map,
     describe_draft,
     describe_trace,
 )
 
 __all__ = [
+    "DIVERGENCE_ABSENT_REASON",
+    "DIVERGENCE_EMPTY_REASON",
+    "DIVERGENCE_TITLE",
     "DRAFT_TITLES",
     "ORIGIN_LABELS",
     "SIDE_EXISTING_LABEL",
     "SIDE_PROPOSED_LABEL",
+    "STANCE_LABELS",
     "TRACE_ABSENT_REASON",
     "TRACE_EMPTY_REASON",
     "describe_adjudication",
     "describe_approval",
     "describe_context_card",
+    "describe_divergence_map",
     "describe_draft",
     "describe_trace",
 ]
