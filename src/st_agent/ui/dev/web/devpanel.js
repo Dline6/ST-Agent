@@ -25,6 +25,8 @@ const DESCRIPTIONS = [
   'config_draft_panel',
   'conflict_adjudication_card',
   'permission_approval_card',
+  'divergence_map',
+  'divergence_map_unanimous',
   'extra-slot',
   'reserved',
   'generated-violation',

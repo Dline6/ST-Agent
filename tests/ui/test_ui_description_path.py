@@ -90,12 +90,14 @@ def test_missing_required_slot_is_blocked_before_the_renderer() -> None:
         ("config_draft_card", "config_draft_card"),
         ("config_draft_panel", "config_draft_card"),
         ("conflict_adjudication_card", "conflict_adjudication_card"),
+        ("divergence_map", "divergence_map"),
+        ("divergence_map_unanimous", "divergence_map"),
     ],
 )
 def test_l3_sample_descriptions_leave_the_gate_intact(
     ui_server_dev, http_get, auth, kind, component_type
 ) -> None:
-    """L3 四型的走查样本走**同一条**出站校验路径（真描述件产物，非手抄）。"""
+    """L3 六型的走查样本走**同一条**出站校验路径（真描述件产物，非手抄）。"""
     payload = _fetch(http_get, auth, ui_server_dev, kind).json()
     assert payload["status"] == "ok", payload.get("reason")
     assert payload["data"]["component_type"] == component_type

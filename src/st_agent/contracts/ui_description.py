@@ -12,7 +12,10 @@
   （[D-053]），留白即误伤用户数据
 
 登记来源：2026-09-29 由 ``T-UI-001.3`` 按 [铁律 8]（先 01 → 05 → 代码）落地，
-选型见决策日志 [D-063]。
+选型见决策日志 [D-063]。``divergence_map`` 于 2026-10-04 由 ``T-L4-004.2`` 从
+:data:`RESERVED_COMPONENT_TYPES` 移入 :data:`IMPLEMENTED_COMPONENT_TYPES`——§12 早已
+把它列入「已登记、本期不实现」，其理由即「使后续补这些形态属于**实现**而非改契约」，
+故本次不触 §12 的字段表与槽形状（登记与实现的界线见 [D-063] / [D-071]）。
 """
 
 from __future__ import annotations
@@ -43,7 +46,7 @@ DESCRIPTION_ID_PREFIX = "desc"
 """01 §1：``description_id`` 形态为 ``desc_`` ＋ 20 位十六进制（见 :class:`DescriptionId`）。"""
 
 ComponentType = Literal[
-    # 本期登记并实现（01 §12 与 T-UI-001.3 / T-L3-004 的交付面对齐）
+    # 本期登记并实现（01 §12 与 T-UI-001.3 / T-L3-004 / T-L4-004.2 的交付面对齐）
     "table",
     "report_card",
     "trace_timeline",
@@ -51,8 +54,10 @@ ComponentType = Literal[
     "config_draft_card",
     "conflict_adjudication_card",
     "permission_approval_card",
-    # 已登记、本期不实现——提前登记使后续补这些形态属于「实现」而非「改契约」
+    # 由「已登记未实现」升为**本期实现**：01 §12 提前登记 `divergence_map` 的用途即此
+    # ——补该形态属**实现**而非改契约（06 §5 分歧图；交付见 T-L4-004.2）
     "divergence_map",
+    # 已登记、本期不实现——提前登记使后续补这些形态属于「实现」而非「改契约」
     "heatmap",
     "trend_chart",
     "risk_badge",
@@ -71,6 +76,7 @@ IMPLEMENTED_COMPONENT_TYPES: tuple[str, ...] = (
     "config_draft_card",
     "conflict_adjudication_card",
     "permission_approval_card",
+    "divergence_map",
 )
 """**本期实现**的类型（渲染方有对应渲染件）；其余登记型一律走**显式降级占位**。"""
 

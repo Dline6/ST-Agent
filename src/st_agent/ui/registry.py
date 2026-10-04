@@ -37,6 +37,9 @@ REQUIRED_SLOTS: dict[str, tuple[str, ...]] = {
     # 逐条权限在 `items`（数据槽：声明原文 + 批准态 + 面板控件），中性措辞 / 对话文案在
     # `labels`（生成文案槽，按 `permission` 与 `items` 并联）——缺任一处出不了完整审批面。
     "permission_approval_card": ("items", "labels"),
+    # 06 §5 要求**两视图均实现**：矩阵视图取 `matrix`（视角 × 结论逐行）、证据网络图取
+    # `network`（节点 + 引用边）——缺任一处都出不了分歧图，故两者同为必填。
+    "divergence_map": ("matrix", "network"),
 }
 """每型的必填槽——新增实现型时**必须**在此表态（下面的断言会拦住漏填）。"""
 

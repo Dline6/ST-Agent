@@ -180,3 +180,16 @@ main {
 .approval-item__state--pending { color: var(--delayed); border-color: var(--delayed); }
 .approval-item__state--approved { color: var(--ok); border-color: var(--ok); }
 .approval-item__state--rejected { color: var(--error); border-color: var(--error); }
+
+/* divergence_map（06 §5–§6）：矩阵为主视图、证据网络为辅视图，六段并列不合并 */
+.divergence__block { margin: .75rem 0; }
+.divergence__block h4 { margin: .5rem 0 .25rem; font-size: .9rem; color: var(--fg-muted); }
+.divergence__stance { font-weight: 600; }
+.divergence__nodes,
+.divergence__edges,
+.divergence__items,
+.divergence__reasons,
+.divergence__review-notes,
+.divergence__notes { margin: .25rem 0; padding-left: 1.1rem; }
+.divergence__nodes { list-style: none; padding-left: 0; }
+.divergence__conflict { padding: .5rem .75rem; border: 1px solid var(--line); border-radius: 8px; }
