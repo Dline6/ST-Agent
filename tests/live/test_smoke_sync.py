@@ -101,7 +101,8 @@ def test_real_chain_smoke(tmp_path) -> None:
         assert "bs_k_period" in verdict.detail, verdict.detail
 
         snapshot = sync.dataset_snapshot()
-        assert "bs_k_daily:" in snapshot
+        assert snapshot.startswith("snap_") and len(snapshot) == 25   # 01 §1 形态（T-L0-011）
+        assert "bs_k_daily:" in db.snapshot_components()             # 可读水位原文走复核面
 
     # —— 零泄漏：分区内无明文（主档/行情都应在加密 blob 里）——
     leaked = []
@@ -118,4 +119,63 @@ def test_real_chain_smoke(tmp_path) -> None:
     print(f"日线 {k_codes} 只 / {k_rows} 行（窗口起点 1990-12-19，全历史）")
     print(f"网关 data_fetch 审计 {len(events)} 条 · 快照 {snapshot}")
     print(f"盘上明文检出：0（扫描 {sum(1 for _ in root.rglob('*'))} 个条目）")
+    print("────────────────────────────────")
+
+
+def test_real_window_and_batch_smoke(tmp_path) -> None:
+    """T-L0-017.1 真网复核：**显式窗口 + 按码分片 + 批内合并写**。
+
+    上一条走「全历史、不分片」；本条走「近一年、分批、分两片」——验证新参数在
+    **真实源**上确实收窄窗口（行数落到一年量级而非十几年）、分片 2 不被全库水位
+    跳成空窗口（抓取次数照旧），且请求仍逐次经网关审计、盘上仍无明文。
+    """
+    pytest.importorskip("baostock")
+    passphrase = os.environ.get("ST_AGENT_PASSPHRASE")
+    if not passphrase:
+        pytest.skip("需环境变量 ST_AGENT_PASSPHRASE（口令不进 argv）")
+
+    from datetime import date, timedelta
+
+    from st_agent.l0.market import BaoStockFetcher, BaoStockSync, MarketDb
+    from st_agent.l0.net import EgressGateway
+    from st_agent.l0.storage import Store
+
+    window_start = (date.today() - timedelta(days=365)).isoformat()
+    root = tmp_path / "root"
+    store = Store.create(root, passphrase)
+    db = MarketDb(store)
+    gateway = EgressGateway(store)
+
+    with BaoStockFetcher() as fetcher:
+        sync = BaoStockSync(db, gateway, fetcher)
+        assert sync.setup().status == "ok"
+        assert sync.run_task("bs_calendar").status == "ok"
+        assert sync.run_task("bs_security_basic").status == "ok"
+        day = _one(db, "SELECT max(calendar_date) AS d FROM trade_calendar "
+                       "WHERE is_trading_day = 1")["d"]
+        assert sync.run_task("bs_all_stock", day=day).status == "ok"
+
+        # ① 显式窗口 + 批内合并写（批大小 2 ⇒ 3 只码走 2 次写事务）
+        env = sync.run_task("bs_k_daily", codes=SMOKE_CODES,
+                            start=window_start, batch_size=2)
+        assert env.status == "ok", env.reason
+        rows = _one(db, "SELECT count(*) AS n FROM k_line_daily")["n"]
+        earliest = _one(db, "SELECT min(trade_date) AS d FROM k_line_daily")["d"]
+        assert 0 < rows <= len(SMOKE_CODES) * 260, f"近一年行数异常：{rows}"
+        assert earliest >= window_start, f"窗口起点未生效：{earliest} < {window_start}"
+
+        # ② 分片 2：全库水位已在窗口末端，显式起点仍让每只码各发一次抓取
+        before = sync.fetch_attempts
+        env2 = sync.run_task("bs_k_daily", codes=SMOKE_CODES,
+                            start=window_start, batch_size=3)
+        assert env2.status == "ok", env2.reason
+        assert sync.fetch_attempts - before == len(SMOKE_CODES), "分片被全库水位跳成空窗口"
+
+        events = gateway.query(kind="data_fetch")
+        assert all(e.target_host == "baostock" for e in events)
+        assert sync.fetch_attempts == len(events)
+
+    print("\n──────── 窗口/分片/分批 真网复核 ────────")
+    print(f"窗口起点 {window_start} · 日线 {rows} 行 · 最早 {earliest}")
+    print(f"抓取合计 {sync.fetch_attempts} 次 · 审计 {len(events)} 条（同源同数）")
     print("────────────────────────────────")

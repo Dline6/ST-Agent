@@ -28,8 +28,9 @@
 from __future__ import annotations
 
 import sqlite3
-from datetime import datetime
-from typing import Any
+import time
+from datetime import date, datetime
+from typing import Any, Callable, NamedTuple
 
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.time_events import StalenessVerdict
@@ -59,6 +60,9 @@ from st_agent.l0.market.fetch import (
     map_macro_reserve,
     map_performance_express,
     map_security_basic,
+    result_shape,
+    source_page_size,
+    truncation_suspect,
 )
 from st_agent.l0.market.tasks import (
     SYNC_TASKS,
@@ -72,7 +76,10 @@ __all__ = [
     "BAOSTOCK_HOST",
     "BaoStockSync",
     "DOMAIN_TASKS",
+    "PER_CODE_TASKS",
     "RUN_ORDER",
+    "RetryPolicy",
+    "estimate_requests",
 ]
 
 BAOSTOCK_HOST = "baostock"
@@ -104,6 +111,98 @@ RUN_ORDER: tuple[str, ...] = (
 )
 """全量同步执行序（公开：长跑脚本 T-L0-007.1 据此逐任务计时，不重写 `run_all` 语义）。"""
 
+PER_CODE_TASKS: tuple[str, ...] = (
+    "bs_k_daily", "bs_k_period", "bs_k_minute", "bs_adjust_factor",
+    "bs_dividend", "bs_fin_quarter", "bs_perf_express", "bs_forecast",
+)
+"""逐码任务（对每只证券各发一次抓取）——长跑脚本据此切「码分片」（T-L0-017.1）。"""
+
+_REQUESTS_PER_CODE: dict[str, int] = {
+    "bs_k_daily": 1,
+    "bs_k_period": 2,          # 周线 + 月线
+    "bs_k_minute": 4,          # 5 / 15 / 30 / 60 分钟
+    "bs_adjust_factor": 1,
+    "bs_perf_express": 1,
+    "bs_forecast": 1,
+}
+
+
+def estimate_requests(task_key: str, *, code_count: int,
+                      years: int = 2, quarters: int | None = None) -> int:
+    """该任务对 ``code_count`` 只码的**计划抓取次数**（不含重试与截断复核）。
+
+    只供长跑脚本估日请求预算用（源端单日超 5 万会拉黑）。**实际次数以
+    ``BaoStockSync.fetch_attempts`` 为准**——重试与截断复核都会使其上浮。
+    非逐码任务恒为 1（一次全量接口调用）。
+    """
+    if task_key == "bs_fin_quarter":
+        return 6 * (quarters or 8) * code_count       # 六张表 × 季度数
+    if task_key == "bs_dividend":
+        return years * code_count                     # 按年拉取
+    per_code = _REQUESTS_PER_CODE.get(task_key)
+    if per_code is None:
+        return 1          # 非逐码任务：一次全量接口调用，与码数无关
+    return per_code * code_count
+
+
+class RetryPolicy(NamedTuple):
+    """抓取重试策略（T-L0-017.2 GWT-3；仅作用于**可重试**错误）。
+
+    可重试性由抓取器判定（``FetchError.retryable``）——引擎不解析错误码，
+    故换源只需换抓取器，不动本策略。每次重试都是**一次独立的网关 ``execute``**，
+    审计条数如实增长（02 §6 唯一出口，不合并、不隐藏）。
+    """
+
+    attempts: int = 3
+    """总尝试次数（含首次）；``1`` ＝不重试。"""
+
+    base_seconds: float = 1.0
+    max_seconds: float = 30.0
+
+    def delay_for(self, attempt: int) -> float:
+        """第 ``attempt`` 次失败（1 起算）后到下一次尝试的等待：指数退避、封顶。"""
+        return min(self.base_seconds * (2 ** (attempt - 1)), self.max_seconds)
+
+
+DEFAULT_RETRY = RetryPolicy()
+
+
+class _BatchWriter:
+    """按「码数」攒批落库（T-L0-017.1 GWT-1）。
+
+    ``batch_size=None`` ⇒ 每只码提交一次事务（**既有行为，逐字节不变**）；
+    给出时攒满 ``batch_size`` 只码才提交一次 —— 把「一次事务＝整库 blob
+    解密 + 加密 + 写回」的次数从「码数」降到「批数」（全市场全历史实测该开销
+    ≈5.3 秒/GB/次，逐码提交使长跑呈 n² 行为）。
+
+    失败时**当前未提交批**的行随之丢失（已完成批不受影响）——这正是重跑
+    只回退一批的代价上界。
+    """
+
+    def __init__(self, write: Callable[[list[tuple]], None],
+                 batch_size: int | None) -> None:
+        if batch_size is not None and batch_size < 1:
+            raise MarketValidationError(f"批大小须 ≥ 1，实际 {batch_size!r}")
+        self._write = write
+        self._size = batch_size if batch_size is not None else 1
+        self._pending: list[tuple] = []
+        self._codes = 0
+
+    def add(self, rows: list[tuple]) -> None:
+        """记一只码的抓取结果（空行也计入码数），攒满即提交。"""
+        self._pending.extend(rows)
+        self._codes += 1
+        if self._codes >= self._size:
+            self.flush()
+
+    def flush(self) -> None:
+        """提交当前批（无未提交码时不动库）。"""
+        if self._codes == 0:
+            return
+        self._write(self._pending)
+        self._pending = []
+        self._codes = 0
+
 
 def _now() -> datetime:
     """用户本地时区当前时刻（01 §8）。"""
@@ -121,14 +220,30 @@ class BaoStockSync:
     :param gateway: 出网审计网关（抓取唯一出口）
     :param fetcher: 抓取器协议实现（真实管道注入 baostock 封装；测试注入 Fake）
     :param initiator: 审计 ``initiator``（默认 ``market-sync``）
+    :param retry: 抓取重试策略（仅作用于可重试错误；``RetryPolicy(attempts=1)`` ＝不重试）
+    :param sleep: 退避等待的可注入实现（测试注入记录器，不真等）
     """
 
     def __init__(self, db: MarketDb, gateway, fetcher, *,
-                 initiator: str = "market-sync") -> None:
+                 initiator: str = "market-sync",
+                 retry: RetryPolicy | None = None,
+                 sleep: Callable[[float], None] = time.sleep) -> None:
         self._db = db
         self._gateway = gateway
         self._fetcher = fetcher
         self._initiator = initiator
+        self._retry = retry or DEFAULT_RETRY
+        self._sleep = sleep
+        self._fetch_attempts = 0
+
+    @property
+    def fetch_attempts(self) -> int:
+        """本实例经网关发出的抓取次数（**含重试与截断复核**）。
+
+        与审计条数**同源同数**——每次 ``_execute_once`` 恰对应一条 ``data_fetch``
+        审计记录。长跑脚本据此计日请求预算（源端有单日上限，超限会被拉黑）。
+        """
+        return self._fetch_attempts
 
     # ───────────────────────── 建库与种子 ─────────────────────────
 
@@ -163,6 +278,9 @@ class BaoStockSync:
                  codes: list[str] | None = None,
                  watchlist: list[str] | None = None,
                  timeout_ms: int = 120_000,
+                 start: str | None = None,
+                 batch_size: int | None = None,
+                 quarters: int | None = None,
                  cancel=None) -> ResultEnvelope:
         """执行单个同步任务（前置 → 窗口 → 抓取 → 入库 → 水位 → 校验）。
 
@@ -170,6 +288,13 @@ class BaoStockSync:
         :param day: ``bs_all_stock`` 指定交易日（缺省今日）
         :param codes: 逐码任务的证券范围（缺省库内全量主档）
         :param watchlist: 分钟线关注池（必传，否则 ``MarketValidationError``）
+        :param start: **显式窗口起点**（``YYYY-MM-DD``）——缺省＝按水位推导（行为不变）。
+            给出时本任务按 ``[start, 今日]`` 取数，**不受全库水位影响**：这是「码分片」
+            可行的前提（分片 2 不会被分片 1 推高的水位跳成空窗口）。水位回写口径不变。
+        :param batch_size: 逐码任务的**写入批大小**（每多少只码提交一次事务）。
+            ``None`` ＝逐码一次事务（既有行为，逐字节不变）；给出时按批合并，
+            使整库 blob 加解密次数从「码数」降到「批数」。
+        :param quarters: ``bs_fin_quarter`` 的重拉季度数（缺省＝05 口径的 8）
         """
         try:
             spec = get_task(task_key)
@@ -178,6 +303,13 @@ class BaoStockSync:
         on = self._is_enabled(task_key, enabled)
         if not on:
             return self._disabled_envelope(task_key)
+        if start is not None:
+            try:
+                date.fromisoformat(start)
+            except ValueError:
+                return ResultEnvelope.validation_failed(
+                    f"显式窗口起点须为 YYYY-MM-DD，实际 {start!r}"
+                )
         if not self._db.exists():
             now = _now()
             return ResultEnvelope.unavailable(
@@ -201,7 +333,8 @@ class BaoStockSync:
         try:
             loaded, new_watermark, expected = self._fetch_and_load(
                 task_key, watermark, day=day, codes=codes, watchlist=watchlist,
-                timeout_ms=timeout_ms, cancel=cancel,
+                timeout_ms=timeout_ms, start=start, batch_size=batch_size,
+                quarters=quarters, cancel=cancel,
             )
         except MarketValidationError as exc:
             return ResultEnvelope.validation_failed(str(exc))
@@ -350,26 +483,90 @@ class BaoStockSync:
 
     def _via_gateway(self, task_key: str, call, *,
                      timeout_ms: int, cancel) -> Any:
-        """经网关执行一次抓取调用（审计只记字节数，内容不进网关）。
+        """经网关执行一次抓取（审计只记字节数，内容不进网关）。
+
+        三件事在此叠加（T-L0-017.2）：
+
+        ① **唯一出口不变**——每次尝试都是一次独立 ``gateway.execute``，审计条数
+           如实增长（重试不合并、复核不隐藏，02 §6）；
+        ② **重试退避**——仅对抓取器标为 ``retryable`` 的错误按 ``RetryPolicy``
+           指数退避重试；重试前重建会话（连接被源端强断是实测到的常见成因）。
+           网关自身的拦截（离线 / 无发包实现）**不**重试——那是策略判定；
+        ③ **截断复核**——行数恰为整页这一可疑形态再抓一次（同样经网关留审计），
+           两次不一致即判失败，不让半截结果集静默入库。
 
         :param call: 无参闭包 → ``FetchResult``；抛 ``FetchError`` 系异常
         :returns: ``(fields, rows)``；网关 ``unavailable``/``failed`` 时抛
             对应 ``Fetch*`` 异常（由 ``run_task`` 翻译为信封）
         """
+        return self._with_retry(
+            lambda: self._fetch_checked(task_key, call, timeout_ms=timeout_ms,
+                                        cancel=cancel)
+        )
+
+    def _with_retry(self, operation) -> Any:
+        """按 ``RetryPolicy`` 重试；用尽即抛原异常（信封口径不变）。"""
+        attempt = 0
+        while True:
+            try:
+                return operation()
+            except FetchError as exc:      # 含 FetchUnavailableError
+                attempt += 1
+                if (not getattr(exc, "retryable", False)
+                        or attempt >= self._retry.attempts):
+                    raise
+                self._sleep(self._retry.delay_for(attempt))
+                self._reconnect_fetcher()
+
+    def _reconnect_fetcher(self) -> None:
+        """重试前重建会话（抓取器未提供 ``reconnect`` 时静默跳过）。
+
+        重建失败**不**顶替原始错误——那会让失败原因变成"重建失败"，
+        掩盖真正的首因；下一次尝试会自己暴露新的失败。
+        """
+        reconnect = getattr(self._fetcher, "reconnect", None)
+        if callable(reconnect):
+            try:
+                reconnect()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _fetch_checked(self, task_key: str, call, *,
+                       timeout_ms: int, cancel) -> Any:
+        """一次逻辑抓取 = 一次经网关取数 +（可疑形态时）一次经网关复核。"""
+        first = self._execute_once(task_key, call, timeout_ms=timeout_ms,
+                                   cancel=cancel)
+        if not truncation_suspect(len(first[1]), source_page_size()):
+            return first
+        again = self._execute_once(task_key, call, timeout_ms=timeout_ms,
+                                   cancel=cancel)
+        if result_shape(again) != result_shape(first):
+            raise FetchError(
+                f"结果集疑似被静默截断：两次取回不一致（{len(first[1])} 行 vs "
+                f"{len(again[1])} 行）",
+                retryable=True,
+            )
+        return again
+
+    def _execute_once(self, task_key: str, call, *,
+                      timeout_ms: int, cancel) -> Any:
+        """经网关取一次数（唯一出口；审计只记字节数，内容不进网关）。"""
         holder: dict[str, Any] = {}
 
         def _sender(kind, host, timeout):
             _ = (kind, host, timeout)
+            from st_agent.l0.net.errors import EgressError, EgressUnavailableError
             try:
                 fields, rows = call()
             except FetchUnavailableError as exc:
-                from st_agent.l0.net.errors import EgressUnavailableError
+                holder["error"] = exc
                 raise EgressUnavailableError(str(exc) or "数据源不可达") from exc
             except FetchError as exc:
-                from st_agent.l0.net.errors import EgressError
+                holder["error"] = exc
                 raise EgressError(f"抓取失败：{exc}") from exc
             except Exception as exc:
-                from st_agent.l0.net.errors import EgressError
+                # 逃出抓取器自己处理面的裸异常：按网络故障处理（可重试）
+                holder["error"] = FetchError(f"抓取失败：{exc}", retryable=True)
                 raise EgressError(f"抓取失败：{exc}") from exc
             blob_chars = sum(len(str(cell)) for row in rows for cell in row)
             blob_chars += sum(len(str(field)) for field in fields)
@@ -377,6 +574,7 @@ class BaoStockSync:
             return (0, blob_chars, ())
 
         purpose = f"BaoStock 同步（任务 {task_key}）"
+        self._fetch_attempts += 1
         env = self._gateway.execute(
             "data_fetch", BAOSTOCK_HOST,
             initiator=self._initiator, purpose=purpose,
@@ -384,9 +582,22 @@ class BaoStockSync:
         )
         if env.status == "ok":
             return holder["result"]
+        captured = holder.get("error")
         if env.status == "unavailable":
+            if isinstance(captured, FetchUnavailableError):
+                raise captured                      # 保留 error_code / retryable
+            # 网关自身拦截（离线模式 / 无发包实现）：策略判定，不重试
             raise FetchUnavailableError(env.reason or "数据源不可达")
         if env.status == "failed":
+            if isinstance(captured, FetchError):
+                detail = (f"{env.reason}（error_code={captured.error_code}"
+                          f"，见 {env.log_ref}）" if captured.error_code
+                          else f"{env.reason}（见 {env.log_ref}）")
+                raise FetchError(
+                    detail,
+                    error_code=captured.error_code,
+                    retryable=captured.retryable,
+                )
             raise FetchError(f"{env.reason}（见 {env.log_ref}）")
         raise FetchError(env.reason or f"网关拒绝（{env.status}）")
 
@@ -395,7 +606,9 @@ class BaoStockSync:
     def _fetch_and_load(self, task_key: str, watermark: str | None, *,
                         day: str | None, codes: list[str] | None,
                         watchlist: list[str] | None,
-                        timeout_ms: int, cancel) -> tuple[int, str | None, int | None]:
+                        timeout_ms: int, start: str | None,
+                        batch_size: int | None, quarters: int | None,
+                        cancel) -> tuple[int, str | None, int | None]:
         """分发各任务的抓取 + 入库；返回 ``(入库行数, 新水位, 覆盖对账期望数)``。"""
         today = _now().date().isoformat()
         if task_key == "bs_calendar":
@@ -405,21 +618,28 @@ class BaoStockSync:
         if task_key == "bs_all_stock":
             return self._load_all_stock(day or today, timeout_ms, cancel)
         if task_key == "bs_k_daily":
-            return self._load_k_daily(watermark, codes, timeout_ms, cancel)
+            return self._load_k_daily(watermark, codes, timeout_ms, cancel,
+                                      start=start, batch_size=batch_size)
         if task_key == "bs_k_period":
-            return self._load_k_period(watermark, codes, timeout_ms, cancel)
+            return self._load_k_period(watermark, codes, timeout_ms, cancel,
+                                       start=start, batch_size=batch_size)
         if task_key == "bs_k_minute":
             return self._load_k_minute(watchlist, codes, timeout_ms, cancel)
         if task_key == "bs_adjust_factor":
-            return self._load_adjust_factor(codes, timeout_ms, cancel)
+            return self._load_adjust_factor(codes, timeout_ms, cancel,
+                                            start=start, batch_size=batch_size)
         if task_key == "bs_dividend":
-            return self._load_dividend(watermark, codes, timeout_ms, cancel)
+            return self._load_dividend(watermark, codes, timeout_ms, cancel,
+                                       start=start, batch_size=batch_size)
         if task_key == "bs_fin_quarter":
-            return self._load_financial(codes, timeout_ms, cancel)
+            return self._load_financial(codes, timeout_ms, cancel,
+                                        quarters=quarters)
         if task_key == "bs_perf_express":
-            return self._load_express(watermark, codes, timeout_ms, cancel)
+            return self._load_express(watermark, codes, timeout_ms, cancel,
+                                      start=start, batch_size=batch_size)
         if task_key == "bs_forecast":
-            return self._load_forecast(watermark, codes, timeout_ms, cancel)
+            return self._load_forecast(watermark, codes, timeout_ms, cancel,
+                                       start=start, batch_size=batch_size)
         if task_key == "bs_industry":
             return self._load_industry(timeout_ms, cancel)
         if task_key in ("bs_sz50", "bs_hs300", "bs_zz500"):
@@ -436,13 +656,37 @@ class BaoStockSync:
             return self._load_macro("money_year", watermark, timeout_ms, cancel)
         raise MarketValidationError(f"任务 {task_key!r} 无执行分发（注册表与引擎不同步）")
 
+    def security_codes(self) -> list[str]:
+        """库内主档全量证券代码（``code`` 升序）——长跑脚本据此切分片。
+
+        与 ``run_task(codes=None)`` 的缺省范围**同源**（同一 SQL），故脚本按本方法
+        切片跑完后，缺省全量跑与脚本分片跑覆盖同一集合。
+        """
+        return self._codes(None)
+
     def _codes(self, codes: list[str] | None) -> list[str]:
         """逐码任务的证券范围（缺省 = 库内主档全量 code 排序）。"""
         if codes is not None:
             return list(codes)
+        if not self._db.exists():
+            return []
         with self._db.connect() as con:
             rows = con.execute("SELECT code FROM security ORDER BY code").fetchall()
         return [r[0] for r in rows]
+
+    # —— 窗口推导（显式起点覆盖） ——
+
+    @staticmethod
+    def _window(task_key: str, watermark: str | None,
+                start: str | None) -> tuple[str, str]:
+        """任务窗口：给出 ``start`` 时按 ``[start, 今日]``，否则走 05 的水位推导。
+
+        **不改** ``window_for`` 的规则（05 记的水位语义原样保留）——显式起点只是
+        多一个入口，供分片长跑绕开「全库水位已到今日 ⇒ 后续分片窗口为空」。
+        """
+        if start is None:
+            return window_for(task_key, watermark)
+        return (start, _now().date().isoformat())
 
     # —— 元信息类 ——
 
@@ -496,63 +740,65 @@ class BaoStockSync:
     # —— 行情类 ——
 
     def _load_k_daily(self, watermark: str | None, codes: list[str] | None,
-                      timeout_ms: int, cancel) -> tuple[int, str | None, int | None]:
-        start, end = window_for("bs_k_daily", watermark)
+                      timeout_ms: int, cancel, *, start: str | None = None,
+                      batch_size: int | None = None,
+                      ) -> tuple[int, str | None, None]:
+        window_start, end = self._window("bs_k_daily", watermark, start)
         total = 0
+        writer = _BatchWriter(self._write_k_daily, batch_size)
         for code in self._codes(codes):
             fields, rows = self._via_gateway(
-                "bs_k_daily", lambda code=code: self._fetcher.k_daily(code, start, end),
+                "bs_k_daily", lambda code=code: self._fetcher.k_daily(
+                    code, window_start, end),
                 timeout_ms=timeout_ms, cancel=cancel,
             )
             mapped = map_k_daily(fields, rows)
-            with self._db.transact() as con:
-                con.executemany(
-                    "INSERT INTO k_line_daily(code, trade_date, open, high, low, close,"
-                    " preclose, volume, amount, turn, trade_status, pct_chg, pe_ttm,"
-                    " pb_mrq, ps_ttm, pcf_ncf_ttm, is_st) VALUES ("
-                    + ", ".join(["?"] * 17) + ") ON CONFLICT(code, trade_date) DO UPDATE SET "
-                    "open=excluded.open, high=excluded.high, low=excluded.low, "
-                    "close=excluded.close, preclose=excluded.preclose, volume=excluded.volume, "
-                    "amount=excluded.amount, turn=excluded.turn, "
-                    "trade_status=excluded.trade_status, pct_chg=excluded.pct_chg, "
-                    "pe_ttm=excluded.pe_ttm, pb_mrq=excluded.pb_mrq, ps_ttm=excluded.ps_ttm, "
-                    "pcf_ncf_ttm=excluded.pcf_ncf_ttm, is_st=excluded.is_st",
-                    mapped,
-                )
-                con.commit()
+            writer.add(mapped)
             total += len(mapped)
+        writer.flush()
         with self._db.connect() as con:
             row = con.execute("SELECT max(trade_date) FROM k_line_daily").fetchone()
         new_watermark = row[0] if row and row[0] else watermark
         return (total, new_watermark, None)
 
+    def _write_k_daily(self, mapped: list[tuple]) -> None:
+        with self._db.transact() as con:
+            con.executemany(
+                "INSERT INTO k_line_daily(code, trade_date, open, high, low, close,"
+                " preclose, volume, amount, turn, trade_status, pct_chg, pe_ttm,"
+                " pb_mrq, ps_ttm, pcf_ncf_ttm, is_st) VALUES ("
+                + ", ".join(["?"] * 17) + ") ON CONFLICT(code, trade_date) DO UPDATE SET "
+                "open=excluded.open, high=excluded.high, low=excluded.low, "
+                "close=excluded.close, preclose=excluded.preclose, volume=excluded.volume, "
+                "amount=excluded.amount, turn=excluded.turn, "
+                "trade_status=excluded.trade_status, pct_chg=excluded.pct_chg, "
+                "pe_ttm=excluded.pe_ttm, pb_mrq=excluded.pb_mrq, ps_ttm=excluded.ps_ttm, "
+                "pcf_ncf_ttm=excluded.pcf_ncf_ttm, is_st=excluded.is_st",
+                mapped,
+            )
+            con.commit()
+
     def _load_k_period(self, watermark: str | None, codes: list[str] | None,
-                       timeout_ms: int, cancel) -> tuple[int, str | None, None]:
-        _, end = window_for("bs_k_period", watermark)
-        start = _load_k_period_start(watermark)
+                       timeout_ms: int, cancel, *, start: str | None = None,
+                       batch_size: int | None = None,
+                       ) -> tuple[int, str | None, None]:
+        window_start = start if start is not None else _load_k_period_start(watermark)
+        end = _now().date().isoformat()
         total = 0
         maxima: dict[str, str] = {}
+        writer = _BatchWriter(self._write_k_period, batch_size)
         for frequency in ("w", "m"):
             for code in self._codes(codes):
                 fields, rows = self._via_gateway(
                     "bs_k_period",
                     lambda code=code, frequency=frequency: self._fetcher.k_period(
-                        code, frequency, start, end),
+                        code, frequency, window_start, end),
                     timeout_ms=timeout_ms, cancel=cancel,
                 )
                 mapped = map_k_period(fields, rows, frequency)
-                with self._db.transact() as con:
-                    con.executemany(
-                        "INSERT INTO k_line_period(code, frequency, trade_date, open, high,"
-                        " low, close, volume, amount, turn, pct_chg) VALUES ("
-                        + ", ".join(["?"] * 11) + ") ON CONFLICT(code, frequency, trade_date)"
-                        " DO UPDATE SET open=excluded.open, high=excluded.high, "
-                        "low=excluded.low, close=excluded.close, volume=excluded.volume, "
-                        "amount=excluded.amount, turn=excluded.turn, pct_chg=excluded.pct_chg",
-                        mapped,
-                    )
-                    con.commit()
+                writer.add(mapped)
                 total += len(mapped)
+            writer.flush()          # 取本 frequency 的 max 之前先落库
             with self._db.connect() as con:
                 row = con.execute(
                     "SELECT max(trade_date) FROM k_line_period WHERE frequency=?",
@@ -562,6 +808,19 @@ class BaoStockSync:
                     maxima[frequency] = row[0]
         new_watermark = ",".join(f"{f}:{maxima[f]}" for f in sorted(maxima)) or watermark
         return (total, new_watermark, None)
+
+    def _write_k_period(self, mapped: list[tuple]) -> None:
+        with self._db.transact() as con:
+            con.executemany(
+                "INSERT INTO k_line_period(code, frequency, trade_date, open, high,"
+                " low, close, volume, amount, turn, pct_chg) VALUES ("
+                + ", ".join(["?"] * 11) + ") ON CONFLICT(code, frequency, trade_date)"
+                " DO UPDATE SET open=excluded.open, high=excluded.high, "
+                "low=excluded.low, close=excluded.close, volume=excluded.volume, "
+                "amount=excluded.amount, turn=excluded.turn, pct_chg=excluded.pct_chg",
+                mapped,
+            )
+            con.commit()
 
     def _load_k_minute(self, watchlist: list[str] | None, codes: list[str] | None,
                        timeout_ms: int, cancel) -> tuple[int, str | None, None]:
@@ -601,41 +860,48 @@ class BaoStockSync:
         return (total, (row[0] if row and row[0] else None), None)
 
     def _load_adjust_factor(self, codes: list[str] | None,
-                            timeout_ms: int, cancel) -> tuple[int, str | None, None]:
-        start, end = ("1990-01-01", _now().date().isoformat())
+                            timeout_ms: int, cancel, *, start: str | None = None,
+                            batch_size: int | None = None,
+                            ) -> tuple[int, str | None, None]:
+        end = _now().date().isoformat()
+        window_start = start or "1990-01-01"   # 本任务无水位（05），缺省＝基线起点
         total = 0
+        writer = _BatchWriter(self._write_adjust_factor, batch_size)
         for code in self._codes(codes):
             fields, rows = self._via_gateway(
                 "bs_adjust_factor",
-                lambda code=code: self._fetcher.adjust_factor(code, start, end),
+                lambda code=code: self._fetcher.adjust_factor(
+                    code, window_start, end),
                 timeout_ms=timeout_ms, cancel=cancel,
             )
             mapped = map_adjust_factor(fields, rows)
-            with self._db.transact() as con:
-                con.executemany(
-                    "INSERT INTO adjust_factor(code, ex_date, fore_adjust_factor,"
-                    " back_adjust_factor, adjust_factor) VALUES (?, ?, ?, ?, ?) "
-                    "ON CONFLICT(code, ex_date) DO UPDATE SET "
-                    "fore_adjust_factor=excluded.fore_adjust_factor, "
-                    "back_adjust_factor=excluded.back_adjust_factor, "
-                    "adjust_factor=excluded.adjust_factor",
-                    mapped,
-                )
-                con.commit()
+            writer.add(mapped)
             total += len(mapped)
+        writer.flush()
         with self._db.connect() as con:
             row = con.execute("SELECT max(ex_date) FROM adjust_factor").fetchone()
         return (total, (row[0] if row and row[0] else None), None)
 
+    def _write_adjust_factor(self, mapped: list[tuple]) -> None:
+        with self._db.transact() as con:
+            con.executemany(
+                "INSERT INTO adjust_factor(code, ex_date, fore_adjust_factor,"
+                " back_adjust_factor, adjust_factor) VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT(code, ex_date) DO UPDATE SET "
+                "fore_adjust_factor=excluded.fore_adjust_factor, "
+                "back_adjust_factor=excluded.back_adjust_factor, "
+                "adjust_factor=excluded.adjust_factor",
+                mapped,
+            )
+            con.commit()
+
     def _load_dividend(self, watermark: str | None, codes: list[str] | None,
-                       timeout_ms: int, cancel) -> tuple[int, str | None, None]:
-        start_year = (watermark or "").split("+") if watermark else []
-        years = sorted({y.strip() for y in start_year if y.strip().isdigit()},
-                       reverse=True)
-        today = _now().date()
-        if not years:
-            years = [str(today.year), str(today.year - 1)]
+                       timeout_ms: int, cancel, *, start: str | None = None,
+                       batch_size: int | None = None,
+                       ) -> tuple[int, str | None, None]:
+        years = _dividend_years(watermark, start)
         total = 0
+        writer = _BatchWriter(self._write_dividend, batch_size)
         for code in self._codes(codes):
             for year in years:
                 fields, rows = self._via_gateway(
@@ -644,58 +910,64 @@ class BaoStockSync:
                     timeout_ms=timeout_ms, cancel=cancel,
                 )
                 mapped = map_dividend(fields, rows)
-                dated = [r for r in mapped if r[6] is not None]
-                dateless = [r for r in mapped if r[6] is None]
-                with self._db.transact() as con:
-                    con.executemany(
+                writer.add(mapped)
+                total += len(mapped)
+        writer.flush()
+        return (total, "+".join(years), None)
+
+    def _write_dividend(self, mapped: list[tuple]) -> None:
+        """写一批分红行：有操作日期的走 UPSERT，无操作日期的按公告日判重后插入。"""
+        dated = [r for r in mapped if r[6] is not None]
+        dateless = [r for r in mapped if r[6] is None]
+        with self._db.transact() as con:
+            con.executemany(
+                "INSERT INTO dividend(code, divid_pre_notice_date,"
+                " divid_agm_pum_date, divid_plan_announce_date, divid_plan_date,"
+                " divid_regist_date, divid_operate_date, divid_pay_date,"
+                " divid_stock_market_date, divid_cash_ps_before_tax,"
+                " divid_cash_ps_after_tax, divid_stocks_ps, divid_cash_stock,"
+                " divid_reserve_to_stock_ps) VALUES ("
+                + ", ".join(["?"] * 14) + ") "
+                "ON CONFLICT(code, divid_operate_date) DO UPDATE SET "
+                "divid_pre_notice_date=excluded.divid_pre_notice_date, "
+                "divid_agm_pum_date=excluded.divid_agm_pum_date, "
+                "divid_plan_announce_date=excluded.divid_plan_announce_date, "
+                "divid_plan_date=excluded.divid_plan_date, "
+                "divid_regist_date=excluded.divid_regist_date, "
+                "divid_pay_date=excluded.divid_pay_date, "
+                "divid_stock_market_date=excluded.divid_stock_market_date, "
+                "divid_cash_ps_before_tax=excluded.divid_cash_ps_before_tax, "
+                "divid_cash_ps_after_tax=excluded.divid_cash_ps_after_tax, "
+                "divid_stocks_ps=excluded.divid_stocks_ps, "
+                "divid_cash_stock=excluded.divid_cash_stock, "
+                "divid_reserve_to_stock_ps=excluded.divid_reserve_to_stock_ps",
+                dated,
+            )
+            for record in dateless:
+                hit = con.execute(
+                    "SELECT dividend_id FROM dividend WHERE code=? "
+                    "AND divid_plan_announce_date IS ?",
+                    (record[0], record[3]),
+                ).fetchone()
+                if hit is None:
+                    con.execute(
                         "INSERT INTO dividend(code, divid_pre_notice_date,"
                         " divid_agm_pum_date, divid_plan_announce_date, divid_plan_date,"
                         " divid_regist_date, divid_operate_date, divid_pay_date,"
                         " divid_stock_market_date, divid_cash_ps_before_tax,"
                         " divid_cash_ps_after_tax, divid_stocks_ps, divid_cash_stock,"
                         " divid_reserve_to_stock_ps) VALUES ("
-                        + ", ".join(["?"] * 14) + ") "
-                        "ON CONFLICT(code, divid_operate_date) DO UPDATE SET "
-                        "divid_pre_notice_date=excluded.divid_pre_notice_date, "
-                        "divid_agm_pum_date=excluded.divid_agm_pum_date, "
-                        "divid_plan_announce_date=excluded.divid_plan_announce_date, "
-                        "divid_plan_date=excluded.divid_plan_date, "
-                        "divid_regist_date=excluded.divid_regist_date, "
-                        "divid_pay_date=excluded.divid_pay_date, "
-                        "divid_stock_market_date=excluded.divid_stock_market_date, "
-                        "divid_cash_ps_before_tax=excluded.divid_cash_ps_before_tax, "
-                        "divid_cash_ps_after_tax=excluded.divid_cash_ps_after_tax, "
-                        "divid_stocks_ps=excluded.divid_stocks_ps, "
-                        "divid_cash_stock=excluded.divid_cash_stock, "
-                        "divid_reserve_to_stock_ps=excluded.divid_reserve_to_stock_ps",
-                        dated,
+                        + ", ".join(["?"] * 14) + ")",
+                        record,
                     )
-                    for record in dateless:
-                        hit = con.execute(
-                            "SELECT dividend_id FROM dividend WHERE code=? "
-                            "AND divid_plan_announce_date IS ?",
-                            (record[0], record[3]),
-                        ).fetchone()
-                        if hit is None:
-                            con.execute(
-                                "INSERT INTO dividend(code, divid_pre_notice_date,"
-                                " divid_agm_pum_date, divid_plan_announce_date, divid_plan_date,"
-                                " divid_regist_date, divid_operate_date, divid_pay_date,"
-                                " divid_stock_market_date, divid_cash_ps_before_tax,"
-                                " divid_cash_ps_after_tax, divid_stocks_ps, divid_cash_stock,"
-                                " divid_reserve_to_stock_ps) VALUES ("
-                                + ", ".join(["?"] * 14) + ")",
-                                record,
-                            )
-                    con.commit()
-                total += len(mapped)
-        return (total, "+".join(years), None)
+            con.commit()
 
     def _load_financial(self, codes: list[str] | None,
-                        timeout_ms: int, cancel) -> tuple[int, str | None, None]:
-        quarters = last_n_quarters(8)
+                        timeout_ms: int, cancel, *,
+                        quarters: int | None = None) -> tuple[int, str | None, None]:
+        plan = last_n_quarters(quarters) if quarters else last_n_quarters(8)
         merged: dict[tuple[str, str], dict[str, Any]] = {}
-        for year, quarter in quarters:
+        for year, quarter in plan:
             for which in ("profit", "operation", "growth", "balance", "cash", "dupont"):
                 for code in self._codes(codes):
                     fields, rows = self._via_gateway(
@@ -735,57 +1007,72 @@ class BaoStockSync:
     # —— 公司报告类 ——
 
     def _load_express(self, watermark: str | None, codes: list[str] | None,
-                      timeout_ms: int, cancel) -> tuple[int, str | None, None]:
-        start, end = window_for("bs_perf_express", watermark)
+                      timeout_ms: int, cancel, *, start: str | None = None,
+                      batch_size: int | None = None,
+                      ) -> tuple[int, str | None, None]:
+        window_start, end = self._window("bs_perf_express", watermark, start)
         total = 0
+        writer = _BatchWriter(self._write_express, batch_size)
         for code in self._codes(codes):
             fields, rows = self._via_gateway(
                 "bs_perf_express",
-                lambda code=code: self._fetcher.performance_express(code, start, end),
+                lambda code=code: self._fetcher.performance_express(
+                    code, window_start, end),
                 timeout_ms=timeout_ms, cancel=cancel,
             )
             mapped = map_performance_express(fields, rows)
-            with self._db.transact() as con:
-                con.executemany(
-                    "INSERT INTO performance_express(code, stat_date, pub_date, update_date,"
-                    " total_asset, net_asset, eps_chg_pct, roe_wa, eps_diluted, gr_yoy, op_yoy)"
-                    " VALUES (" + ", ".join(["?"] * 11) + ") "
-                    "ON CONFLICT(code, stat_date) DO UPDATE SET "
-                    "pub_date=excluded.pub_date, update_date=excluded.update_date, "
-                    "total_asset=excluded.total_asset, net_asset=excluded.net_asset, "
-                    "eps_chg_pct=excluded.eps_chg_pct, roe_wa=excluded.roe_wa, "
-                    "eps_diluted=excluded.eps_diluted, gr_yoy=excluded.gr_yoy, "
-                    "op_yoy=excluded.op_yoy",
-                    mapped,
-                )
-                con.commit()
+            writer.add(mapped)
             total += len(mapped)
-        return (total, start, None)
+        writer.flush()
+        return (total, window_start, None)
+
+    def _write_express(self, mapped: list[tuple]) -> None:
+        with self._db.transact() as con:
+            con.executemany(
+                "INSERT INTO performance_express(code, stat_date, pub_date, update_date,"
+                " total_asset, net_asset, eps_chg_pct, roe_wa, eps_diluted, gr_yoy, op_yoy)"
+                " VALUES (" + ", ".join(["?"] * 11) + ") "
+                "ON CONFLICT(code, stat_date) DO UPDATE SET "
+                "pub_date=excluded.pub_date, update_date=excluded.update_date, "
+                "total_asset=excluded.total_asset, net_asset=excluded.net_asset, "
+                "eps_chg_pct=excluded.eps_chg_pct, roe_wa=excluded.roe_wa, "
+                "eps_diluted=excluded.eps_diluted, gr_yoy=excluded.gr_yoy, "
+                "op_yoy=excluded.op_yoy",
+                mapped,
+            )
+            con.commit()
 
     def _load_forecast(self, watermark: str | None, codes: list[str] | None,
-                       timeout_ms: int, cancel) -> tuple[int, str | None, None]:
-        start, end = window_for("bs_forecast", watermark)
+                       timeout_ms: int, cancel, *, start: str | None = None,
+                       batch_size: int | None = None,
+                       ) -> tuple[int, str | None, None]:
+        window_start, end = self._window("bs_forecast", watermark, start)
         total = 0
+        writer = _BatchWriter(self._write_forecast, batch_size)
         for code in self._codes(codes):
             fields, rows = self._via_gateway(
                 "bs_forecast",
-                lambda code=code: self._fetcher.forecast(code, start, end),
+                lambda code=code: self._fetcher.forecast(code, window_start, end),
                 timeout_ms=timeout_ms, cancel=cancel,
             )
             mapped = map_forecast(fields, rows)
-            with self._db.transact() as con:
-                con.executemany(
-                    "INSERT INTO profit_forecast(code, stat_date, pub_date, forecast_type,"
-                    " abstract, chg_pct_up, chg_pct_dwn) VALUES ("
-                    + ", ".join(["?"] * 7) + ") ON CONFLICT(code, stat_date) DO UPDATE SET "
-                    "pub_date=excluded.pub_date, forecast_type=excluded.forecast_type, "
-                    "abstract=excluded.abstract, chg_pct_up=excluded.chg_pct_up, "
-                    "chg_pct_dwn=excluded.chg_pct_dwn",
-                    mapped,
-                )
-                con.commit()
+            writer.add(mapped)
             total += len(mapped)
-        return (total, start, None)
+        writer.flush()
+        return (total, window_start, None)
+
+    def _write_forecast(self, mapped: list[tuple]) -> None:
+        with self._db.transact() as con:
+            con.executemany(
+                "INSERT INTO profit_forecast(code, stat_date, pub_date, forecast_type,"
+                " abstract, chg_pct_up, chg_pct_dwn) VALUES ("
+                + ", ".join(["?"] * 7) + ") ON CONFLICT(code, stat_date) DO UPDATE SET "
+                "pub_date=excluded.pub_date, forecast_type=excluded.forecast_type, "
+                "abstract=excluded.abstract, chg_pct_up=excluded.chg_pct_up, "
+                "chg_pct_dwn=excluded.chg_pct_dwn",
+                mapped,
+            )
+            con.commit()
 
     # —— 板块类 ——
 
@@ -963,3 +1250,19 @@ def _load_k_period_start(watermark: str | None) -> str:
         return next_day(start)
     except ValueError:
         return "1990-12-19"
+
+
+def _dividend_years(watermark: str | None, start: str | None) -> list[str]:
+    """分红拉取年份（降序）。
+
+    给出显式起点时按「起点年 → 今年」；否则走水位年份（``2024+2025`` 形），
+    水位缺失＝今年与前一年（与既有口径一致）。
+    """
+    if start is not None:
+        first = int(start[:4])
+        return [str(y) for y in range(_now().year, first - 1, -1)]
+    years = sorted({y.strip() for y in (watermark or "").split("+")
+                    if y.strip().isdigit()}, reverse=True)
+    if years:
+        return years
+    return [str(_now().year), str(_now().year - 1)]
