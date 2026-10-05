@@ -10,6 +10,8 @@ dev 面的开关是**构建期**语义：``st_agent.ui.dev`` 子包在发布构�
 
 from __future__ import annotations
 
+import logging
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -35,6 +37,8 @@ DEV_SCRIPT_MARKER = "<!--ST_DEV_SCRIPT-->"
 
 _VERSION = __version__
 """与 `pyproject.toml` 的 `project.version` 一致——单一真相源＝包根 `st_agent.__version__`。"""
+
+_LOG = logging.getLogger("st_agent.ui.app")
 
 
 def _now() -> datetime:
@@ -78,6 +82,10 @@ class UiApp:
         门面的返回含 `reply`（`ResultEnvelope`，附六态渲染语义）与可选
         `description`（`UiDescription`，走 :meth:`api_description` 的中性化门与必填槽）。
         未注入门面 → `unavailable` + 点名（不伪造，同 `api_health` 之外的各 fail-closed 面）。
+
+        **本方法不向上抛**（[00 §6] 失败显式化）：非法请求体（门面在构造契约对象时
+        拒绝，属 `ValueError` / `KeyError` 族）转 `validation_failed`；其余未预期异常
+        记 traceback 后转 `failed`（附可查 `log_ref`）——两端都回信封，连接不被关闭。
         """
         if self.chat is None:
             return envelope_payload(
@@ -86,7 +94,24 @@ class UiApp:
                     last_updated_at=_now(),
                 )
             )
-        result = self.chat.turn(body)
+        try:
+            result = self.chat.turn(body)
+        except (ValueError, KeyError) as exc:
+            # 请求体非法 → 门面构造契约对象时拒绝：pydantic 包装的 ValidationError 与 L3 各
+            # *ValidationError 均属 ValueError；未知 session_id 属 SessionNotFoundError(KeyError)。
+            _LOG.info("对话请求体被门面拒绝（%s）：%s", type(exc).__name__, exc)
+            return envelope_payload(
+                ResultEnvelope.validation_failed(
+                    "对话请求体不合法，无法受理"
+                    "（需非空 text；action=dispatch 需带待确认的 session_id）"
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 —— 真正的编程/内部错误：不吞，落日志 + 显式 failed
+            log_ref = f"ui/chat-{uuid.uuid4().hex[:12]}"
+            _LOG.exception("对话门面未预期异常（log_ref=%s）：%s", log_ref, exc)
+            return envelope_payload(
+                ResultEnvelope.failed("对话处理未预期失败，详见服务端日志", log_ref=log_ref)
+            )
         reply = result.get("reply")
         payload = envelope_payload(reply) if isinstance(reply, ResultEnvelope) else {
             "status": "failed", "reason": "对话门面返回非法结构", "render": {},
