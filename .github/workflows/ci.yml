@@ -75,6 +75,10 @@ jobs:
             if printf '%s\n' "$changed" | grep -qE '^(src/st_agent/l4/|tests/l4/)'; then
               targets="$targets tests/l4"
             fi
+            # 生态与分享（跨层 T-ECO-*）：同 l0–l4 的按层映射（D-047）
+            if printf '%s\n' "$changed" | grep -qE '^(src/st_agent/eco/|tests/eco/)'; then
+              targets="$targets tests/eco"
+            fi
             # 表现层（跨层工程 T-UI-*）：src/st_agent/ui/** 与 tests/ui/** 不在按层映射内，
             # 不补这一支则 tests/ui/ 在 PR 门禁**不被收集**（D-045 对 tests/integration 的同型教训）。
             if printf '%s\n' "$changed" | grep -qE '^(src/st_agent/ui/|tests/ui/|src/st_agent/contracts/ui_description\.py)'; then
