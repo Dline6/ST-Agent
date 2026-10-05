@@ -7,6 +7,7 @@
 - GWT-4 冲突裁决联动（L2 冲突 → `MemoryConflictDetected` → L3 裁决卡 → 落地，进程内直递，见 A3）
 - GWT-5 memory_op 偏好写入支（[05 §9] / [D-062] 显式指派给本关卡的欠账，`user_stated` 直写）
 - GWT-6 三态渲染送达回环对话面（`POST /api/chat` 真 HTTP，未注入门面 fail-closed）
+- GWT-8 组合根在 L0 **新默认**（免口令明文根 + 审计默认关）下端到端成立（`T-L0-018.1`/`.2` 跨层效果）
 
 真实网络 / 真端点（GWT-7）不在本文件——由 `-m live` 子集兜。
 """
@@ -19,9 +20,10 @@ from pathlib import Path
 
 import pytest
 from rig import ROOT_NAME
-from rig_m1 import M1Rig, seeded_m1
+from rig_m1 import M1Rig, seeded_m1, seeded_m1_plaintext
 
 from st_agent.contracts.result_envelope import ResultEnvelope
+from st_agent.l0.storage import STORE_MARKER
 from st_agent.l2.memory import checked_node, new_node_id
 from st_agent.l3.dispatch import ANALYZE_ABSENT_REASON
 from st_agent.ui.security import TOKEN_HEADER
@@ -221,6 +223,40 @@ def test_gwt6_chat_endpoint_without_facade_is_fail_closed(tmp_path: Path) -> Non
         )
         assert status == 200
         assert d["status"] == "unavailable"
+
+
+# ─────────────── GWT-8 组合根在 L0 新默认（免口令明文根 + 审计默认关）下成立 ───────────────
+
+def test_gwt8_production_root_over_default_plaintext_store(tmp_path: Path) -> None:
+    """L0 新默认（`T-L0-018.1`：明文根免口令；`T-L0-018.2`：审计默认关）下组合根端到端成立。
+
+    这是四个新叶子（`T-L0-017.1`/`.2`、`T-L0-018.1`/`.2`）加入 M1 后**跨层效果**的装配面：
+    L0 单任务用例证明「`Store` 明文可读写」，但证明不了「生产组合根 + L2/L3 叠在明文根上」
+    ——本用例补这一层（关卡的「装配关系与跨层数据流」职责，见 [`T-INT-002`] 目标节）。
+    """
+    rig = seeded_m1_plaintext(tmp_path / ROOT_NAME)
+    # 审计默认关（[02 §6] / [D-073]）：默认装配不产生逐次出网留痕
+    assert rig.m1.runtime.gateway.audit_enabled is False
+
+    # 反向流在明文根上照常走通（query 去向经注入的 L1 SkillRunner）
+    turn = rig.m1.chat.post("看下 sh.600000 有没有退市风险")
+    assert turn.needs_confirmation is True
+    outcome = rig.m1.chat.confirm_and_dispatch(turn.session_id)
+    assert outcome.wired and outcome.intent == "query"
+    assert outcome.envelope.status == "ok", outcome.envelope.reason
+
+    # 免口令根：明文格式标记在盘；默认关审计 → 无 llm_call 审计、零发包
+    assert (rig.root / STORE_MARKER).is_file()
+    assert rig.m1.runtime.gateway.query(kind="llm_call") == ()
+    assert rig.sender.calls == [], "官方执行器只读注入的本地缓存，不应出网"
+
+    # 偏好写入（`user_stated` 直写 L2）在明文根上同样落库
+    pref = rig.m1.chat.write_preference(
+        {"type": "identity", "risk_preference": "稳健", "confidence": 0.9}
+    )
+    assert pref.status == "ok", pref.reason
+    node = rig.m1.graph.get_node(pref.data["memory_node_id"])
+    assert node.risk_preference == "稳健"
 
 
 # ─────────────────────── 回归：离线用例零出网 ───────────────────────

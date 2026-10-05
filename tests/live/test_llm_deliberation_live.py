@@ -64,8 +64,14 @@ def test_production_root_synthesizes_opinions_via_real_endpoint(tmp_path: Path) 
     seed_market_db(root, THROWAWAY_PASS)
     feed = MarketData()
     sender = RecordingSender()
-    # 不传 llm_env / synthesizer / reviewer ⇒ 缺省取值面（环境变量 → .env）+ 三个真实现
-    m2 = build_m2_runtime(root, THROWAWAY_PASS, market_query=feed, sender=sender)
+    # 不传 llm_env / synthesizer / reviewer ⇒ 缺省取值面（环境变量 → .env）+ 三个真实现。
+    # 显式 ``audit=True``：本用例断言「两次真出网各留一条审计」，循 test_llm_live.py / rig.py
+    # 的既有先例——产品缺省是**关**（[02 §6] / [D-073]）；默认关的语义由
+    # tests/l0/test_gateway_audit_mode.py 覆盖。本行随 `T-INT-002` 重跑同根因一并修（审计由
+    # 默认开改默认关后，本用例与 M1 关卡 live 用例同样静默转红——CI 恒排除 live 故无人发现）。
+    m2 = build_m2_runtime(
+        root, THROWAWAY_PASS, market_query=feed, sender=sender, audit=True,
+    )
 
     # 确认卡的取值面是鸭子类型（`analyze` 去向只消费 `.values`）——真实链路上它由
     # 澄清协议收敛，这里直接给出收敛后的结果，把验证面收敛到「合成端口真出网」。
