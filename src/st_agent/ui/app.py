@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from st_agent import __version__
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.ui_description import UiDescription
 
@@ -32,8 +33,8 @@ WEB_ROOT = Path(__file__).resolve().parent / "web"
 DEV_SCRIPT_MARKER = "<!--ST_DEV_SCRIPT-->"
 """`index.html` 里的 dev 脚本占位：dev 关闭时被替换为空串，故**发布产物不含 dev 引用**。"""
 
-_VERSION = "0.1.0"
-"""与 `pyproject.toml` 的 `project.version` 保持一致。"""
+_VERSION = __version__
+"""与 `pyproject.toml` 的 `project.version` 一致——单一真相源＝包根 `st_agent.__version__`。"""
 
 
 def _now() -> datetime:

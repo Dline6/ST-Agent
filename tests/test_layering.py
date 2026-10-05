@@ -127,9 +127,19 @@ APP_PATH = SRC / "app.py"
 #: l5/l6/eco 尚未开工，装配它们属越界）。
 APP_ALLOWED_IMPORTS = {"contracts", "l0", "l1", "l2", "l3", "l4"}
 
+ENTRY_PATH = SRC / "__main__.py"
+"""生产运行入口（``python -m st_agent``；[`T-UI-002.1`]）——装配 `app` + `ui`，**不是层**。
+
+它是**唯一**允许 import 组合根 `app` 的模块：壳要拉起的正是「装配好的后端」。
+`ui` 仍只经鸭子端口收 `chat`（下条反向断言），故 `app`+`ui` 的合流只在入口发生。
+"""
+
+ENTRY_ALLOWED_IMPORTS = set(LAYER_ORDER) | {"app", "ui"}
+ENTRY_REL = "__main__.py"
+
 
 def test_app_is_composition_root_only():
-    """`app` 只向下 import 已开工的层 + contracts；任何层与 `ui` 都不得反向 import 它。"""
+    """`app` 只向下 import 已开工的层 + contracts；除入口外任何模块都不得 import 它。"""
     if not APP_PATH.is_file():
         pytest.skip("组合根尚未交付")
     for module, lineno in _imports(APP_PATH):
@@ -141,14 +151,42 @@ def test_app_is_composition_root_only():
             f"{sorted(APP_ALLOWED_IMPORTS)}（M1/M2 反向流面；T-INT-002 A2 / T-INT-003 A1）"
         )
 
+    consumers = []
     for path in sorted(SRC.rglob("*.py")):
         if path == APP_PATH:
             continue
         rel = str(path.relative_to(SRC)).replace("\\", "/")
         for module, lineno in _imports(path):
-            assert module != "st_agent.app" and not module.startswith("st_agent.app."), (
-                f"{rel}:{lineno} 反向 import 了组合根 app——装配根不被任何层/表现层依赖"
-                "（对话面经鸭子端口注入，ui 不 import app，T-INT-002 A2）"
+            if module == "st_agent.app" or module.startswith("st_agent.app."):
+                consumers.append(f"{rel}:{lineno}")
+                assert rel == ENTRY_REL, (
+                    f"{rel}:{lineno} 反向 import 了组合根 app——装配根只被生产入口 "
+                    f"（{ENTRY_REL}，`python -m st_agent`）与测试消费；层与表现层都不得依赖"
+                    "它（对话面经鸭子端口注入，ui 不 import app，T-INT-002 A2）"
+                )
+
+
+def test_entry_is_assembly_only():
+    """生产入口只可装配 `app` / `ui` / contracts / 各层；且不得被任何模块 import。"""
+    if not ENTRY_PATH.is_file():
+        pytest.skip("生产入口尚未交付")
+    for module, lineno in _imports(ENTRY_PATH):
+        if not module.startswith("st_agent."):
+            continue
+        parts = module.split(".")
+        top = parts[1] if len(parts) > 1 else ""
+        assert top in ENTRY_ALLOWED_IMPORTS, (
+            f"{ENTRY_REL}:{lineno} import 了 {module}——入口是**装配面**，只可消费 "
+            f"{sorted(ENTRY_ALLOWED_IMPORTS)}（T-UI-002.1；00 §1.1）"
+        )
+
+    for path in sorted(SRC.rglob("*.py")):
+        if path == ENTRY_PATH:
+            continue
+        rel = str(path.relative_to(SRC)).replace("\\", "/")
+        for module, lineno in _imports(path):
+            assert module != "st_agent.__main__" and not module.startswith("st_agent.__main__."), (
+                f"{rel}:{lineno} import 了生产入口——入口是进程边界，只由 `python -m st_agent` 唤醒"
             )
 
 

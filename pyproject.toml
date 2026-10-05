@@ -16,6 +16,13 @@ dependencies = [
 # T-L0-005.1 真实抓取器：联网可选依赖，缺失时走 unavailable 显式分支（见 03 §1.2 / T-L0-005.1）。
 # 安装：pip install -e ".[market]"
 market = ["baostock>=0.9.4"]
+# T-UI-002.2 桌面壳：pywebview（系统 WebView 三引擎）+ pystray（托盘）。CI 与服务端不装——
+# 壳边模块惰性导入，缺依赖时显式抛 ShellSurfaceUnavailable（D-076 ①）。
+# 安装：pip install -e ".[shell]"
+shell = ["pywebview>=5.0", "pystray>=0.19"]
+# T-UI-002.3 打包：PyInstaller 只在**构建机**上需要（CI 的 check job 不装）。
+# 安装：pip install -e ".[packaging]"
+packaging = ["pyinstaller>=6.0"]
 
 [tool.setuptools.packages.find]
 # src 布局：包根在 src/，否则 wheel 里会打成 src/st_agent/...（import st_agent 失败）
@@ -27,6 +34,8 @@ exclude = ["st_agent.ui.dev"]
 
 [tool.setuptools.package-data]
 # 无构建前端资产随包走：原生 ES modules，产物即静态文件（D-063 ①）。
+# （市场库 DDL `st_agent/l0/market/schema.sql` 不在本表里：setuptools 默认的
+#  include-package-data 已带上它——T-UI-002.3 实测 `pip wheel` 产物核对过。）
 "st_agent.ui" = [
     "web/*.html",
     "web/css/*.css",

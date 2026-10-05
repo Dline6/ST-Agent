@@ -352,6 +352,17 @@ class Store:
     # ───────────────────────── 初始化与打开 ─────────────────────────
 
     @classmethod
+    def exists(cls, root: Path | str) -> bool:
+        """盘上是否已有存储（``store.json`` 或 ``keyfile.json`` 任一存在即算）。
+
+        供上层入口判定「打开既有根」还是「初始化新根」。判据与 :meth:`create`
+        的拒绝条件、:meth:`open` 的接受条件**同源**（同一对文件名常量），故收在 L0——
+        调用方各自拼文件名迟早与这里漂移。
+        """
+        root = Path(root)
+        return (root / STORE_MARKER).exists() or (root / _KEYFILE).exists()
+
+    @classmethod
     def create(cls, root: Path | str, passphrase: str | None = None) -> "Store":
         """首次初始化（盘上无存储时）。已存在存储则拒绝（防误覆盖）。
 
