@@ -267,29 +267,40 @@ def test_entry_opens_encrypted_root_with_passphrase_env(tmp_path: Path) -> None:
 # ───────────────────────── 纯函数面 ─────────────────────────
 
 
+def _slashes(path: object) -> str:
+    """把路径统一成 ``/`` 分隔再比对。
+
+    `default_root` 在**当前主机**上拼平台路径：Linux 宿主上跑 `win32` 分支时，
+    `Path(r"C:\\Users\\u\\...")` 里的反斜杠只是普通字符，`Path` 的 `==` 因此按
+    ``\\`` 与 ``/`` 两种分隔符比较就会不等——那是**宿主的**事，与被测语义无关。
+    """
+    return str(path).replace("\\", "/")
+
+
 @pytest.mark.parametrize(
     "system,env_extra,expected",
     [
-        ("win32", {"LOCALAPPDATA": r"C:\Users\u\AppData\Local"}, Path(r"C:\Users\u\AppData\Local\STAgent")),
-        ("darwin", {}, Path("/Users/u/Library/Application Support/STAgent")),
-        ("linux", {}, Path("/home/u/.local/share/st-agent")),
-        ("linux", {"XDG_DATA_HOME": "/data"}, Path("/data/st-agent")),
+        ("win32", {"LOCALAPPDATA": r"C:\Users\u\AppData\Local"},
+         r"C:\Users\u\AppData\Local\STAgent"),
+        ("darwin", {}, "/Users/u/Library/Application Support/STAgent"),
+        ("linux", {}, "/home/u/.local/share/st-agent"),
+        ("linux", {"XDG_DATA_HOME": "/data"}, "/data/st-agent"),
     ],
 )
 def test_default_root_platform_conventions(
-    system: str, env_extra: dict[str, str], expected: Path
+    system: str, env_extra: dict[str, str], expected: str
 ) -> None:
     """GWT-1 · 默认根按平台惯例；`ST_AGENT_ROOT` 覆盖优先于一切。"""
     env = {"HOME": "/Users/u" if system == "darwin" else "/home/u"}
     env.update(env_extra)
-    assert default_root(env, system) == expected
+    assert _slashes(default_root(env, system)) == _slashes(expected)
     env["ST_AGENT_ROOT"] = str(Path("/elsewhere") / "root")
-    assert default_root(env, system) == Path("/elsewhere/root")
+    assert _slashes(default_root(env, system)) == "/elsewhere/root"
 
 
 def test_default_root_uses_cwd_independent_env(tmp_path: Path) -> None:
     """默认根不依赖 `cwd`（壳在任意工作目录拉起后端都得落同一处）。"""
-    assert default_root({"HOME": "/home/u", "XDG_DATA_HOME": ""}, "linux") == Path(
+    assert _slashes(default_root({"HOME": "/home/u", "XDG_DATA_HOME": ""}, "linux")) == (
         "/home/u/.local/share/st-agent"
     )
 
