@@ -23,7 +23,7 @@ from st_agent.app import M1Runtime, build_m1_runtime
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.l3.intent import IntentDraft
 
-__all__ = ["M1Rig", "DeterministicUnderstander", "seeded_m1"]
+__all__ = ["M1Rig", "DeterministicUnderstander", "seeded_m1", "seeded_m1_plaintext"]
 
 
 class DeterministicUnderstander:
@@ -55,6 +55,13 @@ CONFIGURE_QUERY = IntentDraft(
 ANALYZE_QUERY = IntentDraft(intent="analyze", target=None)
 MEMORY_OP_QUERY = IntentDraft(intent="memory_op", target=None)
 
+DEFAULT_RULES: list[tuple[str, IntentDraft]] = [
+    ("退市", RISK_QUERY),
+    ("阈值", CONFIGURE_QUERY),
+    ("分析", ANALYZE_QUERY),
+    ("冲突", MEMORY_OP_QUERY),
+]
+
 
 @dataclass(frozen=True)
 class M1Rig:
@@ -70,21 +77,34 @@ class M1Rig:
 def seeded_m1(
     root: Path, *, rules: list[tuple[str, IntentDraft]] | None = None,
 ) -> M1Rig:
-    """已播种数据面的 M1 全栈装配（生产组合根 `build_m1_runtime`）。"""
-    seed_market_db(root, PASS)
+    """已播种数据面的 M1 全栈装配（生产组合根 `build_m1_runtime`；加密根）。"""
+    return _assemble(root, PASS, rules)
+
+
+def seeded_m1_plaintext(
+    root: Path, *, rules: list[tuple[str, IntentDraft]] | None = None,
+) -> M1Rig:
+    """**免口令明文根**（L0 新默认，[02 §2.2] / [D-073]）上的 M1 全栈装配。
+
+    证明组合根在 `T-L0-018.1` 的新默认之下端到端仍成立——L0 单任务用例覆盖
+    「`Store` 明文可读写」，但覆盖不到「组合根 + L2/L3 叠在**明文根**上」这层
+    装配面（GWT-8）。
+    """
+    return _assemble(root, None, rules)
+
+
+def _assemble(
+    root: Path, passphrase: str | None, rules: list[tuple[str, IntentDraft]] | None,
+) -> M1Rig:
+    """按口令口径装配一次 M1 全栈（`passphrase=None` ⇒ 明文根，新默认）。"""
+    seed_market_db(root, passphrase)
     feed = MarketData()
     sender = RecordingSender()
     understander = DeterministicUnderstander(
-        rules if rules is not None
-        else [
-            ("退市", RISK_QUERY),
-            ("阈值", CONFIGURE_QUERY),
-            ("分析", ANALYZE_QUERY),
-            ("冲突", MEMORY_OP_QUERY),
-        ]
+        rules if rules is not None else DEFAULT_RULES
     )
     m1 = build_m1_runtime(
-        root, PASS, market_query=feed, sender=sender, llm_env={},
+        root, passphrase, market_query=feed, sender=sender, llm_env={},
         understander=understander,
     )
     return M1Rig(root=root, m1=m1, feed=feed, sender=sender,

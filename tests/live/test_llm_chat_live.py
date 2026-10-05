@@ -57,8 +57,13 @@ def test_production_root_understands_via_real_endpoint(tmp_path: Path) -> None:
     seed_market_db(root, THROWAWAY_PASS)
     feed = MarketData()
     sender = RecordingSender()
-    # 不传 llm_env / understander ⇒ 缺省取值面（环境变量 → .env）+ 真实理解器（T-L1-011）
-    m1 = build_m1_runtime(root, THROWAWAY_PASS, market_query=feed, sender=sender)
+    # 不传 llm_env / understander ⇒ 缺省取值面（环境变量 → .env）+ 真实理解器（T-L1-011）。
+    # 显式 ``audit=True``：本用例断言「真实出网经网关并留下审计」，循 tests/live/test_llm_live.py
+    # 与 tests/integration/rig.py 的既有先例——产品缺省是**关**（[02 §6] / [D-073]），默认关
+    # 的语义由 tests/l0/test_gateway_audit_mode.py 覆盖，不靠本用例体现。
+    m1 = build_m1_runtime(
+        root, THROWAWAY_PASS, market_query=feed, sender=sender, audit=True,
+    )
 
     understood = m1.intent.understand(UTTERANCE)
     if understood.status != "ok":
