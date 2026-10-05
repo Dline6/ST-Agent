@@ -23,6 +23,10 @@ shell = ["pywebview>=5.0", "pystray>=0.19"]
 # T-UI-002.3 打包：PyInstaller 只在**构建机**上需要（CI 的 check job 不装）。
 # 安装：pip install -e ".[packaging]"
 packaging = ["pyinstaller>=6.0"]
+# T-UI-002.4.2 口令记忆：keyring（Windows 凭据管理器 / macOS 钥匙串 / Linux Secret Service）。
+# CI 与发布不装——不可用时**降级为每次索取并显式告知**（02 §3 / D-078 ②）。
+# 安装：pip install -e ".[keyring]"
+keyring = ["keyring>=24.0"]
 
 [tool.setuptools.packages.find]
 # src 布局：包根在 src/，否则 wheel 里会打成 src/st_agent/...（import st_agent 失败）

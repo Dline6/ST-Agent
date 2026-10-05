@@ -6,9 +6,10 @@ HTTP 取。进程边界见 [00 §1.1](../../../../docs/技术架构-v2/00-架构
 两个进程，后端是主体。
 
 包内分层：`backend`（拉起 / 握手 / 回收）· `autostart`（三平台登录项）· `notify`（最小
-通知接线）· `app`（装配与生命周期，**全部语义在此**）· `window` / `tray`（pywebview /
-pystray 薄边，惰性导入）。图形依赖收在 extra ``[shell]``，本包在**未装**它们时仍可导入
-（只有真正开窗 / 装托盘时才抛 :class:`ShellSurfaceUnavailable`）。
+通知接线）· `passphrase`（口令索取 / 记忆 / 回传）· `app`（装配与生命周期，**全部语义在此**）·
+`window` / `tray`（pywebview / pystray 薄边，惰性导入）。图形依赖收在 extra ``[shell]``、
+口令记忆收在 ``[keyring]``，本包在**未装**它们时仍可导入（只有真正开窗 / 装托盘 / 弹口令框
+时才抛 :class:`ShellSurfaceUnavailable`）。
 """
 
 from __future__ import annotations
@@ -16,18 +17,31 @@ from __future__ import annotations
 from st_agent.ui.shell.app import Shell, run_shell
 from st_agent.ui.shell.autostart import LoginItem, login_item
 from st_agent.ui.shell.backend import BackendHandle, BackendSpec, start_backend
-from st_agent.ui.shell.errors import ShellError, ShellSurfaceUnavailable
+from st_agent.ui.shell.errors import ShellCancelled, ShellError, ShellSurfaceUnavailable
 from st_agent.ui.shell.notify import notify_command, send_notification
+from st_agent.ui.shell.passphrase import (
+    KeyringVault,
+    NativePassphrasePrompt,
+    PassphraseRequest,
+    PassphraseResolver,
+    build_vault,
+)
 from st_agent.ui.shell.tray import MenuItem
 
 __all__ = [
     "BackendHandle",
     "BackendSpec",
+    "KeyringVault",
     "LoginItem",
     "MenuItem",
+    "NativePassphrasePrompt",
+    "PassphraseRequest",
+    "PassphraseResolver",
     "Shell",
+    "ShellCancelled",
     "ShellError",
     "ShellSurfaceUnavailable",
+    "build_vault",
     "login_item",
     "notify_command",
     "run_shell",

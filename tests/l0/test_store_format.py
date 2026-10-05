@@ -310,3 +310,65 @@ class TestGwt4NoCryptoInPlainMode:
         monkeypatch.setattr(store_mod, "seal_bytes", counting)
         Store.create(tmp_path / "root", PASS).put("memory", "a.json", PLAIN)
         assert calls["n"] > 0                                  # 加密模式照旧加解密
+
+
+class TestPassphraseRequirementProbe:
+    """`Store.passphrase_requirement` 与 `StoragePassphraseRequired`（[`T-UI-002.4.1`]）。
+
+    探测是「**要不要问口令**」的只读判据（不打开、不解密）；「给口令就能过」的两族
+    失败另有专类，故调用方只对它们重试。
+    """
+
+    def test_probe_reports_none_for_missing_and_plain_roots(self, tmp_path: Path):
+        assert Store.passphrase_requirement(tmp_path / "nope") is None   # 新根 ⇒ 明文
+        plain = tmp_path / "plain"
+        Store.create(plain)
+        assert Store.passphrase_requirement(plain) is None               # 从未设过凭据口令
+
+    def test_probe_reports_main_passphrase_for_encrypted_root(self, tmp_path: Path):
+        root = tmp_path / "enc"
+        Store.create(root, PASS)
+        assert Store.passphrase_requirement(root) == "main_passphrase"
+
+    def test_probe_reports_credentials_once_established(self, tmp_path: Path):
+        """凭据已建立（TOFU 出校验锚）⇒ `credentials`；这是「装配幂等」留下的那个缺口。"""
+        root = tmp_path / "plain"
+        Store.create(root)
+        Store.open(root, CRED)                                           # 首次解锁即 TOFU
+        assert Store.passphrase_requirement(root) == "credentials"
+
+    def test_probe_does_not_open_or_verify(self, tmp_path: Path):
+        """探测不动分区：篡改一个数据文件后它照旧只谈「要不要口令」。"""
+        root = tmp_path / "enc"
+        Store.create(root, PASS).put("memory", "a.json", PLAIN)
+        (root / "memory" / "a.json").write_bytes(b"tampered")
+        assert Store.passphrase_requirement(root) == "main_passphrase"
+        with pytest.raises(StorageCorruptionError):
+            Store.open(root, PASS)                                       # 真校验仍在 open 里
+
+    def test_probe_raises_on_corrupt_keyfile(self, tmp_path: Path):
+        root = tmp_path / "plain"
+        Store.create(root)
+        (root / "keyfile.json").write_text("{ 这不是 JSON", encoding="utf-8")
+        with pytest.raises(StorageOpenError, match="keyfile 损坏"):
+            Store.passphrase_requirement(root)
+
+    def test_open_failures_carry_machine_readable_kind(self, tmp_path: Path):
+        """两族「给口令就能过」的失败携 `kind`（与「结构坏」区分开，供调用方定向重试）。"""
+        from st_agent.l0.storage import StoragePassphraseRequired
+
+        enc = tmp_path / "enc"
+        Store.create(enc, PASS)
+        with pytest.raises(StoragePassphraseRequired) as no_pass:
+            Store.open(enc)
+        assert no_pass.value.kind == "main_passphrase"
+        with pytest.raises(StoragePassphraseRequired) as wrong:
+            Store.open(enc, "wrong")
+        assert wrong.value.kind == "main_passphrase"
+        assert isinstance(wrong.value, StorageOpenError)                 # 子类，旧捕获面不变
+
+        plain = tmp_path / "plain"
+        Store.create(plain).unlock_secrets(CRED)
+        with pytest.raises(StoragePassphraseRequired) as cred:
+            Store.open(plain, "wrong")
+        assert cred.value.kind == "credentials"
