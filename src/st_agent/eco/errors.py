@@ -10,6 +10,11 @@
 - :class:`ShareExportError`——**导出侧**失败：命名 / 描述未过 [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md)
   中性化校验（[09 §2](../../../docs/技术架构-v2/09-生态与分享.md)「导出前拦截」）· 该类导出所需的取材面
   未注入 · 写出目标不可用。**文件尚未生成**（或未写出）。
+- :class:`ShareImportError`——**导入侧**失败（[09 §3](../../../docs/技术架构-v2/09-生态与分享.md)）：权限未全部批准 ·
+  本机已存在同标识的导入物 · 容器未记录分享者 · 依赖解析 / 安装面未注入 · 归属层的写面拒绝了这次安装。
+  **文件是好的**，只是这次导入不成立——与 :class:`ShareFormatError` 分工明确。
+- :class:`ShareIndexError`——**官方索引**不可用（[09 §4](../../../docs/技术架构-v2/09-生态与分享.md)）：离线 / 无端点 /
+  索引条目非法。不返回半截索引，也不以空列表冒充「索引里什么都没有」。
 """
 
 from __future__ import annotations
@@ -18,6 +23,8 @@ __all__ = [
     "EcoError",
     "ShareExportError",
     "ShareFormatError",
+    "ShareImportError",
+    "ShareIndexError",
     "ShareVersionError",
 ]
 
@@ -36,3 +43,11 @@ class ShareVersionError(EcoError):
 
 class ShareExportError(EcoError):
     """导出侧失败（拦截 / 取材面缺失 / 写出目标不可用；文件未生成或未写出）。"""
+
+
+class ShareImportError(EcoError):
+    """导入侧失败（权限未批准 / 已存在 / 缺分享者 / 依赖或安装面缺失；容器本身是好的）。"""
+
+
+class ShareIndexError(EcoError):
+    """官方索引不可用（离线 / 无端点 / 条目非法）。"""

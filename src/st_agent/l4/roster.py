@@ -15,7 +15,7 @@ Lens 定义（[`lens.Lens`](lens.py)）的**读写门面**——持久化只经 
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from pydantic import ValidationError
@@ -100,6 +100,42 @@ class LensRoster:
             raise LensValidationError(f"视角 {lens.lens_id!r} 已存在，不得静默覆盖")
         self._store.put("config", self._path(lens.lens_id), lens.model_dump_json().encode("utf-8"))
         return lens
+
+    def install_shared(self, lens: Lens | Mapping[str, Any]) -> Lens:
+        """安装一份**导入**的视角定义（[09 §3 导入校验流水线的安装段](../../../docs/技术架构-v2/09-生态与分享.md)）。
+
+        与 :meth:`add_custom` 的差别只有一处：**保留分享方的 ``lens_id``**——导入物的
+        身份不该被本机改写（改了，来源追溯与二次分享的往返就断了）。两处口径与导入侧一致：
+
+        - ``kind`` 强制归 ``custom``：导入物不是官方预置，而 [06 §1](../../../docs/技术架构-v2/06-L4-多视角推理.md)
+          的 ``builtin`` 隐含「只能停用不可删」——导入物应当可删（口径同 `.stmem` 导入把
+          ``source`` 改写为 ``inferred``）
+        - 命名 / 描述仍过 [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md) 中性化；``skill_bundle``
+          存在性经 ``SkillRegistry`` 解析（若注入）
+
+        同 ``lens_id`` 已存在 → ``LensValidationError``（不静默覆盖本机既有视角）。
+        """
+        fields = lens.model_dump(mode="python") if isinstance(lens, Lens) else dict(lens)
+        fields["kind"] = "custom"
+        candidate = _checked_lens(**fields)
+        verdict = self._name_check(candidate.name, description=candidate.description)
+        if not verdict.passed:
+            raise LensValidationError(
+                f"视角命名/描述未过中性化校验: {candidate.name!r}"
+                f"（01 §6；命中 {[f.kind for f in verdict.findings]}）"
+            )
+        if self._skills is not None:
+            for sid in candidate.skill_bundle:
+                self._resolve_skill(sid)
+        if self._path(candidate.lens_id) in set(self._store.list_files("config")):
+            raise LensValidationError(
+                f"视角 {candidate.lens_id!r} 已存在，不得静默覆盖（导入物不覆盖本机既有视角）"
+            )
+        self._store.put(
+            "config", self._path(candidate.lens_id),
+            candidate.model_dump_json().encode("utf-8"),
+        )
+        return candidate
 
     def remove(self, lens_id: str) -> None:
         """删除视角——仅自定义可删，内置拒绝（任务 A2：内置只能停用不可删）。"""
