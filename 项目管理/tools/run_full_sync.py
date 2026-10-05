@@ -24,6 +24,17 @@
         --init --start 2025-10-04 --quarters 1 --skip-delisted \
         --daily-request-budget 40000 --out tmp/full-sync-summary.json
 
+码表可收窄至指数成分（``--universe hs300``，T-L0-007.2 人定口径 2026-10-05）：
+    ... --init --universe hs300 --start 2025-10-05 --quarters 4 \
+        --daily-request-budget 40000 --root data/hs300-baseline
+
+``--universe`` 只改**逐码任务的码表**，不改水位语义与库表：``all``＝主档全量、
+``hs300``＝沪深300 最新一期成分。两种取值都须先跑先导单请求任务
+（``bs_security_basic`` 填主档、``hs300`` 另加 ``bs_hs300`` 填成分表）再选码——
+见 :func:`resolve_codes`。**注意**：收窄码表后 ``sync_state`` 水位仍推进到当前
+交易日，故 ``freshness_verdict`` 显示「新鲜」**不等于**「覆盖全市场」；摘要的
+``params.universe`` 是判这条的唯一机器可读依据。
+
 中断后次日续跑（同一 ``--root`` 与同一组分片参数）：
     ... --resume
 
@@ -52,6 +63,15 @@ DEFAULT_SHARD_SIZE = 500
 DEFAULT_BATCH_SIZE = 200
 DEFAULT_DAILY_BUDGET = 40_000
 DEFAULT_RETRY_ATTEMPTS = 3
+
+#: 选码前的先导任务（键＝``--universe`` 取值）——选码必须发生在它们之后。
+#: ``bs_security_basic`` 填 ``security`` 主档（``all`` 的码表来源、``hs300`` 的
+#: 外键前置），``bs_hs300`` 填 ``index_constituent`` 成分（``hs300`` 的码表来源）。
+#: 皆单请求任务，故对日预算的影响可忽略。
+_BOOTSTRAP_TASKS: dict[str, tuple[str, ...]] = {
+    "all": ("bs_security_basic",),
+    "hs300": ("bs_security_basic", "bs_hs300"),
+}
 
 
 def _now_iso() -> str:
@@ -361,6 +381,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help=f"checkpoint 落点（缺省 <root 同级>/{DEFAULT_CHECKPOINT_NAME}）")
     p.add_argument("--init", action="store_true",
                    help="目标目录无存储时先 Store.create（首次全量必带）")
+    p.add_argument("--universe", choices=("all", "hs300"), default="all",
+                   help="逐码任务的码表：all＝库内主档全量；hs300＝沪深300 最新一期"
+                        "成分（先由 bs_hs300 取成分；≈300 只 ⇒ 请求量约全量的 1/30）")
     p.add_argument("--resume", action="store_true",
                    help="按 checkpoint 续跑（分片参数须与上次一致）")
     p.add_argument("--start", default="",
@@ -396,6 +419,7 @@ def _params_block(args: argparse.Namespace, root: Path,
                   codes: list[str]) -> dict[str, Any]:
     return {
         "root": str(root),
+        "universe": args.universe,
         "start": args.start or None,
         "quarters": args.quarters,
         "shard_size": args.shard_size,
@@ -405,6 +429,52 @@ def _params_block(args: argparse.Namespace, root: Path,
         "watchlist": [c.strip() for c in args.watchlist.split(",") if c.strip()] or None,
         "passphrase_source": f"env:{PASSPHRASE_ENV}",
     }
+
+
+def resolve_codes(
+    db: Any, sync: Any, *, universe: str = "all", start: str = "1990-01-01",
+    skip_delisted: bool = False, timeout_ms: int = 120_000,
+) -> tuple[list[str], Any]:
+    """建库 + 先导任务 + 按 ``universe`` 选码（``main`` 在跑批前调用）。
+
+    次序不可颠倒：``security`` 主档与 ``index_constituent`` 成分表都要先由单请求
+    任务（``bs_security_basic`` / ``bs_hs300``，见 :data:`_BOOTSTRAP_TASKS`）填好，
+    选码才有得选——这也是「全新库首跑」能选到码的前提。
+
+    :return: ``(codes, failure)``——``failure`` 非 ``None`` 表示先导任务失败或
+        建库失败，此时 ``codes`` 为空、调用方应中止（不拿空码表冒充「跑完了」）。
+    """
+    setup_env = sync.setup()
+    if setup_env.status != "ok":
+        return [], setup_env
+    for task_key in _BOOTSTRAP_TASKS[universe]:
+        env = sync.run_task(task_key, timeout_ms=timeout_ms)
+        if env.status not in ("ok", "unavailable"):
+            return [], env
+    return _select_universe_codes(db, universe, start=start,
+                                  skip_delisted=skip_delisted), None
+
+
+def _select_universe_codes(db: Any, universe: str, *,
+                           start: str, skip_delisted: bool) -> list[str]:
+    """按 ``universe`` 取逐码任务的码表。
+
+    - ``all``：库内主档全量（可选滤退市，见 :func:`_select_codes`）
+    - ``hs300``：``index_constituent`` 中 ``index_key='hs300'`` 的**最新一期**成分
+      （取 ``max(update_date)`` 那一期，避免跨期成分混入码表）
+    """
+    if universe == "all":
+        return _select_codes(db, start=start, skip_delisted=skip_delisted)
+    envelope = db.query(
+        "SELECT code FROM index_constituent WHERE index_key = ? AND update_date = "
+        "(SELECT max(update_date) FROM index_constituent WHERE index_key = ?) "
+        "ORDER BY code",
+        ("hs300", "hs300"),
+    )
+    if envelope.status == "unavailable":
+        return []
+    rows = (envelope.data or {}).get("rows") or []
+    return [r["code"] for r in rows]
 
 
 def _select_codes(db: Any, *, start: str, skip_delisted: bool) -> list[str]:
@@ -458,22 +528,6 @@ def main(argv: list[str] | None = None) -> int:
     checkpoint_path = _checkpoint_path(args, root)
 
     start = args.start or "1990-01-01"
-    codes = _select_codes(db, start=start, skip_delisted=args.skip_delisted)
-    params = _params_block(args, root, codes)
-
-    state: dict[str, Any] = {"version": CHECKPOINT_VERSION, "tasks": {}, "params": params}
-    if args.resume:
-        try:
-            previous = load_checkpoint(checkpoint_path)
-        except ValueError as exc:
-            print(f"checkpoint 不可用：{exc}", file=sys.stderr)
-            return 2
-        if previous.get("params") != params:
-            print("checkpoint 的分片参数与本次不一致，拒绝续跑：\n"
-                  f"  上次 {previous.get('params')}\n  本次 {params}", file=sys.stderr)
-            return 2
-        state = previous
-
     watchlist = [c.strip() for c in args.watchlist.split(",") if c.strip()] or None
     enabled = {"bs_k_minute": True} if args.enable_minute else None
 
@@ -483,6 +537,38 @@ def main(argv: list[str] | None = None) -> int:
                 db, gateway, fetcher,
                 retry=RetryPolicy(attempts=args.retry_attempts),
             )
+            # 选码须先有主档 / 成分表 ⇒ 先跑先导单请求任务（``resolve_codes``）。
+            # 这也修掉旧口径在**全新库**上 `_select_codes` 落空的问题：此前先选码、
+            # 后由 run_sharded 填主档，首跑会拿到空码表 ⇒ 逐码任务空转。
+            codes, failure = resolve_codes(
+                db, sync, universe=args.universe, start=start,
+                skip_delisted=args.skip_delisted, timeout_ms=args.timeout_ms,
+            )
+            if failure is not None:
+                print(f"先导任务失败（{failure.status}）：{failure.reason or ''}",
+                      file=sys.stderr)
+                return 1
+            if not codes:
+                print(f"码表为空（universe={args.universe}）：先导任务未产出可选码，"
+                      "拒绝空跑", file=sys.stderr)
+                return 2
+
+            params = _params_block(args, root, codes)
+            state: dict[str, Any] = {"version": CHECKPOINT_VERSION, "tasks": {},
+                                     "params": params}
+            if args.resume:
+                try:
+                    previous = load_checkpoint(checkpoint_path)
+                except ValueError as exc:
+                    print(f"checkpoint 不可用：{exc}", file=sys.stderr)
+                    return 2
+                if previous.get("params") != params:
+                    print("checkpoint 的分片参数与本次不一致，拒绝续跑：\n"
+                          f"  上次 {previous.get('params')}\n  本次 {params}",
+                          file=sys.stderr)
+                    return 2
+                state = previous
+
             audited_today = count_audited_today(gateway)
             summary = run_sharded(
                 sync, codes=codes, start=args.start or None,
