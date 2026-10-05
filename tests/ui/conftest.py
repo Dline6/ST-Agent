@@ -66,6 +66,41 @@ def http_get():
 
 
 @pytest.fixture
+def http_post():
+    """发一个 POST。``body`` 为 ``bytes`` 时原样发送（构造畸形体用）；为映射时序列化为 JSON。
+
+    不吞任何传输异常——「服务端把连接丢了」正是这里的观测点（``RemoteDisconnected`` 应
+    以用例失败暴露，见 ``test_ui_chat_errors``）。
+    """
+
+    def _post(
+        running: RunningUi,
+        path: str,
+        body: object = None,
+        headers: Mapping[str, str] | None = None,
+    ) -> Response:
+        if body is None:
+            payload = b""
+        elif isinstance(body, bytes):
+            payload = body
+        else:
+            payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
+        conn = http.client.HTTPConnection(running.host, running.port, timeout=5)
+        try:
+            conn.request("POST", path, body=payload, headers=dict(headers or {}))
+            raw = conn.getresponse()
+            return Response(
+                status=raw.status,
+                headers={key.lower(): value for key, value in raw.getheaders()},
+                body=raw.read(),
+            )
+        finally:
+            conn.close()
+
+    return _post
+
+
+@pytest.fixture
 def auth():
     """默认的**合法**请求头：仅带令牌，``Host`` 由客户端按连接自动填回环地址。"""
 
