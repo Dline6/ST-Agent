@@ -47,14 +47,14 @@ jobs:
           fi
 
           # 无代码变更（纯文档/账本/日志）→ 只跑 verify_docs，不跑 pytest
-          if ! printf '%s\n' "$changed" | grep -qE '^(__ALL__|src/|tests/|pyproject\.toml|项目管理/tools/)'; then
+          if ! printf '%s\n' "$changed" | grep -qE '^(__ALL__|src/|tests/|pyproject\.toml|packaging/|项目管理/tools/)'; then
             echo "run=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
 
           if printf '%s\n' "$changed" | grep -qE '^__ALL__' || [ "$event" = "push" ]; then
             targets="tests" # 主干：全量兜底
-          elif printf '%s\n' "$changed" | grep -qE '^(src/st_agent/contracts/|pyproject\.toml)'; then
+          elif printf '%s\n' "$changed" | grep -qE '^(src/st_agent/contracts/|pyproject\.toml|packaging/)'; then
             targets="tests" # 契约与打包是跨层共享面 → 全量
           else
             # 跨层套件恒随跑（锁契约形态、层间依赖方向、工具行为与**装配端到端**
