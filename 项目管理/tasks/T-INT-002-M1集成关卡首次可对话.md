@@ -10,7 +10,7 @@ milestone: M1
 depends_on: [T-L0-016, T-L0-017.1, T-L0-017.2, T-L0-018.1, T-L0-018.2, T-L1-011, T-L2-001.1, T-L2-001.2, T-L2-001.3, T-L2-002.1, T-L2-002.2, T-L2-002.3, T-L2-003, T-L2-004.1, T-L2-004.2, T-L2-004.3, T-L3-001.1, T-L3-001.2, T-L3-001.3, T-L3-002.1, T-L3-002.2, T-L3-003.1, T-L3-003.2, T-L3-003.3, T-L3-004.1, T-L3-004.2, T-L3-005.1, T-L3-005.2, T-UI-001.1, T-UI-001.2, T-UI-001.3, T-INT-001]
 status: done
 decisions: [D-065, D-075]
-verify: 重跑收口。全量 pytest **2515 passed / 0 failed / 10 deselected**（467s；较首跑 2055 多 460——中间落了 M2 全批）· `tests/integration/test_m1_chat.py` **10 条**（GWT-1..6、GWT-8 离线端到端）· `tests/live/test_llm_chat_live.py` **1 passed**（生产根默认理解器经真端点收敛意图、显式开审计恰一条、明文不落盘）· 强制 `tests/live/test_llm_live.py` **2 passed** · 修 [`T-L0-018.2`](T-L0-018.2-出网审计可选与落盘形态批量化.md) 审计默认关致**两条 live 关卡用例静默转红**（M1 `test_llm_chat_live` + M2 `test_llm_deliberation_live`，同根因补 `audit=True`）+ 订正陈旧正文 GWT-3/GWT-6（门面已交付 / `analyze` 已接线）+ 补 GWT-8 覆盖 L0 新默认 · `verify_docs.py --strict` 检查 1–9 全 0 · 决策 [D-075](../决策日志.md) · 见执行日志 [T-INT-002]
+verify: 重跑收口。全量 pytest **2515 passed / 0 failed / 10 deselected**（467s；较首跑 2055 多 460——中间落了 M2 全批）· `tests/integration/test_m1_chat.py` **10 条**（GWT-1..6、GWT-8 离线端到端）· `tests/live/test_llm_chat_live.py` **1 passed**（生产根默认理解器经真端点收敛意图、显式开审计恰一条、明文不落盘）· 强制 `tests/live/test_llm_live.py` **2 passed** · 修 [`T-L0-018.2`](T-L0-018.2-出网审计可选与落盘形态批量化.md) 审计默认关致**两条 live 关卡用例静默转红**（M1 `test_llm_chat_live` + M2 `test_llm_deliberation_live`，同根因补 `audit=True`）+ 订正陈旧正文 GWT-3/GWT-6（门面已交付 / `analyze` 已接线）+ 补 GWT-8 覆盖 L0 新默认 · `verify_docs.py --strict` 检查 1–9 全 0 · 决策 [D-075](../决策日志.md) · 入库 `1cc49b7` + [PR #85](https://github.com/Dline6/ST-Agent/pull/85)（`a4ddf43`）· 见执行日志 [T-INT-002]
 ---
 
 # T-INT-002 · M1 集成关卡 · 首次可对话
