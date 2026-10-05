@@ -246,3 +246,51 @@ class TestLensModelInvariants:
         lens = Lens(lens_id=LensId.generate().value, name="占位视角", description="中性",
                     skill_bundle=(), judging_criteria=JudgingCriteria(natural="x"), kind="custom")
         assert lens.skill_bundle == ()
+
+
+# ───────────────────────── 导入安装面（T-ECO-002.1） ─────────────────────────
+
+def _shared_lens(**over) -> Lens:
+    fields = dict(
+        lens_id=LensId.generate().value, name="导入视角", description="导入校验流水线的安装面",
+        skill_bundle=("sk_st_list_sync_v1.0",),
+        judging_criteria=JudgingCriteria(natural="按数据充分度给出中性评判"),
+        kind="custom", enabled=True,
+    )
+    fields.update(over)
+    return Lens(**fields)
+
+
+class TestInstallShared:
+    """[09 §3](../../../docs/技术架构-v2/09-生态与分享.md) 的安装段：保留分享方标识，只增不改既有行为。"""
+
+    def test_preserves_identity_and_lands_in_roster(self, roster: LensRoster):
+        lens = _shared_lens()
+        installed = roster.install_shared(lens)
+        assert installed.lens_id == lens.lens_id          # 身份不被本机改写
+        assert roster.get(lens.lens_id).name == lens.name
+
+    def test_builtin_kind_is_forced_to_custom(self, roster: LensRoster):
+        """导入物不是官方预置；`builtin` 只能停用不可删，而导入物应当可删。"""
+        installed = roster.install_shared(_shared_lens(kind="builtin"))
+        assert installed.kind == "custom"
+        roster.remove(installed.lens_id)                  # 可删（内置不可删）
+
+    def test_duplicate_is_not_silently_overwritten(self, roster: LensRoster):
+        lens = _shared_lens()
+        roster.install_shared(lens)
+        with pytest.raises(LensValidationError, match="已存在"):
+            roster.install_shared(lens)
+
+    def test_persona_name_is_refused(self, roster: LensRoster):
+        with pytest.raises(LensValidationError, match="中性化"):
+            roster.install_shared(_shared_lens(name="激进派"))
+
+    def test_unknown_skill_in_bundle_is_refused(self, roster: LensRoster):
+        with pytest.raises(LensValidationError, match="未注册"):
+            roster.install_shared(_shared_lens(skill_bundle=("sk_absent_v1.0",)))
+
+    def test_mapping_form_is_accepted(self, roster: LensRoster):
+        lens = _shared_lens()
+        installed = roster.install_shared(lens.model_dump(mode="python"))
+        assert installed.lens_id == lens.lens_id

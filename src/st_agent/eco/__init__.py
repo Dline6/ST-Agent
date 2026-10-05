@@ -11,8 +11,11 @@
   从四个既有门面取材、导出前过中性化校验、`.stmem` 走强制三步——[:mod:`export`](export.py) +
   [:mod:`card`](card.py)（分享卡片）
 
-导入校验流水线、官方 Skill 索引与生态边界（09 §3 / §4 / §6）归
-[`T-ECO-002`](../../../项目管理/tasks/T-ECO-002-导入校验流水线官方Skill索引生态边界.md)。
+导入校验流水线（[09 §3](../../../docs/技术架构-v2/09-生态与分享.md)）与官方 Skill 索引、生态边界
+（[09 §4](../../../docs/技术架构-v2/09-生态与分享.md) · [09 §6](../../../docs/技术架构-v2/09-生态与分享.md)）归
+[`T-ECO-002`](../../../项目管理/tasks/T-ECO-002-导入校验流水线官方Skill索引生态边界.md)：
+导入五段（格式校验复用容器读取面、依赖解析、权限审核、用户批准、安装）见
+[:mod:`import_pipeline`](import_pipeline.py)；只读索引与生态边界见 [:mod:`index`](index.py)。
 
 层次：`eco` 是层表的最上层（[`tests/test_layering.py`](../../../tests/test_layering.py)
 的 `LAYER_ORDER`），只向下消费契约与各层，不被任何层依赖。
@@ -38,29 +41,59 @@ from st_agent.eco.errors import (
     EcoError,
     ShareExportError,
     ShareFormatError,
+    ShareImportError,
+    ShareIndexError,
     ShareVersionError,
 )
 from st_agent.eco.export import ShareExporter, appended_chain
+from st_agent.eco.import_pipeline import (
+    IMPORT_CONFIRMATION,
+    DependencyGap,
+    ImportOutcome,
+    ImportPlan,
+    ShareImporter,
+    ShareImportRecord,
+)
+from st_agent.eco.index import (
+    ECOSYSTEM_BOUNDARY,
+    EMPTY_STATE_TEXT,
+    IndexEntry,
+    OfficialIndex,
+    has_third_party,
+)
 
 __all__ = [
     "CONTAINER_VERSION",
+    "ECOSYSTEM_BOUNDARY",
+    "EMPTY_STATE_TEXT",
+    "IMPORT_CONFIRMATION",
     "PAYLOAD_MODELS",
     "SHARE_EXTENSIONS",
     "SHARE_FORMAT_ID",
     "SHARE_KINDS",
     "SUPPORTED_MAJOR",
+    "DependencyGap",
     "EcoError",
+    "ImportOutcome",
+    "ImportPlan",
+    "IndexEntry",
+    "OfficialIndex",
     "ShareCard",
     "ShareContainer",
     "ShareExportError",
     "ShareExporter",
     "ShareFormatError",
     "ShareHeader",
+    "ShareImportError",
+    "ShareImportRecord",
+    "ShareImporter",
+    "ShareIndexError",
     "ShareKind",
     "ShareManifest",
     "ShareVersionError",
     "appended_chain",
     "container_checksum",
     "extension_for",
+    "has_third_party",
     "kind_of",
 ]
