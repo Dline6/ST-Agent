@@ -131,8 +131,14 @@ class Rig:
             command=("/opt/st-agent",),
             notifier=lambda title, body: self.notes.append((title, body)),
             parent_pid=4242,
-            starter=lambda spec, *, parent_pid=None, resolve_passphrase=None: self.handle,  # noqa: ARG005
+            starter=self._fake_starter,
         )
+
+    def _fake_starter(
+        self, spec: Any, *, parent_pid: Any = None, resolve_passphrase: Any = None
+    ) -> Any:
+        """后端拉起件替身（端口签名须与 `start_backend` 一致；本类只断言生命周期语义）。"""
+        return self.handle
 
 
 # ───────────────────────── GWT-1/3：真后端的拉起 → 握手 → 回收 ─────────────────────────
