@@ -59,7 +59,7 @@ verify: 全量 pytest **2407 passed / 9 deselected**（437s）；`tests/integrat
 ## 假设与前提
 - **A1** 组合根落在 [`app.py`](../../../../src/st_agent/app.py)：抽 L2/L3 装配助手以复用、新增 `build_m2_runtime`，并令 [`test_layering.py`](../../../../tests/test_layering.py) 的 `APP_ALLOWED_IMPORTS` 加 `l4`（[`T-L4-002` A2](T-L4-002-多视角执行编排.md) 已预告「装配 l4 即越界，归 T-INT-003」）。**若错**（要求另立组合根模块）：`app.py` 与层扫描用例返工，M2 装配面重做。**验证**：`test_app_is_composition_root_only` 全绿且新增断言「`app` 可装配 `l0–l4`」。
 - **A2** `analyze` 的 `topic` 经 `IntentDraft.understood` → `IntentConfirmation.values` 流入；`mode`（`quick`/`deep`）的**问项来源**由本关卡新增的**意图级参数声明**（`INTENT_PARAM_SPECS["analyze"]`）提供——[05 §3.2](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 原口径「一条问项 ＝ 目标 Skill 的 `SkillDescriptor.parameters` 中未给出值的一项」对**无 target Skill 的意图**（`analyze` 无被调用的 Skill）不成立，是 [06 §2.1](../../../../docs/技术架构-v2/06-L4-多视角推理.md)「询问模式」的空悬。**若错**（负责人改判该问项归别的机制）：澄清层返工、Story 的触发询问 GWT 不成立。**验证**：GWT-2 断言 `clarify` 对 `analyze` 产出 `mode` 问项、`confirm` 按答案或默认 `deep` 落 `values`。
-- **A3** 三个 L4 端口的真实现均在**组合根默认装配**、离线关卡注入确定性件（同 [`T-INT-002` A4](../../T-INT-002-M1集成关卡首次可对话.md) 的「生产装真件、关卡注入脚本」口径）：`LlmOpinionSynthesizer` / `LlmEvidenceReviewer` 经 `runtime.llm` 出网（**触发 live 子集强制项**），`MarketDimensionCatalog` 读本地 MarketDb（不出网）。**若错**（要求真件也离线可跑）：须改走本地推理端点，`LlmClient` 的端点选择面返工。**验证**：离线用例注入脚本件且断言不触网；GWT-9 的 live 用例用真端点。
+- **A3** 三个 L4 端口的真实现均在**组合根默认装配**、离线关卡注入确定性件（同 [`T-INT-002` A4](../M1/T-INT-002-M1集成关卡首次可对话.md) 的「生产装真件、关卡注入脚本」口径）：`LlmOpinionSynthesizer` / `LlmEvidenceReviewer` 经 `runtime.llm` 出网（**触发 live 子集强制项**），`MarketDimensionCatalog` 读本地 MarketDb（不出网）。**若错**（要求真件也离线可跑）：须改走本地推理端点，`LlmClient` 的端点选择面返工。**验证**：离线用例注入脚本件且断言不触网；GWT-9 的 live 用例用真端点。
 - **A4** 盲点「维度 → 产出 Skill」映射来自 **L1 官方 Pack 旁的 `OFFICIAL_DIMENSIONS` 声明**（与 `OFFICIAL_PACK` 同文件、随增删同步），目录读 MarketDb 取维度**全集**后与声明 join；**未登记的维度** `skill_ids` 为空 → 对照件按既有口径记「覆盖不可判」并如实标注，**不臆断为盲点**。**若错**（要求扩 `SkillDescriptor` 契约承载）：触 [01 §2](../../../../docs/技术架构-v2/01-平台共享契约.md)（[铁律 8](../../../工程宪法.md) 序），改动面显著扩大。**验证**：GWT-7 注入含未登记维度的目录 → 盲点不入其列且 `notes` 记条数。
 - **A5** `DispatchOutcome.analysis` 是**鸭子载荷**（L3 **不 import L4**，`LAYER_ORDER` 为 `l3 < l4`）：总线只断言其含 `envelope: ResultEnvelope` 且类型合法，其余字段（`view` / `result` / `traces`）由组合根的对话门面按属性取值。**若错**（要求 L3 显式认知 L4 类型）：须增跨层契约或反向依赖，违 [铁律 7](../../../工程宪法.md)。**验证**：`test_layering.py` 全绿 + 新增断言「`bus.py` 无 `st_agent.l4` import」。
 - **A6** 分歧图描述件经**组合根对话门面**的 `analyze` 分支出（鸭子取 `analysis.view`），`describe_divergence_map` 自身的**零改动**复用；追问接口复用 `describe_trace`（矩阵行 `trace_id` → `analysis.traces`），**不自造**链渲染。**若错**：渲染面返工。**验证**：GWT-4 / GWT-6 端到端用例。
@@ -74,7 +74,7 @@ verify: 全量 pytest **2407 passed / 9 deselected**（437s）；`tests/integrat
 
 ## 参考
 - Story（What）：[story-04](../../../../docs/PRD-v2-Agent/story-04-multi-lens.md)
-- 前置关卡：[T-INT-002](../../T-INT-002-M1集成关卡首次可对话.md)
+- 前置关卡：[T-INT-002](../M1/T-INT-002-M1集成关卡首次可对话.md)
 - 装配范式：[tests/integration/rig_m1.py](../../../../tests/integration/rig_m1.py)（生产组合根 + 确定性注入）
 
 ## 备注
