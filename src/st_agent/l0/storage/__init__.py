@@ -9,6 +9,7 @@ from st_agent.l0.storage.errors import (
     CryptoError,
     StorageCorruptionError,
     StorageOpenError,
+    StoragePassphraseRequired,
     StorageSecretsLockedError,
 )
 from st_agent.l0.storage.format import (
@@ -47,6 +48,7 @@ __all__ = [
     "PartitionName",
     "StorageCorruptionError",
     "StorageOpenError",
+    "StoragePassphraseRequired",
     "StorageSecretsLockedError",
     "StorageState",
     "Store",

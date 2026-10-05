@@ -131,7 +131,7 @@ class Rig:
             command=("/opt/st-agent",),
             notifier=lambda title, body: self.notes.append((title, body)),
             parent_pid=4242,
-            starter=lambda spec, *, parent_pid=None: self.handle,   # noqa: ARG005
+            starter=lambda spec, *, parent_pid=None, resolve_passphrase=None: self.handle,  # noqa: ARG005
         )
 
 
@@ -237,12 +237,12 @@ def test_backend_spec_default_prefers_frozen_sibling(
 
 
 def test_start_opens_window_at_handshake_url_and_installs_tray() -> None:
-    """GWT-1 · 开窗地址＝握手地址；托盘四项齐备且已跑起来。"""
+    """GWT-1 · 开窗地址＝握手地址；托盘五项齐备且已跑起来。"""
     rig = Rig()
     rig.shell.start()
     assert rig.window.urls == [rig.handle.client_url]
     assert [item.label for item in rig.tray.items] == [
-        "显示窗口", "开机自启", "发送测试通知", "退出",
+        "显示窗口", "开机自启", "发送测试通知", "清除已记住的凭据口令", "退出",
     ]
     assert rig.tray.calls == ["install", "run_detached"]
 

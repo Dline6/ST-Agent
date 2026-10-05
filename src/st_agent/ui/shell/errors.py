@@ -7,11 +7,19 @@
 
 from __future__ import annotations
 
-__all__ = ["ShellError", "ShellSurfaceUnavailable"]
+__all__ = ["ShellCancelled", "ShellError", "ShellSurfaceUnavailable"]
 
 
 class ShellError(Exception):
     """桌面壳的基类异常。"""
+
+
+class ShellCancelled(Exception):
+    """用户在口令交互里取消（[`T-UI-002.4.2`]）——**用户的决定**，不是错误。
+
+    刻意**不继承** :class:`ShellError`：两者收场不同（取消＝中性说明 + 退出码 0；
+    启动失败＝点名原因 + 非零退出码）。混成一族会让调用方只能靠消息文本区分。
+    """
 
 
 class ShellSurfaceUnavailable(ShellError):

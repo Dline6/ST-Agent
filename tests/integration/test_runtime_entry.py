@@ -12,11 +12,13 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import subprocess
 import sys
 import time
+import types
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
@@ -25,8 +27,21 @@ from typing import Any
 
 import pytest
 
-from st_agent.__main__ import default_root, parent_alive
-from st_agent.l0.storage import MODE_ENCRYPTED, Store, read_mode
+from st_agent.__main__ import (
+    _build_with_passphrase,
+    _read_stdin_passphrase,
+    default_root,
+    parent_alive,
+)
+from st_agent.l0.storage import (
+    MODE_ENCRYPTED,
+    StorageCorruptionError,
+    StorageOpenError,
+    StoragePassphraseRequired,
+    StorageSecretsLockedError,
+    Store,
+    read_mode,
+)
 
 REPO = Path(__file__).resolve().parents[2]
 SRC = REPO / "src"
@@ -217,9 +232,9 @@ def test_entry_exits_when_parent_gone(tmp_path: Path) -> None:
 # ───────────────────────── GWT-4：加密根 fail-closed ─────────────────────────
 
 
-def _make_encrypted_root(root: Path) -> None:
+def _make_encrypted_root(root: Path, passphrase: str = "correct horse battery staple") -> None:
     """建一个**加密**根（用户显式开启加密后的形态；[D-073] 起默认关）。"""
-    Store.create(root, "correct horse battery staple")
+    Store.create(root, passphrase)
 
 
 def test_entry_fails_closed_on_encrypted_root(tmp_path: Path) -> None:
@@ -235,6 +250,7 @@ def test_entry_fails_closed_on_encrypted_root(tmp_path: Path) -> None:
         payload = json.loads(line)
         assert payload["event"] == "error"
         assert "主密码" in payload["reason"]
+        assert payload["code"] == "passphrase_required"      # 机器可读：壳据此分辨是否需要口令
         assert proc.wait(timeout=_STOP_TIMEOUT) == 2
         assert read_mode(root) == MODE_ENCRYPTED
     finally:
@@ -262,6 +278,195 @@ def test_entry_opens_encrypted_root_with_passphrase_env(tmp_path: Path) -> None:
     finally:
         if proc.poll() is None:
             proc.kill()
+
+
+# ───────────────────────── 口令协商（T-UI-002.4.1；就绪握手之前） ─────────────────────────
+
+_LLM_ENV = {
+    "LLM_API_KEY": "sk-local-test-key",
+    "LLM_BASE_URL": "http://127.0.0.1:1/v1",
+    "LLM_MODEL": "local-test-model",
+}
+"""触发 `.env` 引导装载（装配期要写凭据库）的三键；`base_url` 指向本机**死端口**，不会真的出网。"""
+
+_MAIN_PASSPHRASE = "correct horse battery staple"
+_CREDENTIALS_PASSPHRASE = "credential-passphrase-2026"
+
+
+def _send(proc: subprocess.Popen[str], line: str) -> None:
+    assert proc.stdin is not None
+    proc.stdin.write(line + "\n")
+    proc.stdin.flush()
+
+
+def test_entry_negotiates_main_passphrase_then_readies(tmp_path: Path) -> None:
+    """GWT-1 · 加密根：先要**主密码**（`kind=main_passphrase`），给对后正常就绪。"""
+    root = tmp_path / "store"
+    _make_encrypted_root(root)
+    workdir = tmp_path / "cwd"
+    workdir.mkdir()
+
+    proc = _spawn(root, workdir, "--control-stdin", "--ask-passphrase")
+    try:
+        ask = json.loads(_read_line(proc))
+        assert ask["event"] == "passphrase_required"      # 是请求，不是失败行
+        assert ask["kind"] == "main_passphrase"
+        assert ask["attempt"] == 1
+        assert ask["root"] == str(root)
+        assert ask["reason"] and "校验锚" not in ask["reason"]   # 中性，不回显失败细节
+
+        _send(proc, _MAIN_PASSPHRASE)
+        assert json.loads(_read_line(proc))["event"] == "ready"
+
+        _send(proc, "stop")
+        assert proc.wait(timeout=_STOP_TIMEOUT) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
+def test_entry_sets_credentials_passphrase_by_tofu(tmp_path: Path) -> None:
+    """GWT-2 · 明文根 + LLM 三键：首次**设定**凭据口令（TOFU），此后同根须**同一**口令。"""
+    root = tmp_path / "store"
+    workdir = tmp_path / "cwd"
+    workdir.mkdir()
+
+    def launch() -> subprocess.Popen[str]:
+        return _spawn(root, workdir, "--control-stdin", "--ask-passphrase",
+                      env_extra=_LLM_ENV)
+
+    # ① 首次：装配期要写凭据 → 索取凭据口令（kind=credentials）并按 TOFU 设定
+    proc = launch()
+    try:
+        ask = json.loads(_read_line(proc))
+        assert (ask["event"], ask["kind"]) == ("passphrase_required", "credentials")
+        _send(proc, _CREDENTIALS_PASSPHRASE)
+        assert json.loads(_read_line(proc))["event"] == "ready"
+        _send(proc, "stop")
+        assert proc.wait(timeout=_STOP_TIMEOUT) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+    # ② 二次：同一口令通过（凭据分区已建立，校验锚生效）
+    proc = launch()
+    try:
+        assert json.loads(_read_line(proc))["kind"] == "credentials"
+        _send(proc, _CREDENTIALS_PASSPHRASE)
+        assert json.loads(_read_line(proc))["event"] == "ready"
+        _send(proc, "stop")
+        assert proc.wait(timeout=_STOP_TIMEOUT) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+    # ③ 三次：**错**口令 ⇒ 再索取（attempt 递增、不回显所给口令），EOF 即取消
+    proc = launch()
+    try:
+        assert json.loads(_read_line(proc))["kind"] == "credentials"
+        _send(proc, "wrong-passphrase")
+        again = json.loads(_read_line(proc))
+        assert again["event"] == "passphrase_required"
+        assert again["attempt"] == 2
+        assert "wrong-passphrase" not in again["reason"]
+
+        assert proc.stdin is not None
+        proc.stdin.close()                                  # EOF ⇒ 取消（不阻塞）
+        assert proc.wait(timeout=_STOP_TIMEOUT) == 2
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
+def test_entry_gives_up_after_bounded_wrong_passphrases(tmp_path: Path) -> None:
+    """GWT-3 · 连续给错 3 次 ⇒ 第 4 次**不再请求**，显式失败且**不降级为明文**。"""
+    root = tmp_path / "store"
+    _make_encrypted_root(root)
+    workdir = tmp_path / "cwd"
+    workdir.mkdir()
+
+    proc = _spawn(root, workdir, "--control-stdin", "--ask-passphrase")
+    try:
+        for expected_attempt in (1, 2, 3):
+            ask = json.loads(_read_line(proc))
+            assert ask["event"] == "passphrase_required"
+            assert ask["attempt"] == expected_attempt
+            _send(proc, f"nope-{expected_attempt}")
+
+        payload = json.loads(_read_line(proc))
+        assert payload["event"] == "error"
+        assert payload["code"] == "passphrase_unavailable"
+        assert proc.wait(timeout=_STOP_TIMEOUT) == 2
+        assert read_mode(root) == MODE_ENCRYPTED            # 存储未被改动、未降级
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
+def test_entry_does_not_retry_non_passphrase_open_failures(tmp_path: Path) -> None:
+    """GWT-4 · keyfile 损坏**不是**「给口令就能过」⇒ 立即失败，不回 `passphrase_required`。"""
+    root = tmp_path / "store"
+    Store.create(root)
+    (root / "keyfile.json").write_text("{ 这不是 JSON", encoding="utf-8")
+    workdir = tmp_path / "cwd"
+    workdir.mkdir()
+
+    proc = _spawn(root, workdir, "--control-stdin", "--ask-passphrase")
+    try:
+        payload = json.loads(_read_line(proc))
+        assert payload["event"] == "error"
+        assert payload["code"] == "storage_error"
+        assert proc.wait(timeout=_STOP_TIMEOUT) == 2         # 不重试、不等口令
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
+def test_entry_without_negotiation_fails_fast(tmp_path: Path) -> None:
+    """GWT-5 · 未开协商 ⇒ 立即显式失败（给出两种入口的指引），**不阻塞在 stdin**。"""
+    root = tmp_path / "store"
+    _make_encrypted_root(root)
+    workdir = tmp_path / "cwd"
+    workdir.mkdir()
+
+    proc = _spawn(root, workdir)                             # 既无 --ask-passphrase 也无 env
+    try:
+        payload = json.loads(_read_line(proc))
+        assert payload["event"] == "error"
+        assert payload["code"] == "passphrase_required"
+        assert "--ask-passphrase" in payload["reason"] and "--passphrase-env" in payload["reason"]
+        assert proc.wait(timeout=_STOP_TIMEOUT) == 2
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
+def test_entry_keeps_passphrase_out_of_argv_logs_and_disk(tmp_path: Path) -> None:
+    """GWT-6 · 口令只走进程管道：不进 argv、不进日志、不落存储根下的任何文件。"""
+    secret = "s3cret-passphrase-never-on-disk"
+    root = tmp_path / "store"
+    _make_encrypted_root(root, secret)
+    workdir = tmp_path / "cwd"
+    workdir.mkdir()
+
+    proc = _spawn(root, workdir, "--control-stdin", "--ask-passphrase")
+    try:
+        assert json.loads(_read_line(proc))["event"] == "passphrase_required"
+        assert secret not in " ".join(proc.args)             # 不进 argv
+        _send(proc, secret)
+        assert json.loads(_read_line(proc))["event"] == "ready"
+        _send(proc, "stop")
+        assert proc.wait(timeout=_STOP_TIMEOUT) == 0
+
+        stream = proc.stderr.read()                          # type: ignore[union-attr]
+        assert secret not in stream                          # 不进日志
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+    needle = secret.encode("utf-8")
+    leaked = [p for p in root.rglob("*") if p.is_file() and needle in p.read_bytes()]
+    assert leaked == []                                      # 不落盘（含 keyfile / 清单 / 分区）
 
 
 # ───────────────────────── 纯函数面 ─────────────────────────
@@ -322,3 +527,170 @@ def test_parent_alive_tracks_real_processes() -> None:
     while parent_alive(victim.pid) and time.monotonic() < deadline:
         time.sleep(0.1)
     assert not parent_alive(victim.pid)
+
+
+def test_read_stdin_passphrase_only_strips_line_endings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """口令内容**原样**（首尾空白是内容的一部分）；空行 / EOF ⇒ `None`（按取消）。"""
+    monkeypatch.setattr(sys, "stdin", io.StringIO("  spaced pass  \n"))
+    assert _read_stdin_passphrase() == "  spaced pass  "
+    monkeypatch.setattr(sys, "stdin", io.StringIO("\n"))
+    assert _read_stdin_passphrase() is None
+    monkeypatch.setattr(sys, "stdin", io.StringIO(""))
+    assert _read_stdin_passphrase() is None
+
+
+def _runtime_stub() -> Any:
+    """只带 `chat` 的运行时替身（`run_backend` 只从运行时取这一个属性）。"""
+    return types.SimpleNamespace(chat=object())
+
+
+def _negotiate(
+    fake_build: Any,
+    answers: list[str | None],
+    *,
+    ask: bool = True,
+    root: Path = Path("ignored"),
+    passphrase: str | None = None,
+):
+    """跑一次协商（`stream` 收 stdout、`read_passphrase` 按序取 `answers`）。"""
+    stream = io.StringIO()
+    box = iter(answers)
+
+    def read_passphrase() -> str | None:
+        return next(box)
+
+    runtime, failure = _build_with_passphrase(
+        root=root, passphrase=passphrase, ask_passphrase=ask,
+        stream=stream, json_handshake=True, build_runtime=fake_build, feed=None,
+        llm_env=None, dotenv_path=None, read_passphrase=read_passphrase,
+    )
+    return runtime, failure, stream.getvalue()
+
+
+def test_negotiation_asks_then_succeeds() -> None:
+    """GWT-1 · 首次装配判「要口令」⇒ 发 `passphrase_required`（首行），给对后装配成功。"""
+    calls: list[str | None] = []
+
+    def fake_build(root: Any, passphrase: Any, **kwargs: Any) -> Any:
+        calls.append(passphrase)
+        if passphrase != "right":
+            raise StoragePassphraseRequired("主密码错误", kind="main_passphrase")
+        return _runtime_stub()
+
+    runtime, failure, out = _negotiate(fake_build, ["right"])
+    assert failure is None and runtime is not None
+    assert calls == [None, "right"]                     # 无口令试一次 → 带口令成功
+    first = json.loads(out.strip().splitlines()[0])
+    assert first["event"] == "passphrase_required"
+    assert first["kind"] == "main_passphrase" and first["attempt"] == 1
+
+
+def test_negotiation_is_bounded_and_cancellable() -> None:
+    """GWT-3 · 有界：请求 3 次后放弃；且用户不给（`None`）即取消、不再请求。"""
+
+    def always_wrong(root: Any, passphrase: Any, **kwargs: Any) -> Any:
+        raise StorageSecretsLockedError("凭据分区未解锁")
+
+    _, failure, out = _negotiate(always_wrong, ["a", "b", "c", "d"])
+    assert failure is not None and failure.code == "passphrase_unavailable"
+    asks = [json.loads(line) for line in out.strip().splitlines()]
+    assert [a["attempt"] for a in asks] == [1, 2, 3]     # 第 4 次不再请求
+    assert all(a["kind"] == "credentials" for a in asks)
+
+    _, cancelled, out = _negotiate(always_wrong, [None])
+    assert cancelled is not None and cancelled.code == "passphrase_required"
+    assert "取消" in cancelled.reason
+    assert len(out.strip().splitlines()) == 1            # 只请求了一次
+
+
+def test_negotiation_does_not_retry_non_passphrase_failures() -> None:
+    """GWT-4 · 非口令类打开失败**不**触发索取、**不**重试（不白白拖后报错）。"""
+    asked = {"n": 0}
+
+    def broken(root: Any, passphrase: Any, **kwargs: Any) -> Any:
+        raise StorageOpenError("keyfile 损坏，无法打开存储")
+
+    stream = io.StringIO()
+
+    def read_passphrase() -> str | None:                 # pragma: no cover - 不应被调用
+        asked["n"] += 1
+        return "unused"
+
+    _, failure = _build_with_passphrase(
+        root=Path("ignored"), passphrase=None, ask_passphrase=True,
+        stream=stream, json_handshake=True, build_runtime=broken, feed=None,
+        llm_env=None, dotenv_path=None, read_passphrase=read_passphrase,
+    )
+    assert failure is not None and failure.code == "storage_error"
+    assert asked["n"] == 0 and stream.getvalue() == ""
+
+    def corrupt(root: Any, passphrase: Any, **kwargs: Any) -> Any:
+        raise StorageCorruptionError(types.SimpleNamespace(corrupted=[]))
+
+    _, failure = _build_with_passphrase(
+        root=Path("ignored"), passphrase=None, ask_passphrase=True,
+        stream=io.StringIO(), json_handshake=True, build_runtime=corrupt, feed=None,
+        llm_env=None, dotenv_path=None, read_passphrase=lambda: "unused",
+    )
+    assert failure is not None and failure.code == "storage_corruption"
+
+
+def test_negotiation_probes_established_credentials_before_assembly(tmp_path: Path) -> None:
+    """开局探测：明文根**凭据已建立** ⇒ **先**索取，装配一次就过（不靠「失败一次再试」）。
+
+    这正是装配幂等（端点已存在即整组跳过）留下的缺口：不探测则装配能过、口令却始终没到位，
+    失败被推到**第一次读凭据**时（如首次 LLM 调用）。
+    """
+    root = tmp_path / "store"
+    Store.create(root)                      # 明文根
+    Store.open(root, "established-pass")    # 首次解锁即 TOFU 出凭据校验锚
+
+    seen: list[str | None] = []
+
+    def fake_build(any_root: Any, passphrase: Any, **kwargs: Any) -> Any:
+        seen.append(passphrase)
+        if passphrase != "established-pass":
+            raise StorageSecretsLockedError("凭据分区未解锁")
+        return _runtime_stub()
+
+    runtime, failure, out = _negotiate(fake_build, ["established-pass"], root=root)
+    assert failure is None and runtime is not None
+    assert seen == ["established-pass"]                 # 一次装配成功，没有先失败一次
+    first = json.loads(out.strip().splitlines()[0])
+    assert (first["event"], first["kind"], first["attempt"]) == (
+        "passphrase_required", "credentials", 1
+    )
+
+
+def test_negotiation_skips_roots_that_need_no_passphrase(tmp_path: Path) -> None:
+    """免口令的明文根（凭据分区**从未建立**）⇒ 不探测出需求、**不**索取、不凭空造口令。"""
+    root = tmp_path / "store"
+    Store.create(root)                      # 明文根、无凭据
+    seen: list[str | None] = []
+
+    def fake_build(any_root: Any, passphrase: Any, **kwargs: Any) -> Any:
+        seen.append(passphrase)
+        return _runtime_stub()
+
+    runtime, failure, out = _negotiate(fake_build, [], root=root)
+    assert failure is None and runtime is not None
+    assert seen == [None] and out == ""                 # 没发过任何事件
+
+
+def test_negotiation_disabled_fails_with_guidance() -> None:
+    """GWT-5 · 未开协商 ⇒ 一个 `passphrase_required` 失败（带两种入口指引），不曾索取。"""
+    stream = io.StringIO()
+
+    def needs_passphrase(root: Any, passphrase: Any, **kwargs: Any) -> Any:
+        raise StoragePassphraseRequired("该存储为加密格式", kind="main_passphrase")
+
+    _, failure = _build_with_passphrase(
+        root=Path("ignored"), passphrase=None, ask_passphrase=False,
+        stream=stream, json_handshake=True, build_runtime=needs_passphrase, feed=None,
+        llm_env=None, dotenv_path=None, read_passphrase=lambda: "unused",
+    )
+    assert failure is not None
+    assert failure.code == "passphrase_required"
+    assert "--ask-passphrase" in failure.reason
+    assert stream.getvalue() == ""                       # 没有发事件
+

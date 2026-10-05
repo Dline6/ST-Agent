@@ -60,6 +60,7 @@ import shutil
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -74,6 +75,7 @@ from st_agent.l0.storage.crypto import (
 from st_agent.l0.storage.errors import (
     StorageCorruptionError,
     StorageOpenError,
+    StoragePassphraseRequired,
     StorageSecretsLockedError,
 )
 from st_agent.l0.storage.format import (
@@ -123,6 +125,27 @@ _REPLACE_BACKOFF_S = 0.02
 
 KEYFILE_ITERATIONS_HINT = 600_000
 """写入 keyfile 的迭代次数提示（与 crypto.MASTER_KDF_ITERATIONS 同源）。"""
+
+
+def _read_keyfile_meta(root: Path) -> dict[str, Any]:
+    """读 keyfile 的元数据（``open`` 与只读探测**共用同一读法**，免两处口径漂移）。"""
+    kf = root / _KEYFILE
+    if not kf.exists():
+        raise StorageOpenError(f"{root} 无存储（keyfile 不存在）；先 Store.create")
+    try:
+        return json.loads(kf.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise StorageOpenError(f"keyfile 损坏，无法打开存储: {exc}") from exc
+
+
+def _has_files_under(directory: Path) -> bool:
+    """目录下是否存在清单之外的**数据文件**（递归：凭据按 ``cred/<id>.json`` 分层）。
+
+    只看顶层会把「清单丢了但数据还在」误判成空分区，故必须递归。
+    """
+    return directory.is_dir() and any(
+        p.is_file() and p.name != MANIFEST_NAME for p in directory.rglob("*")
+    )
 
 
 class StorageState(BaseModel):
@@ -235,7 +258,9 @@ class Store:
         解密后的 `secrets` 若有损坏，随本调用显式上抛。
         """
         if not isinstance(passphrase, str) or not passphrase.strip():
-            raise StorageOpenError("凭据口令不得为空")
+            raise StoragePassphraseRequired(
+                "凭据口令不得为空", kind="credentials"
+            )
         if self._secrets_salt is None:
             raise StorageOpenError("存储缺少 secrets salt，无法解锁凭据分区")
         key = derive_master_key(passphrase, self._secrets_salt)
@@ -247,8 +272,9 @@ class Store:
             self._secrets_verifier = make_verifier(key)
             self._write_keyfile()
         elif not check_verifier(key, self._secrets_verifier):
-            raise StorageOpenError(
-                "凭据口令错误（校验锚认证失败）；凭据口令丢失即该分区不可恢复"
+            raise StoragePassphraseRequired(
+                "凭据口令错误（校验锚认证失败）；凭据口令丢失即该分区不可恢复",
+                kind="credentials",
             )
         self._keys[_SECRETS] = key
         self._states[_SECRETS] = "ok"
@@ -272,15 +298,8 @@ class Store:
             raise StorageCorruptionError(self.storage_report())
 
     def _has_any_file(self, partition: PartitionName) -> bool:
-        """分区目录下是否存在清单之外的数据文件（TOFU 前置判定用，不解密）。
-
-        递归查找：凭据按 ``cred/<id>.json`` 分层落盘，只看顶层目录会把
-        「清单丢了但数据还在」误判成空分区。
-        """
-        d = self._root / partition
-        return d.is_dir() and any(
-            p.is_file() and p.name != MANIFEST_NAME for p in d.rglob("*")
-        )
+        """分区目录下是否存在清单之外的数据文件（TOFU 前置判定用，不解密）。"""
+        return _has_files_under(self._root / partition)
 
     def _write_keyfile(self) -> None:
         """回写 keyfile（仅在补写凭据校验锚时发生；主字段原样保留）。"""
@@ -363,6 +382,34 @@ class Store:
         return (root / STORE_MARKER).exists() or (root / _KEYFILE).exists()
 
     @classmethod
+    def passphrase_requirement(cls, root: Path | str) -> str | None:
+        """**只读探测**：本根要「打开 + 凭据可用」需要哪种口令（[02 §2.2 / §3]）。
+
+        - ``None``——免口令：根不存在（将按明文新建）、或明文根且凭据分区**从未建立**
+        - ``"main_passphrase"``——**加密根**的主密码（标记缺失的历史根同此，02 §2.2）
+        - ``"credentials"``——明文根的**凭据口令**（凭据恒加密、惰性解锁；已建立才需要）
+
+        **为什么需要它**：装配对凭据的播种是**幂等**的（端点已存在即整组跳过），故
+        「凭据已建立」的明文根**装配能过、不进交互**，却在**第一次读凭据**（如首次 LLM
+        调用）才撞上未解锁——把失败推到用户看不见的地方。启动期据此提前索取，口令在
+        `open` 时就位。
+
+        **只读标记与 keyfile**：不打开、不解密、不校验分区——它是「要不要问口令」的判据，
+        不是安全检查（真校验仍在 :meth:`open` 里）。标记 / keyfile 损坏照旧抛
+        :class:`StorageOpenError`（不猜模式、不猜口令）。
+        """
+        root = Path(root)
+        if not cls.exists(root):
+            return None
+        meta = _read_keyfile_meta(root)
+        mode = read_mode(root)
+        if mode == MODE_ENCRYPTED or (mode is None and "salt" in meta):
+            return "main_passphrase"
+        if meta.get("verifier_secrets") or _has_files_under(root / _SECRETS):
+            return "credentials"
+        return None
+
+    @classmethod
     def create(cls, root: Path | str, passphrase: str | None = None) -> "Store":
         """首次初始化（盘上无存储时）。已存在存储则拒绝（防误覆盖）。
 
@@ -421,13 +468,7 @@ class Store:
         否则凭据保持锁定（02 §3）。打开时**回收**中间产物目录（02 §2.4）。
         """
         root = Path(root)
-        kf = root / _KEYFILE
-        if not kf.exists():
-            raise StorageOpenError(f"{root} 无存储（keyfile 不存在）；先 Store.create")
-        try:
-            meta = json.loads(kf.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise StorageOpenError(f"keyfile 损坏，无法打开存储: {exc}") from exc
+        meta = _read_keyfile_meta(root)
         mode = read_mode(root)
         encrypted = mode == MODE_ENCRYPTED or (mode is None and "salt" in meta)
         try:
@@ -436,8 +477,9 @@ class Store:
             raise StorageOpenError(f"keyfile 字段缺失或非法（secrets_salt）: {exc}") from exc
         if encrypted:
             if passphrase is None:
-                raise StorageOpenError(
-                    "该存储为加密格式，打开需提供主密码（02 §2.2）"
+                raise StoragePassphraseRequired(
+                    "该存储为加密格式，打开需提供主密码（02 §2.2）",
+                    kind="main_passphrase",
                 )
             try:
                 salt = bytes.fromhex(meta["salt"])
@@ -454,9 +496,10 @@ class Store:
                 raise StorageOpenError(f"keyfile 字段非法（verifier_secrets）: {exc}") from exc
             master = derive_master_key(passphrase, salt)
             if not check_verifier(master, verifier):
-                raise StorageOpenError(
+                raise StoragePassphraseRequired(
                     "主密码错误（校验锚认证失败）；密码丢失即数据不可恢复（02 §2.2，"
-                    "无产品方恢复通道）"
+                    "无产品方恢复通道）",
+                    kind="main_passphrase",
                 )
             store = cls._unlock(root, master, None, secrets_salt=secrets_salt,
                                 secrets_verifier=verifier_secrets)

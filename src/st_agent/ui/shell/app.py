@@ -6,7 +6,9 @@
 - **关窗＝隐藏**（`hide_window`）：后端继续跑，托盘可再唤起（[00 §1.1]「后端比任何窗口活得久」）；
 - **退出＝回收**（`quit` → `run` 的 `finally`）：销毁窗口 → 停托盘 → **优雅回收后端**；
 - **开机自启**：开关即读改平台登录项本身（不另存第二份状态，[D-076] 派生口径）；
-- **测试通知**：本地系统通知（最小接线；业务通知链归 [`T-L5-002`](../../tasks/T-L5-002-渠道适配器投递编排与升级链.md)）。
+- **测试通知**：本地系统通知（最小接线；业务通知链归 [`T-L5-002`](../../tasks/T-L5-002-渠道适配器投递编排与升级链.md)）；
+- **凭据口令**（[`T-UI-002.4.2`]）：后端在就绪握手**之前**要口令时，由注入的**索取端口**去拿
+  （先查系统凭据库、否则弹原生框、成功后写回）；「清除已记住的凭据口令」给这条记忆一个出口。
 
 壳不 import 任何业务层（`tests/ui/test_shell_native_only.py` 钉住），窗口只经回环面取数。
 """
@@ -20,15 +22,32 @@ from typing import Any, Protocol
 
 from st_agent.ui.shell import autostart
 from st_agent.ui.shell.backend import BackendHandle, BackendSpec, start_backend
+from st_agent.ui.shell.errors import ShellCancelled, ShellError
 from st_agent.ui.shell.notify import send_notification
+from st_agent.ui.shell.passphrase import (
+    NativePassphrasePrompt,
+    PassphrasePrompt,
+    PassphraseRequest,
+    PassphraseResolver,
+    PassphraseVault,
+    build_vault,
+)
 from st_agent.ui.shell.tray import MenuItem
 
 __all__ = ["Shell", "run_shell"]
+
+_TITLE = "ST Agent"
 
 _TEST_NOTIFICATION = (
     "ST Agent",
     "测试通知：原生通知可达，且不发出任何网络请求。业务通知见触达渠道配置。",
 )
+
+_UNSET = object()
+"""`run_shell(vault=…)` 的缺省哨兵——未指定 ⇒ 自动取系统凭据库（不可用即**显式降级**）。"""
+
+_EXIT_STARTUP_FAILED = 3
+"""壳自身启动失败的退出码（与后端的 2 区分开；用户取消则是 0）。"""
 
 
 class WindowPort(Protocol):
@@ -68,23 +87,30 @@ class Shell:
     parent_pid: int | None = None
     starter: Callable[..., BackendHandle] = start_backend
     """后端拉起件（缺省 `start_backend`；用例注入替身以断言生命周期语义）。"""
+    resolver: Callable[[PassphraseRequest], str | None] | None = None
+    """口令索取端口（后端在就绪前要口令时调它）。``None`` ⇒ 壳不接口令交互。"""
+    vault: PassphraseVault | None = None
+    """口令记忆端口（供「清除已记住的凭据口令」用；``None`` ⇒ 未启用系统凭据库）。"""
     handle: BackendHandle | None = None
 
     # ── 启动 ────────────────────────────────────────────────────────────────
     def start(self) -> BackendHandle:
         """拉起后端 → 读握手 → 按握手地址开窗 → 装托盘。"""
-        self.handle = self.starter(self.backend, parent_pid=self.parent_pid)
+        self.handle = self.starter(
+            self.backend, parent_pid=self.parent_pid, resolve_passphrase=self.resolver
+        )
         self.window.create(self.handle.client_url, on_close_requested=self.hide_window)
         self.tray.install(self.menu_items())
         self.tray.run_detached()
         return self.handle
 
     def menu_items(self) -> list[MenuItem]:
-        """托盘菜单：显示 / 自启（勾选态＝登录项本身）/ 测试通知 / 退出。"""
+        """托盘菜单：显示 / 自启（勾选态＝登录项本身）/ 测试通知 / 清除口令 / 退出。"""
         return [
             MenuItem("显示窗口", self.show_window),
             MenuItem("开机自启", self.toggle_autostart, checked=self.login_item.is_enabled),
             MenuItem("发送测试通知", self.send_test_notification),
+            MenuItem("清除已记住的凭据口令", self.forget_passphrase),
             MenuItem("退出", self.quit),
         ]
 
@@ -105,6 +131,23 @@ class Shell:
 
     def send_test_notification(self) -> None:
         self.notifier(*_TEST_NOTIFICATION)
+
+    def forget_passphrase(self) -> None:
+        """清掉本根在系统凭据库里的口令（[`T-UI-002.4.2`] GWT-5）。
+
+        这是口令记忆的**出口**（可回滚）：清掉之后下次启动回到「弹框索取」。
+        没有启用凭据库时如实说明——不假装清过了。
+        """
+        if self.vault is None or self.handle is None:
+            self.notifier(_TITLE, "未启用系统凭据库，本机没有记住的口令。")
+            return
+        try:
+            deleted = self.vault.delete(self.handle.root)
+        except Exception as exc:                     # noqa: BLE001 —— 托盘动作须给出回执
+            self.notifier(_TITLE, f"清除已记住的口令失败：{type(exc).__name__}: {exc}")
+            return
+        self.notifier(_TITLE, "已清除本机记住的凭据口令；下次启动将重新索取。"
+                      if deleted else "本机没有记住过该存储根的凭据口令。")
 
     def quit(self) -> None:
         """显式退出：销毁窗口 → `run` 的收尾序列回收后端与托盘。"""
@@ -133,12 +176,27 @@ def run_shell(
     notifier: Callable[[str, str], None] | None = None,
     shell_executable: str | os.PathLike[str] | None = None,
     parent_pid: int | None = None,
+    prompt: PassphrasePrompt | None = None,
+    vault: Any = _UNSET,
 ) -> int:
     """生产入口：按缺省件装配壳并运行（各端口可注入，故用例不需要 GUI）。
 
     ``dev=True`` 时给后端加 ``--dev``（浏览器可达的 dev 面；发布构建里该子包已被剔除，
     届时后端会显式拒绝，不会静默降级）。
+
+    口令两面：``prompt`` 缺省取原生口令框；``vault`` 缺省取系统凭据库，**取不到即降级为
+    每次索取并显式告知一次**（[02 §3]）。两种收场都**以提示收尾**（不裸抛 traceback）：
+    用户取消 ⇒ 退出码 0；壳自身启动失败 ⇒ 非零。
     """
+    toast = send_notification if notifier is None else notifier
+    if prompt is None:
+        prompt = NativePassphrasePrompt()
+    if vault is _UNSET:
+        vault, notice = build_vault()
+        if notice:
+            toast(_TITLE, notice)
+    resolver = PassphraseResolver(prompt=prompt, vault=vault)
+
     spec = BackendSpec.default(backend_executable) if backend_spec is None else backend_spec
     if dev:
         spec = replace(spec, argv=(*spec.argv, "--dev"))
@@ -154,8 +212,17 @@ def run_shell(
         tray=tray,
         login_item=autostart.login_item() if login_item is None else login_item,
         command=tuple(autostart.self_command(shell_executable)),
-        notifier=send_notification if notifier is None else notifier,
+        notifier=toast,
         parent_pid=os.getpid() if parent_pid is None else parent_pid,
+        resolver=resolver,
+        vault=vault,
     )
-    shell.start()
+    try:
+        shell.start()
+    except ShellCancelled as exc:
+        toast(_TITLE, str(exc))
+        return 0
+    except ShellError as exc:
+        toast(_TITLE, f"桌面壳未能启动：{exc}")
+        return _EXIT_STARTUP_FAILED
     return shell.run()

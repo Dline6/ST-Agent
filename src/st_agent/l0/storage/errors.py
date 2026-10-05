@@ -1,15 +1,19 @@
 """L0 存储子系统错误类型。
 
 - 打开存储的统一失败：``StorageOpenError``（密码错 / 结构坏）
+- 「给口令就能过」的显式载体：``StoragePassphraseRequired``（打开 / 解锁需要主密码或凭据口令）
 - 损坏检测的显式载体：``StorageCorruptionError``（分区级定位，02 §2.3）
 - 加密原语失败：``CryptoError``（GCM 认证失败等）
 - 惰性解锁未就绪：``StorageSecretsLockedError``（明文模式下 `secrets` 未解锁，02 §2.2）
 """
 
+from __future__ import annotations
+
 __all__ = [
     "CryptoError",
     "StorageCorruptionError",
     "StorageOpenError",
+    "StoragePassphraseRequired",
     "StorageSecretsLockedError",
 ]
 
@@ -24,6 +28,26 @@ class CryptoError(StorageError):
 
 class StorageOpenError(StorageError):
     """打开存储失败（主密码错误 / 存储结构损坏）。"""
+
+
+class StoragePassphraseRequired(StorageOpenError):
+    """打开 / 解锁需要用户口令（[02 §2.2 / §3]）——「**给口令就能过**」的显式载体。
+
+    与其余 :class:`StorageOpenError`（keyfile 损坏 / 格式标记非法 / 凭据分区结构异常）分开
+    的意义即**用途**：调用方**只对**本类做「索取口令 → 重试」，其余一律 fail fast——把
+    「重试必然失败」的打开失败也重试三遍只会拖延报错。
+
+    ``kind`` 是机器可读的口令种类（人可读原因在消息里，两者不混）：
+
+    - ``"main_passphrase"``：**加密根的主密码**（02 §2.2）
+    - ``"credentials"``：**明文根的凭据口令**（凭据恒加密、惰性解锁 / TOFU，02 §2.2 / §3）
+
+    子类关系保证既有 ``except StorageOpenError`` 的调用方行为不变。
+    """
+
+    def __init__(self, message: str, *, kind: str) -> None:
+        self.kind = kind
+        super().__init__(message)
 
 
 class StorageSecretsLockedError(StorageError):
