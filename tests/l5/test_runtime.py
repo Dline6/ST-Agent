@@ -150,3 +150,36 @@ class TestNoBusIsNotFaked:
         assert len(stack.events.events()) == 1               # 交到发布端但**不受理**
         assert stack.events.owner == EVENT_OWNER             # 归属点名
         assert "未接入事件总线" in stack.events.note
+
+
+class TestT003Wiring:
+    """T-L5-003：日报 / 频控 / 疲劳三面接进同一个栈，三个新族注入 01 §7 门面。"""
+
+    def test_all_five_families_are_registered(self, store):
+        facade = ConfigRegistryFacade(store, now=lambda: NOW)
+        stack = build_l5(store, registry=facade, now=lambda: NOW)
+        for config_id in (
+            "attention-budget.current-mode",
+            "channel-delivery.emergency",
+            "frequency.dedup-window-minutes",
+            "daily-report.time",
+            "daily-report.template",
+            "fatigue.ignore-threshold",
+        ):
+            assert facade.entry(config_id) is not None, config_id
+        assert stack.frequency is not None
+        assert stack.reports is not None
+        assert stack.fatigue is not None
+
+    def test_fatigue_mutes_are_wired_into_frequency(self, store):
+        stack = build_l5(store, channels={"desktop": EchoChannel()}, now=lambda: NOW)
+        assert stack.frequency._mutes is stack.fatigue          # 静音清单是频控的鸭子端口
+
+    def test_report_reads_the_same_delivery_ledger(self, store):
+        stack = build_l5(store, channels={"desktop": EchoChannel()}, now=lambda: NOW)
+        from st_agent.l5.signal import adopt_signal
+
+        signal = adopt_signal(event(level="routine"))
+        stack.delivery.dispatch(signal, content_type="brief", now=NOW)
+        report = stack.reports.build(NOW.date(), now=NOW)
+        assert report.trace.signal_ids == (signal.signal_id,)

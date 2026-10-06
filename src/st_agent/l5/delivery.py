@@ -164,6 +164,29 @@ class DeliveryOrchestrator:
         )
         return result.model_copy(update={"budget_degraded": verdict is None})
 
+    def queue_signal(
+        self, signal: Signal, *, step: int = 0, now: datetime | None = None,
+    ) -> DeliveryRecord:
+        """把一条信号**强制汇总进日报**（不调任何渠道）——07 §6 频控排队的落点。
+
+        [T-L5-003.2](../../../项目管理/tasks/T-L5-003.2-去重合并与频控计数.md) 的频控面在
+        「格位节奏已满」时用它把本该单独触达的信号**排队进下一次日报**（**不丢弃**）；
+        写出的待汇总项与 :meth:`dispatch` 的 `routine` 路由**同一形态**，故日报面只认一处。
+        """
+        moment = self._now() if now is None else now
+        return self._queue(signal, step=step, moment=moment)
+
+    def verdict_for(
+        self, signal: Signal, *, content_type: str = "brief", now: datetime | None = None,
+    ) -> BudgetVerdict | None:
+        """取某条信号此刻的格位判定（未注入预算 → ``None``）——**同一份判定**的公开读面。
+
+        [T-L5-003.2](../../../项目管理/tasks/T-L5-003.2-去重合并与频控计数.md) 的频控面据此
+        拿 `max_per_slot` / `dispatch`，**不自行另算一遍**（同一口径只有一处推导）。
+        """
+        moment = self._now() if now is None else now
+        return self._resolve(signal, content_type, moment)
+
     # ───────────────────────── ② 未读超时升级 ─────────────────────────
 
     def advance(self, *, now: datetime | None = None) -> tuple[DeliveryRecord, ...]:
@@ -321,7 +344,8 @@ class DeliveryOrchestrator:
             channel = chain[0]
         record = self._write(DeliveryRecord(
             delivery_id=delivery_id_for(signal.signal_id, channel, step),
-            signal_id=signal.signal_id, level=signal.level, step=step,
+            signal_id=signal.signal_id, dedup_key=signal.dedup_key,
+            level=signal.level, step=step,
             route="separate", channel=channel, status=status,  # type: ignore[arg-type]
             detail=dispatch.detail(), pending_reconnect=dispatch.pending_reconnect,
             title=title, body=body, evidence_refs=signal.evidence_refs,
@@ -356,7 +380,8 @@ class DeliveryOrchestrator:
             channel = chain[0]
         return self._write(DeliveryRecord(
             delivery_id=delivery_id_for(previous.signal_id, channel, step),
-            signal_id=previous.signal_id, level=previous.level, step=step,
+            signal_id=previous.signal_id, dedup_key=previous.dedup_key,
+            level=previous.level, step=step,
             route="separate", channel=channel, status=status,  # type: ignore[arg-type]
             detail=dispatch.detail(), pending_reconnect=dispatch.pending_reconnect,
             title=previous.title, body=previous.body,
@@ -369,7 +394,8 @@ class DeliveryOrchestrator:
         title, body, _profile = self._personalizer.build(signal)
         return self._write(DeliveryRecord(
             delivery_id=delivery_id_for(signal.signal_id, DAILY_REPORT_CHANNEL, step),
-            signal_id=signal.signal_id, level=signal.level, step=step,
+            signal_id=signal.signal_id, dedup_key=signal.dedup_key,
+            level=signal.level, step=step,
             route="daily_report", channel=DAILY_REPORT_CHANNEL, status="queued",
             detail="按注意力预算汇总进日报，不单独触达（07 §4）",
             title=title, body=body, evidence_refs=signal.evidence_refs,
@@ -382,7 +408,8 @@ class DeliveryOrchestrator:
             delivery_id=delivery_id_for(
                 previous.signal_id, DAILY_REPORT_CHANNEL, previous.step + 1,
             ),
-            signal_id=previous.signal_id, level=previous.level, step=previous.step + 1,
+            signal_id=previous.signal_id, dedup_key=previous.dedup_key,
+            level=previous.level, step=previous.step + 1,
             route="daily_report", channel=DAILY_REPORT_CHANNEL, status="queued",
             detail="未在读到时确认，按缺省汇总进日报（07 §4：不丢弃）",
             title=previous.title, body=previous.body,
