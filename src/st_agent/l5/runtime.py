@@ -32,8 +32,8 @@ from st_agent.l5.channel_policy import ChannelPolicies
 from st_agent.l5.channel_registry import channel_policy_family
 from st_agent.l5.channels import ChannelDispatcher
 from st_agent.l5.daily_report import DailyReportBuilder
-from st_agent.l5.delivery import EVENT_OWNER, DeliveryDispatch, DeliveryOrchestrator
-from st_agent.l5.fatigue import FatigueMonitor
+from st_agent.l5.delivery import EVENT_OWNER, DeliveryOrchestrator
+from st_agent.l5.fatigue import FEEDBACK_EVENT, FatigueMonitor
 from st_agent.l5.frequency import FrequencyController
 from st_agent.l5.personalize import Personalizer
 from st_agent.l5.registry_adapter import (
@@ -66,6 +66,9 @@ class L5Stack:
     """推送疲劳监控面（07 §7）。"""
     subscription: Any = None
     """`SignalEmitted` 的订阅句柄（未接入总线时为 ``None``）。"""
+    feedback_subscription: Any = None
+    """`FeedbackRecorded` 的订阅句柄（未接入总线时为 ``None``；[07 §7](../../docs/技术架构-v2/07-L5-主动触达.md)
+    的答复回流面——**答复由交互层采集**，本层只订阅消费，不自铸 `feedback_id`）。"""
     registry: Any = None
     """注入的 01 §7 门面（未注入时为 ``None``——两个族随之未登记）。"""
     accepted: list = field(default_factory=list)
@@ -149,23 +152,40 @@ def build_l5(
         registry.register_family(fatigue_family(resolved_fatigue))
     if events is None:                           # 只有真接了总线才订阅（缺省发布端不订阅）
         return stack
-    return dataclasses.replace(stack, subscription=events.subscribe(
-        SIGNAL_EVENT, _adopting_handler(delivery, accepted),
+    subscription = events.subscribe(
+        SIGNAL_EVENT, _adopting_handler(delivery, accepted, resolved_frequency),
         subscriber_id="l5:delivery-orchestrator",
-    ))
+    )
+    # 答复回流（07 §7）：`FeedbackRecorded` ⇒ 疲劳面按「减少 / 关闭 / 保持」落值。
+    # `consume` 对**不属本层**的反馈（别的推送 / 结论 / 建议）返回 `None`，不越权处理。
+    feedback_subscription = events.subscribe(
+        FEEDBACK_EVENT, resolved_fatigue.consume,
+        subscriber_id="l5:fatigue-monitor",
+    )
+    return dataclasses.replace(
+        stack, subscription=subscription, feedback_subscription=feedback_subscription,
+    )
 
 
-def _adopting_handler(delivery: DeliveryOrchestrator, accepted: list):
+def _adopting_handler(delivery: DeliveryOrchestrator, accepted: list, frequency: Any = None):
     """`SignalEmitted` 的订阅者：**采纳**（[`.1`](signal.py)）后交投递编排。
 
     负载不合契约即抛 :class:`~st_agent.l5.errors.SignalAdoptionError`——总线按
     [01 §11](../../docs/技术架构-v2/01-平台共享契约.md) 的投递口径**逐订阅者记因**
     （**不吞**），故「拒绝」在派发结果里显式可见。
+
+    :param frequency: 去重与频控面（[§6](frequency.py) 的 `gate`）——**给了就经它落点**
+      （同一 `dedup_key` 窗口内合并、超格位节奏排队、静音类改判日报），缺省 ``None``
+      ⇒ 直接 `dispatch`（[07 §6](../../docs/技术架构-v2/07-L5-主动触达.md) 的「只增」口径：
+      未注入时既有投递行经逐字节不变）。
     """
 
-    def _handle(event: Any) -> DeliveryDispatch:
+    def _handle(event: Any) -> Any:
         signal = adopt_signal(event)             # 缺字段 / 取值非法 ⇒ 显式拒绝
-        result = delivery.dispatch(signal, now=None)
+        result = (
+            delivery.dispatch(signal, now=None) if frequency is None
+            else frequency.gate(delivery, signal, now=None)
+        )
         accepted.append(signal)
         return result
 

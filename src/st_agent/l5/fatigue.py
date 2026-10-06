@@ -50,6 +50,7 @@ from st_agent.l5.signal import Signal, SignalContent, SignalLensStance
 __all__ = [
     "ANSWERS",
     "DEFAULT_THRESHOLD",
+    "FEEDBACK_EVENT",
     "MUTE_REASONS",
     "OBSERVER_LENS",
     "Answer",
@@ -58,6 +59,10 @@ __all__ = [
     "FatigueState",
     "Inquiry",
 ]
+
+FEEDBACK_EVENT = "FeedbackRecorded"
+"""本面订阅的事件名（[01 §11](../../docs/技术架构-v2/01-平台共享契约.md)：**产生方＝交互层**，
+L5 只消费、不自铸 `feedback_id`——[D-083](../../../项目管理/决策日志.md) ④）。"""
 
 DEFAULT_THRESHOLD = 5
 """连续忽略阈值的缺省值（[07 §7](../../docs/技术架构-v2/07-L5-主动触达.md)：默认 5）。"""
@@ -319,7 +324,7 @@ class FatigueMonitor:
         只接**指向询问推送**（`target.kind="delivery"`）且携 `context.fatigue_choice` 的反馈；
         其余（别的推送 / 结论 / 建议的反馈）**不属本层**，原样返回 ``None``。
         """
-        if getattr(event, "event", "") != "FeedbackRecorded":
+        if getattr(event, "event", "") != FEEDBACK_EVENT:
             return None
         payload = getattr(event, "payload", None)
         if not isinstance(payload, Mapping):
