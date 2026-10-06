@@ -23,6 +23,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -51,6 +52,7 @@ __all__ = [
     "SignalLevel",
     "adopt_signal",
     "signal_digest_key",
+    "signal_event",
 ]
 
 SIGNAL_EVENT = "SignalEmitted"
@@ -161,6 +163,43 @@ class Signal(BaseModel):
             dedup_key=self.dedup_key,
             source_trace_id=self.source_trace_id,
         )
+
+
+def signal_event(
+    *,
+    level: str,
+    content_ref: SignalContent | Mapping[str, Any],
+    evidence_refs: Sequence[str],
+    dedup_key: str,
+    source_trace_id: str,
+    occurred_at: datetime,
+) -> PlatformEvent:
+    """构造一条 `SignalEmitted` 事件（01 §11 的负载结构）——**发布端的调用面**。
+
+    上游（L1 定时监控 / L4 Deliberation）据此填负载并发布到
+    [01 §11](../../../docs/技术架构-v2/01-平台共享契约.md) 的投递面（鸭子端口
+    ``publish(event)``）。本函数只**组装**，不发布、不校验（校验在采纳侧
+    :func:`adopt_signal`：发布端填错即被显式拒收，见 07 §1）。
+
+    形态与 [01 §11](../../../docs/技术架构-v2/01-平台共享契约.md) 的字段表一一对应；
+    ``signal_id`` **不在此处**——它由 L5 采纳时按投递内容的确定性摘要铸造。
+    """
+    return PlatformEvent(
+        event=SIGNAL_EVENT,
+        payload={
+            "level": level,
+            "content_ref": (
+                content_ref
+                if isinstance(content_ref, Mapping)
+                else content_ref.model_dump(mode="json")
+            ),
+            "evidence_refs": list(evidence_refs),
+            "dedup_key": dedup_key,
+            "source_trace_id": source_trace_id,
+        },
+        trace_id=source_trace_id,
+        occurred_at=occurred_at,
+    )
 
 
 def signal_digest_key(

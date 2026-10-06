@@ -154,6 +154,9 @@ class ConflictQueue:
     :param writer: :class:`MemoryWriter`（接受路径**只**经 ``add_node`` / ``add_edge``）
     :param policy: :class:`WritePolicy`（自主写入白名单门）
     :param now: 取时函数（测试注入固定时钟；缺省本机当前时刻）
+    :param events: 上行事件的发布端口（鸭子类型 ``publish(event)``，[01 §11](../../../../docs/技术架构-v2/01-平台共享契约.md)
+        的投递口径）；缺省 ``None`` ⇒ **不发送**（事件仍可由 ``event_for`` 另取，
+        调用方自行递送——本参数只补「谁发」这一环，不改既有行为）
     """
 
     def __init__(
@@ -163,11 +166,13 @@ class ConflictQueue:
         policy: WritePolicy,
         *,
         now: Callable[[], datetime] | None = None,
+        events: Any = None,
     ) -> None:
         self._graph = graph
         self._writer = writer
         self._policy = policy
         self._now = _now if now is None else now
+        self._events = events
 
     # ───────────────────────── 检测（不落盘） ─────────────────────────
 
@@ -200,7 +205,18 @@ class ConflictQueue:
         if path in self._files():
             return self._parse(self._graph.store.get("execution_log", path))  # 幂等：返回既有
         self._write(proposal)
+        self._publish(proposal)
         return proposal
+
+    def _publish(self, proposal: MemoryConflictProposal) -> None:
+        """把提案的上行通知发出去（01 §11 的投递口径）。
+
+        **注入发布面才发**；未注入时静默不发也**不假装送达**——`event_for` 仍可取事件，
+        调用方自行递送（与「幂等重放不发」一致：只在新提案落盘这一跳发一次）。
+        """
+        if self._events is None:
+            return
+        self._events.publish(self.event_for(proposal))
 
     def pending(self) -> tuple[MemoryConflictProposal, ...]:
         """尚未裁决的提案（按 ``conflict_id`` 升序）。"""
