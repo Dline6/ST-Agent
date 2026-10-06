@@ -1,10 +1,20 @@
 """生产运行入口 ``python -m st_agent``——**后端常驻主体**（[00 §1.1]；[D-076]）。
 
-职责链：解析平台默认存储根 → [`build_m2_runtime`](../st_agent/app.py) 装配 L0–L4 →
-`ui.serve(chat=…)` 起本机回环面 → 向 **stdout 输出单行机器可读握手**
+职责链：解析平台默认存储根 → [`build_m3_runtime`](../st_agent/app.py) 装配 L0–L5 →
+`ui.serve(chat=…)` 起本机回环面 → **起常驻驱动循环**（按 [`M3Runtime.tick`] 的节奏推进
+主动服务：调度 → 信号 → 升级链 → 日报 → 疲劳巡查）→ 向 **stdout 输出单行机器可读握手**
 （``event=ready`` / ``host`` / ``port`` / ``token`` / ``pid`` / ``root`` / ``version``）。
 它是桌面壳 [`T-UI-002.2`] 消费的唯一接口：先 ``event=ready``，失败为 ``event=error``
 （携机器可读 ``code``）。UI 仍只经回环面取数——本入口**不提供**任何壳专有通道。
+
+**原生能力端口由本入口注入**（[`T-INT-004`] A4；[D-082] ③）：桌面通知渠道收的
+``send(title, body)`` 取表现层的 `ui.shell.notify.send_notification`——本模块是**唯一**
+允许同时 import ``app`` 与 ``ui`` 的地方（[`T-UI-002.1`]），故 `app` 自己不必（也不得）
+持一份平台分支实现。
+
+**常驻循环只决定「何时 tick」**：到点判定、去重、升级、越限全在 ``tick`` 内（[07 §5] 的
+纯函数口径），故同一 ``(时刻, 留痕状态)`` 恒得同一结论，可离线复算；``--ambient-interval``
+只影响「多久轮到一次」，不影响结论。``--ambient-interval 0`` 关掉循环（终端手跑用）。
 
 **口令协商在就绪握手之前**（[00 §1.1]；[D-078]）：本根若需口令（加密根的**主密码**、
 明文根的**凭据口令**，[02 §2.2 / §3]），入口先向 stdout 发 ``event=passphrase_required``
@@ -13,7 +23,7 @@
 三个开关分工：``--ask-passphrase``（开启协商）· ``--control-stdin``（停止词 / EOF 收尾）·
 ``--passphrase-env``（无交互路径，终端与自用）。协商期间 stdin **只当口令通道**、不解释停止词。
 
-三条收尾路径走**同一段优雅序列**（关服务 → 冲刷出网审计缓冲）：
+三条收尾路径走**同一段优雅序列**（停常驻循环 → 关服务 → 冲刷出网审计缓冲）：
 
 1. **stdin 控制通道**（``--control-stdin``）——壳以管道投递 ``stop`` 或直接关掉管道
    （EOF）：**不依赖控制台**，故 Windows 上的 GUI 壳也能可靠地优雅停；
@@ -37,11 +47,12 @@ import time
 import traceback
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, TextIO
 
 from st_agent import __version__
-from st_agent.app import build_m2_runtime
+from st_agent.app import build_m3_runtime
 from st_agent.l0.market import MarketDb
 from st_agent.l0.storage import (
     StorageCorruptionError,
@@ -51,8 +62,10 @@ from st_agent.l0.storage import (
     Store,
 )
 from st_agent.ui.server import serve
+from st_agent.ui.shell.notify import send_notification
 
 __all__ = [
+    "AMBIENT_INTERVAL_SECONDS",
     "DeferredMarketQuery",
     "build_parser",
     "default_root",
@@ -64,6 +77,9 @@ __all__ = [
     "watch_stdin",
 ]
 
+AMBIENT_INTERVAL_SECONDS = 60.0
+"""常驻驱动循环的轮询间隔（秒）——``tick`` 的判定精度到分钟，60 s 足够不误点；``0`` ＝关闭。"""
+
 _ROOT_ENV = "ST_AGENT_ROOT"
 """存储根的环境变量覆盖点（优先于平台惯例）。"""
 
@@ -71,6 +87,9 @@ _APP_DIR = "STAgent"
 _LINUX_APP_DIR = "st-agent"
 _PARENT_POLL_SECONDS = 1.0
 """看门狗轮询间隔：壳退出与后端退出之间的可见延迟上限。"""
+
+_AMBIENT_JOIN_SECONDS = 10.0
+"""收尾时等待常驻驱动循环退出的上限（秒）——一轮 ``tick`` 可能正在跑，给它跑完的余地。"""
 
 _EXIT_STARTUP_FAILED = 2
 _WIN_WAIT_TIMEOUT = 0x102
@@ -251,6 +270,58 @@ def flush_audit(runtime: Any) -> None:
     flush = getattr(gateway, "flush_audit", None)
     if callable(flush):
         flush()
+
+
+# ───────────────────────── 生产组合根与常驻驱动 ─────────────────────────
+
+
+def build_ambient_runtime(root: Path | str, passphrase: str, **kwargs: Any) -> Any:
+    """生产组合根（M3）+ **原生通知端口**（表现层实现）。
+
+    入口是**唯一**可同时 import ``app`` 与 ``ui`` 的模块（[`T-UI-002.1`]），故原生能力的
+    接线在此完成——``app`` 自己不 import 表现层（层序表里没有 ``ui``，[D-060] ⑤），
+    而平台命令构造保持**单一份实现**（[D-082] ③ 否决「组合根自持第二份」）。
+    """
+    return build_m3_runtime(root, passphrase, notify=send_notification, **kwargs)
+
+
+def _local_now() -> datetime:
+    return datetime.now().astimezone()
+
+
+def ambient_loop(
+    runtime: Any,
+    stop: threading.Event,
+    *,
+    interval: float = AMBIENT_INTERVAL_SECONDS,
+    clock: Callable[[], datetime] | None = None,
+) -> threading.Thread | None:
+    """起一个守护线程推进主动服务（[00 §5] 步 4–7）。
+
+    循环体只做一件事：调 ``runtime.tick(now)``——判定全在 ``tick`` 内，故「跑多久」不影响
+    结论。运行时**没有** ``tick`` 面（M1 / M2 组合根）或 ``interval <= 0`` 即不起线程，
+    **不假装有主动服务**。
+
+    ``tick`` 抛错**不吞**：整条追溯进 stderr（可见），循环继续——一次缺陷不该让常驻服务
+    静默停摆，也不该被略过（[00 §6] 失败显式化）。
+    """
+    tick = getattr(runtime, "tick", None)
+    if not callable(tick) or interval <= 0:
+        return None
+    reader = _local_now if clock is None else clock
+
+    def loop() -> None:
+        while True:
+            try:
+                tick(reader())
+            except Exception:                       # noqa: BLE001 —— 显式打出追溯，不静默
+                traceback.print_exc()
+            if stop.wait(interval):
+                return
+
+    thread = threading.Thread(target=loop, name="st-agent-ambient", daemon=True)
+    thread.start()
+    return thread
 
 
 def _install_signal_handlers(stop: threading.Event) -> None:
@@ -477,17 +548,20 @@ def run_backend(
     market_query: Any = None,
     llm_env: Mapping[str, str] | None = None,
     dotenv_path: Path | str | None = None,
-    build_runtime: Callable[..., Any] = build_m2_runtime,
+    build_runtime: Callable[..., Any] = build_ambient_runtime,
     serve_ui: Callable[..., Any] = serve,
     poll_seconds: float = _PARENT_POLL_SECONDS,
+    ambient_interval: float = AMBIENT_INTERVAL_SECONDS,
     read_passphrase: Callable[[], str | None] | None = None,
 ) -> int:
-    """装配 → 起服务 → 输出握手 → 阻塞至收尾信号（返回进程退出码）。
+    """装配 → 起服务 → 输出握手 → 起常驻驱动 → 阻塞至收尾信号（返回进程退出码）。
 
     ``build_runtime`` / ``serve_ui`` / ``read_passphrase`` 可注入（用例换确定性件；生产取
     真组合根、真服务与真 stdin）。本根需口令时**先协商再装配**（[00 §1.1]；[D-078]）；
     启动失败一律：stdout 一行机器可读 ``event=error``（携 ``code``）+ 真错误进 stderr 追溯
     + 退出码 2——壳据此显式报错，**不**出现「进程在、界面空」的静默态。
+
+    ``ambient_interval`` 是常驻驱动循环的轮询间隔（``0`` ＝不起循环；见 :func:`ambient_loop`）。
     """
     stream = sys.stdout if out is None else out
     feed = DeferredMarketQuery() if market_query is None else market_query
@@ -525,11 +599,15 @@ def run_backend(
     if control_stdin:
         watch_stdin(stop)
     _emit_ready(stream, running, Path(root), json_handshake=json_handshake)
+    ambient = ambient_loop(runtime, stop, interval=ambient_interval)
     try:
         stop.wait()
     except KeyboardInterrupt:                    # 信号处理器不可用的场合（如非主线程）
         pass
     finally:
+        if ambient is not None:
+            stop.set()                           # 循环的 stop.wait 立即返回
+            ambient.join(timeout=_AMBIENT_JOIN_SECONDS)
         running.shutdown()
         flush_audit(runtime)
         if json_handshake:
@@ -572,6 +650,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--passphrase-env", default=None, metavar="NAME",
         help="口令取自该环境变量（无交互路径：终端 / 自用；不落 argv、不进日志）",
     )
+    parser.add_argument(
+        "--ambient-interval", type=float, default=AMBIENT_INTERVAL_SECONDS,
+        metavar="SECONDS",
+        help="常驻驱动循环的轮询间隔（秒；0 = 不起循环，只为界面服务）",
+    )
     return parser
 
 
@@ -602,6 +685,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         parent_pid=args.parent_pid,
         control_stdin=args.control_stdin,
         json_handshake=json_handshake,
+        ambient_interval=args.ambient_interval,
     )
 
 

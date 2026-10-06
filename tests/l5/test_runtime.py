@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from l5_helpers import NOW, PASS, TRACE_ID, event, payload
+from l5_helpers import DEDUP_KEY, NOW, PASS, TRACE_ID, event, payload
 from st_agent.contracts.time_events import PlatformEvent
 from st_agent.l0.storage import Store
 from st_agent.l1.events import EventBus, UndeliveredPublisher
@@ -183,3 +183,46 @@ class TestT003Wiring:
         stack.delivery.dispatch(signal, content_type="brief", now=NOW)
         report = stack.reports.build(NOW.date(), now=NOW)
         assert report.trace.signal_ids == (signal.signal_id,)
+
+
+class TestTint004Wiring:
+    """[`T-INT-004`] 在 L5 装配缝上补的两处接线：答复回流 + 采纳路径经频控面。"""
+
+    def test_feedback_recorded_is_subscribed_to_the_fatigue_face(self, store):
+        bus = EventBus()
+        stack = build_l5(
+            store, events=bus, channels={"desktop": EchoChannel()}, now=lambda: NOW,
+        )
+        assert stack.feedback_subscription is not None
+        assert "l5:fatigue-monitor" in bus.subscribers("FeedbackRecorded")
+
+    def test_no_bus_means_no_feedback_subscription(self, store):
+        stack = build_l5(store, channels={"desktop": EchoChannel()}, now=lambda: NOW)
+        assert stack.feedback_subscription is None
+
+    def test_foreign_feedback_is_left_alone_without_breaking_the_dispatch(self, store):
+        """不属本层的反馈（别的对象）**不越权处理**，也不让派发失败。"""
+        bus = EventBus()
+        stack = build_l5(
+            store, events=bus, channels={"desktop": EchoChannel()}, now=lambda: NOW,
+        )
+        result = bus.publish(PlatformEvent(
+            event="FeedbackRecorded",
+            payload={"target": {"kind": "trace", "ref": TRACE_ID}},
+            occurred_at=NOW,
+        ))
+        assert result.delivered is True
+        assert stack.fatigue.counts() == ()
+
+    def test_adoption_goes_through_the_dedup_window(self, store):
+        """同一条信号投两次 ⇒ 合并为一条（频控面在采纳路径上，不另造投递路径）。"""
+        echo = EchoChannel()
+        bus = EventBus()
+        stack = build_l5(store, events=bus, channels={"desktop": echo}, now=lambda: NOW)
+        bus.publish(event(level="emergency"))
+        bus.publish(event(level="emergency"))            # 同一条（同 dedup_key，窗口内）
+        assert len(stack.accepted) == 2, "两次都被采纳（合并不发生在信号上）"
+        assert len(stack.delivery.ledger()) == 1, "合并 ⇒ 只落一条触达留痕"
+        assert stack.frequency.trigger_count(DEDUP_KEY) == 2
+        assert len(echo.payloads) == 1
+

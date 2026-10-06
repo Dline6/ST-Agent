@@ -30,7 +30,7 @@ from collections.abc import Callable, Mapping, Sequence
 from datetime import date, datetime, time, timedelta
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from st_agent.contracts.identifiers import digest_id
 from st_agent.contracts.neutrality import NeutralityGuard
@@ -258,7 +258,14 @@ class DailyReportBuilder:
         return report
 
     def deliver(self, report: DailyReport, *, now: datetime | None = None) -> DailyReport:
-        """把报告订阅投出（经 [`.1`](channels.py) 的渠道面）；未接投出面 ⇒ 原样返回。"""
+        """把报告订阅投出（经 [`.1`](channels.py) 的渠道面）；未接投出面 ⇒ 原样返回。
+
+        **投出结果回写留痕**（[T-INT-004](../../../项目管理/tasks/T-INT-004-M3集成关卡主动触达投递闭环.md)，
+        [07 §5](../../docs/技术架构-v2/07-L5-主动触达.md) 的「同一天写同一路径」）：真正投出的渠道
+        写回该日报告 —— 于是「这一天是否已投过」成为**可从盘上读出的既成事实**，调用方
+        （常驻驱动面）的「一天一次」去重因此是**重启安全**的，而不是进程内的一次性记忆；
+        未投出（渠道全不可用 / 未接投出面）**不写**，故下一轮还会再试（不静默丢弃）。
+        """
         if self._dispatcher is None:
             return report
         payload = ChannelPayload(
@@ -270,7 +277,26 @@ class DailyReportBuilder:
             list(self.template().channels), payload,
         )
         channel = dispatch.delivered.channel if dispatch.delivered is not None else ""
-        return report.model_copy(update={"delivered_channel": channel})
+        delivered = report.model_copy(update={"delivered_channel": channel})
+        if channel and self._store is not None:
+            self._store.put(report.day, delivered.model_dump(mode="json"))
+        return delivered
+
+    def stored(self, day: date) -> DailyReport | None:
+        """取某日**已生成**的报告（读面：落盘即事实）。
+
+        :return: 该日的报告；从未生成过 → ``None``
+        :raises DailyReportValidationError: 落盘形态损坏（**不返回空壳**、也不当作「没生成过」）
+        """
+        if self._store is None:
+            return None
+        raw = self._store.get(day)
+        if raw is None:
+            return None
+        try:
+            return DailyReport.model_validate(raw)
+        except ValidationError as exc:
+            raise DailyReportValidationError(f"日报形态损坏（{day.isoformat()}）：{exc}") from exc
 
     # ───────────────────────── 模板与条目 ─────────────────────────
 

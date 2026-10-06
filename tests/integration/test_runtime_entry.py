@@ -1,37 +1,48 @@
 """生产运行入口 ``python -m st_agent`` 的装配用例（[`T-UI-002.1`]）。
 
-入口把 [`app.build_m2_runtime`](../../src/st_agent/app.py) 与
-[`ui.server.serve`](../../src/st_agent/ui/server.py) 装到一起——这就是 M1/M2 关卡
+入口把 [`app.build_m3_runtime`](../../src/st_agent/app.py) 与
+[`ui.server.serve`](../../src/st_agent/ui/server.py) 装到一起——这就是 M1/M2/M3 关卡
 在测试里做的事，故用例落 ``tests/integration``（与 ``test_m1_chat.py`` /
-``test_m2_deliberation.py`` 同族，随跨层套件恒跑）。
+``test_m2_deliberation.py`` / ``test_m3_delivery.py`` 同族，随跨层套件恒跑）。
 
 **用真子进程跑入口**：握手行、就绪后端点可达、父进程看门狗、优雅收尾四件事只有真进程
 能证（进程内调用绕过的正是这些面）。子进程环境剥掉 ``LLM_*`` 且 ``cwd`` 不在仓库内，
 故不读仓库 ``.env``——用例因此不随本机端点配置而变（同 M1 关卡 A4 口径）。
+子进程一律带 ``--ambient-interval 0``：常驻驱动循环自带其专属用例（见本文件末），
+而它一旦跑起来会真去调度 Skill / 投当日报纸（[`T-INT-004`]）——那属「主动服务」面，
+不该混进「启动与收尾」这组用例。
 """
 
 from __future__ import annotations
 
+import inspect
 import io
 import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import types
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from st_agent.__main__ import (
+    AMBIENT_INTERVAL_SECONDS,
     _build_with_passphrase,
     _read_stdin_passphrase,
+    ambient_loop,
+    build_ambient_runtime,
+    build_parser,
     default_root,
     parent_alive,
+    run_backend,
 )
 from st_agent.l0.storage import (
     MODE_ENCRYPTED,
@@ -42,6 +53,7 @@ from st_agent.l0.storage import (
     Store,
     read_mode,
 )
+from st_agent.ui.shell.notify import send_notification
 
 REPO = Path(__file__).resolve().parents[2]
 SRC = REPO / "src"
@@ -91,7 +103,11 @@ class Backend:
 def _spawn(
     root: Path, workdir: Path, *extra: str, env_extra: dict[str, str] | None = None
 ) -> subprocess.Popen[str]:
-    command = [sys.executable, "-m", "st_agent", "--root", str(root), "--handshake", "json"]
+    # `--ambient-interval 0`：常驻驱动循环另有用例（本文件末），此处只要启动 / 收尾面
+    command = [
+        sys.executable, "-m", "st_agent", "--root", str(root),
+        "--handshake", "json", "--ambient-interval", "0",
+    ]
     command += list(extra)
     env = _child_env()
     env.update(env_extra or {})
@@ -693,4 +709,128 @@ def test_negotiation_disabled_fails_with_guidance() -> None:
     assert failure.code == "passphrase_required"
     assert "--ask-passphrase" in failure.reason
     assert stream.getvalue() == ""                       # 没有发事件
+
+
+# ── 常驻驱动与 M3 组合根的接线（[`T-INT-004`] GWT-11）────────────────────────
+# 入口装的是**生产 M3 组合根**、并注入表现层的原生通知端口；「多久 tick 一次」由
+# 常驻循环决定，判定全在 `tick` 内（[07 §5](../../docs/技术架构-v2/07-L5-主动触达.md)）。
+# 真子进程一律 `--ambient-interval 0`（见 `_spawn`），故这组用例专测接线本身。
+
+
+class _TickingRuntime:
+    """只记 `tick` 时刻的运行时替身。"""
+
+    def __init__(self, *, boom: bool = False) -> None:
+        self.ticks: list[datetime] = []
+        self.boom = boom
+
+    def tick(self, now: datetime) -> None:
+        self.ticks.append(now)
+        if self.boom:
+            raise RuntimeError("替身：某一次循环里的缺陷")
+
+
+def test_entry_defaults_to_the_production_M3_root() -> None:
+    """`run_backend` 的缺省装配口是生产 M3 组合根（不是照旧 M2）。"""
+    default = inspect.signature(run_backend).parameters["build_runtime"].default
+    assert default is build_ambient_runtime
+
+
+def test_ambient_runtime_injects_the_native_notify_port(monkeypatch) -> None:
+    """原生通知端口由入口注入（表现层实现）——`app` 自己不 import 表现层。"""
+    import st_agent.__main__ as entry
+
+    seen: dict[str, Any] = {}
+
+    def fake_build(root: Any, passphrase: Any, **kwargs: Any) -> Any:
+        seen.update(kwargs)
+        seen["root"] = root
+        return _runtime_stub()
+
+    monkeypatch.setattr(entry, "build_m3_runtime", fake_build)
+    runtime = build_ambient_runtime("root", "pass", llm_env={})
+
+    assert runtime is not None
+    assert seen["notify"] is send_notification
+    assert seen["root"] == "root" and seen["llm_env"] == {}
+
+
+def test_ambient_loop_ticks_until_stopped() -> None:
+    """常驻循环反复调 `tick(now)`；`stop` 置位即退（循环只决定「何时」）。"""
+    runtime = _TickingRuntime()
+    stop = threading.Event()
+    moment = datetime(2026, 9, 28, 8, 30, tzinfo=timezone.utc)
+    thread = ambient_loop(runtime, stop, interval=0.01, clock=lambda: moment)
+    try:
+        assert thread is not None
+        deadline = time.monotonic() + 5
+        while len(runtime.ticks) < 3 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(runtime.ticks) >= 3, "循环应持续推进"
+        assert set(runtime.ticks) == {moment}, "时刻取自注入的时钟（判定可离线复算）"
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+    assert not thread.is_alive()
+
+
+def test_ambient_loop_survives_a_broken_tick() -> None:
+    """一次 `tick` 抛错不让常驻服务停摆，也不被吞（追溯进 stderr）。"""
+    runtime = _TickingRuntime(boom=True)
+    stop = threading.Event()
+    thread = ambient_loop(runtime, stop, interval=0.01)
+    try:
+        deadline = time.monotonic() + 5
+        while len(runtime.ticks) < 2 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert len(runtime.ticks) >= 2, "抛错后循环继续"
+    finally:
+        stop.set()
+        thread.join(timeout=5)
+
+
+def test_ambient_loop_is_absent_without_a_tick_face() -> None:
+    """M1 / M2 组合根没有 `tick` 面 ⇒ 不起循环（**不假装有主动服务**）。"""
+    stop = threading.Event()
+    assert ambient_loop(_runtime_stub(), stop, interval=0.01) is None
+    assert ambient_loop(_TickingRuntime(), stop, interval=0) is None
+
+
+def test_ambient_interval_flag_is_wired() -> None:
+    """CLI 面给出间隔；缺省即模块常量（`0` 关闭）。"""
+    assert build_parser().parse_args([]).ambient_interval == AMBIENT_INTERVAL_SECONDS
+    assert build_parser().parse_args(["--ambient-interval", "5"]).ambient_interval == 5.0
+
+
+def test_production_entry_runs_the_ambient_duty_cycle(tmp_path, monkeypatch) -> None:
+    """真装配 + 真常驻循环：生产入口装配 M3、tick 一轮、优雅收尾。
+
+    只把**原生通知端口**换成不弹窗的替身（`send_notification` 会真弹系统通知）——
+    其余全真：真 M3 组合根、真调度、真日报生成与投递、真本机回环服务。
+    """
+    import st_agent.__main__ as entry
+
+    monkeypatch.setattr(entry, "send_notification", lambda *a, **k: None)
+    monkeypatch.setattr(sys, "stdin", io.StringIO("stop" + chr(10)))
+    root, workdir = tmp_path / "store", tmp_path / "cwd"
+    workdir.mkdir()
+    stream = io.StringIO()
+
+    code = run_backend(
+        root=root, host="127.0.0.1", port=0, json_handshake=True,
+        passphrase="m3-entry-throwaway",          # 新根的凭据分区恒加密（02 §2.2）
+        control_stdin=True, out=stream, ambient_interval=0.05,
+    )
+    assert code == 0
+    lines = [json.loads(line) for line in stream.getvalue().strip().splitlines()]
+    assert lines[0]["event"] == "ready"
+    assert lines[-1]["event"] == "stopped"
+
+    # 常驻循环真的跑过一轮：当日报纸已生成并投出（到点判定 + 渠道投递 + 留痕回写）
+    report = Store.open(root, "m3-entry-throwaway").get(
+        "execution_log",
+        f"daily_report/{datetime.now().astimezone().date().isoformat()}.json",
+    )
+    assert report, "常驻循环应生成当日报纸"
+    assert json.loads(report.decode("utf-8"))["delivered_channel"] == "desktop"
 

@@ -36,6 +36,7 @@ __all__ = [
     "FrequencyValidationError",
     "L5Error",
     "SignalAdoptionError",
+    "SignalEmissionError",
 ]
 
 
@@ -73,3 +74,8 @@ class DailyReportValidationError(L5Error):
 
 class FatigueValidationError(L5Error):
     """推送疲劳监控的阈值条目 / 计数状态 / 答复越界。"""
+
+
+class SignalEmissionError(L5Error):
+    """上游产出 → `SignalEmitted` 的产生规则求值失败（缺字段 / 条目非映射 / 无溯源锚点 /
+    生成的文案未过 [01 §6](../../docs/技术架构-v2/01-平台共享契约.md)）——**不把不合规的信号投出去**。"""

@@ -133,6 +133,15 @@ from st_agent.l5.signal import (
     signal_digest_key,
     signal_event,
 )
+from st_agent.l5.sources import (
+    DELIBERATION_RULE,
+    DEFAULT_MONITOR_RULES,
+    MONITOR_LENS,
+    DeliberationRule,
+    MonitorRule,
+    signal_event_for_analysis,
+    signal_events_for_run,
+)
 
 __all__ = [
     "ANSWERS",
@@ -149,12 +158,16 @@ __all__ = [
     "DEFAULT_THRESHOLD",
     "DEFAULT_WINDOW_MINUTES",
     "DEFAULT_WORDING",
+    "DEFAULT_MONITOR_RULES",
+    "DELIBERATION_RULE",
     "DELIVERY_EVENT",
     "DailyReport",
     "DailyReportBuilder",
     "DailyReportFamily",
     "DailyReportValidationError",
+    "DeliberationRule",
     "DedupCount",
+    "FEEDBACK_EVENT",
     "FatigueFamily",
     "FatigueMonitor",
     "FatigueState",
@@ -168,6 +181,8 @@ __all__ = [
     "LOCAL_CHANNELS",
     "MATRIX_CONFIG_ID",
     "MODE_CONFIG_ID",
+    "MONITOR_LENS",
+    "MonitorRule",
     "NO_CONTENT_NOTE",
     "RESEND_CONFIG_ID",
     "RateDecision",
@@ -205,6 +220,7 @@ __all__ = [
     "Signal",
     "SignalAdoptionError",
     "SignalContent",
+    "SignalEmissionError",
     "SignalLensStance",
     "SignalLevel",
     "SituationMode",
@@ -221,4 +237,6 @@ __all__ = [
     "policy_config_id",
     "signal_digest_key",
     "signal_event",
+    "signal_event_for_analysis",
+    "signal_events_for_run",
 ]

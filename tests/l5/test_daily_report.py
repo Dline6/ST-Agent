@@ -249,3 +249,39 @@ class TestDelivery:
     def test_without_dispatcher_nothing_is_claimed(self, tmp_path):
         _orch, reports, _store = build(tmp_path)
         assert reports.deliver(reports.build(DAY, now=NOW)).delivered_channel == ""
+
+
+class TestRecordedDelivery:
+    """投出结果**回写留痕**（[`T-INT-004`]）：调用方的「一天一次」因此可重启安全。"""
+
+    def test_delivered_channel_is_readable_from_disk(self, tmp_path):
+        email = RecordingChannel("email")
+        _orch, reports, _store = build(
+            tmp_path, reader_=reader(), dispatcher=ChannelDispatcher({"email": email}),
+        )
+        reports.set_template({"sections": ["today_focus"], "channels": ["email"]})
+        assert reports.stored(DAY) is None, "尚未生成过"
+        reports.deliver(reports.build(DAY, now=NOW), now=NOW)
+        assert reports.stored(DAY).delivered_channel == "email"
+
+    def test_undelivered_report_is_not_recorded_as_sent(self, tmp_path):
+        """渠道全不可用 ⇒ 不写回（下一轮照常重试，不静默当作已送）。"""
+        remote = RecordingChannel("email")
+        remote.deliver = lambda payload: ChannelResult(  # type: ignore[method-assign]
+            channel="email", status="unavailable", detail="替身：不可达",
+        )
+        _orch, reports, _store = build(
+            tmp_path, reader_=reader(), dispatcher=ChannelDispatcher({"email": remote}),
+        )
+        reports.set_template({"sections": ["today_focus"], "channels": ["email"]})
+        delivered = reports.deliver(reports.build(DAY, now=NOW), now=NOW)
+        assert delivered.delivered_channel == ""
+        assert reports.stored(DAY).delivered_channel == ""
+
+    def test_corrupted_report_is_explicit(self, tmp_path):
+        """落盘损坏 ⇒ 显式抛（**不返回空壳**、也不当作「没生成过」）。"""
+        _orch, reports, store = build(tmp_path, reader_=reader())
+        store.put("execution_log", f"daily_report/{DAY.isoformat()}.json", b"{ not json")
+        with pytest.raises(DailyReportValidationError):
+            reports.stored(DAY)
+
