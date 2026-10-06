@@ -79,6 +79,10 @@ jobs:
             if printf '%s\n' "$changed" | grep -qE '^(src/st_agent/l5/|tests/l5/)'; then
               targets="$targets tests/l5"
             fi
+            # L6 反思演进（T-L6-*）：同 l0–l5 的按层映射
+            if printf '%s\n' "$changed" | grep -qE '^(src/st_agent/l6/|tests/l6/)'; then
+              targets="$targets tests/l6"
+            fi
             # 生态与分享（跨层 T-ECO-*）：同 l0–l4 的按层映射（D-047）
             if printf '%s\n' "$changed" | grep -qE '^(src/st_agent/eco/|tests/eco/)'; then
               targets="$targets tests/eco"

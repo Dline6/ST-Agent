@@ -7,7 +7,7 @@ arch: ../../docs/技术架构-v2/00-架构总览.md
 arch_link: "[00 §5](../../docs/技术架构-v2/00-架构总览.md)"
 priority: P0
 milestone: M4
-depends_on: [T-L6-001, T-L6-002, T-L6-003, T-ECO-001.1, T-ECO-001.2, T-ECO-002.1, T-ECO-002.2, T-INT-004]
+depends_on: [T-L6-001.1, T-L6-001.2, T-L6-001.3, T-L6-002, T-L6-003, T-ECO-001.1, T-ECO-001.2, T-ECO-002.1, T-ECO-002.2, T-INT-004]
 status: todo
 decisions: []
 verify:
