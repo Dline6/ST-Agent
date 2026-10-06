@@ -33,3 +33,4 @@ consumed_by: [编码 Agent, 项目负责人]
 - [L2 · 记忆图谱](L2-遗留问题.md)
 - [L3 · 对话主入口 Chat-as-OS](L3-遗留问题.md)
 - [L5 · 主动触达 Ambient Delivery](L5-遗留问题.md)
+- [L6 · 反思演进 Reflection Loop](L6-遗留问题.md)

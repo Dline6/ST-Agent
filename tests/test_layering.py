@@ -123,8 +123,9 @@ def test_ui_is_client_only():
 
 APP_PATH = SRC / "app.py"
 
-#: 组合根只可向下装配这些层（M1 反向流触及 L0–L3，M2 关卡加 L4，M3 关卡加 L5；
-#: l6/eco 尚未开工，装配它们属越界）。
+#: 组合根只可向下装配这些层（M1 反向流触及 L0–L3，M2 关卡加 L4，M3 关卡加 L5）。
+#: **关卡接线才进允许集**——L6 层已开工（`src/st_agent/l6/`），但把它装进组合根是 M4 关卡
+#: [`T-INT-005`] 的交付，故此刻仍属越界（同 l5 在 T-INT-004 之前的位置；`eco` 同此）。
 APP_ALLOWED_IMPORTS = {"contracts", "l0", "l1", "l2", "l3", "l4", "l5"}
 
 ENTRY_PATH = SRC / "__main__.py"
