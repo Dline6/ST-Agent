@@ -7,12 +7,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
 from st_agent.contracts.time_events import PlatformEvent
 from st_agent.l3.feedback import FeedbackCollector, FeedbackTarget
+
+_UNSET = object()
+"""哨兵：区分「未给 raw」与「raw 显式为 None」（后者＝端口明确表示理解不出）。"""
 
 CST = timezone(timedelta(hours=8))
 NOW = datetime(2026, 10, 11, 20, 0, tzinfo=CST)
@@ -156,3 +160,107 @@ def recording_channel(channel: str = "desktop", *, status: str = "ok") -> Any:
         ),
         degrade=lambda reason: ChannelResult(channel=channel, status="unavailable", detail=reason),
     )
+
+
+# ───────────────────────── T-L6-002 批次的夹具 ─────────────────────────
+
+CORRECTION = "我觉得估值已经偏高，这条推送不该按机会处理"
+"""用户给出的修正原话（**带第一人称**——用于钉住「用户数据不过 01 §6」的边界）。"""
+
+RESTATEMENT = "用户认为该标的估值偏高，不应按机会类推送处理"
+"""概念性复述样例（**生成性文案**，中性）。"""
+
+PATTERN_TEXT = "对高估值标的的机会类推送持否定倾向"
+"""模式陈述样例（**生成性文案**，中性）。"""
+
+SUGGESTION_REASON = "该类推送被反复否定，建议收紧判定口径"
+"""建议理由样例（**生成性文案**，中性）。"""
+
+
+def understander(
+    *, restatement: str = RESTATEMENT, pattern: str = PATTERN_TEXT,
+    suggestion: Mapping[str, Any] | None = None, raw: Any = _UNSET,
+) -> Any:
+    """训练对话的理解端口替身（`understand(correction, *, target="")`）。
+
+    ``raw`` 覆盖返回体本身（用于钉住「端口返回非法结构即显式失败」与「给不出复述 ⇒
+    `unavailable`」两条降级路径）；缺省返回一份 **合法** 的理解草案。
+    """
+    payload: Any = raw if raw is not _UNSET else {
+        "restatement": restatement, "pattern": pattern, "suggestion": suggestion,
+    }
+    return SimpleNamespace(understand=lambda correction, target="": payload)
+
+
+def memory_writer() -> Any:
+    """L2 `MemoryWriter` 的鸭子替身（只用到 `add_node`，原样回吐节点）。"""
+    nodes: list[Any] = []
+    return SimpleNamespace(add_node=lambda node: nodes.append(node) or node, nodes=nodes)
+
+
+def train_confirmation(
+    *, correction: str = CORRECTION, target: str | None = None,
+    values: Mapping[str, Any] | None = None, confirmed: bool = True,
+) -> Any:
+    """一张 `train` 去向的意图确认卡（经**真实** `checked_confirmation` 构造）。"""
+    from st_agent.contracts.result_envelope import ResultEnvelope
+    from st_agent.l3.intent.protocol import ConfirmationItem, checked_confirmation
+
+    return checked_confirmation(
+        envelope=ResultEnvelope.ok({"correction": correction}), intent="train", target=target,
+        items=(ConfirmationItem(text="修正说明", value=correction, source="stated"),),
+        values=dict(values if values is not None else {"correction": correction}),
+        confirmed=confirmed,
+    )
+
+
+NEXT_WEEK_NOW = NOW + timedelta(days=7)
+"""下一 ISO 周的时刻（`NOW` 是 2026-W41 的周日 20:00，加 7 天即 W42 的周日 20:00）。"""
+
+SKILL_DRAFT: dict[str, Any] = {
+    "name": "估值复核流程",
+    "description": "对高估值标的的机会判定做复核的工作流",
+    "nodes": ({"node_id": "n1", "skill_id": "sk_valuation_check_v1.0"},),
+    "flow_name": "valuation_review",
+}
+"""一份合法的工作流草稿（[03 §4](../../docs/技术架构-v2/03-L1-能力底座-Skills与MCP.md) 的 `workflow_draft` 形态）。"""
+
+PROPOSAL_TEXT = "该类问题重复出现超过阈值，可考虑为其创建专门能力"
+"""提案理由样例（**生成性文案**，中性）。"""
+
+
+def observation(
+    *, key: str = "high-valuation", count: int = 6, sample: str = "这个标的是不是太贵了",
+    refs: tuple[str, ...] = (TRACE_ID,), draft: Any = _UNSET, reason: str = PROPOSAL_TEXT,
+) -> dict[str, Any]:
+    """一条模式观察（映射形态；`draft=None` 即**显式不附草稿**）。"""
+    return {
+        "key": key, "count": count, "sample": sample, "refs": refs,
+        "draft": SKILL_DRAFT if draft is _UNSET else draft, "reason": reason,
+    }
+
+
+def observer(*items: Any) -> Any:
+    """模式观察面的鸭子替身（`observations()`）。"""
+    return SimpleNamespace(observations=lambda: tuple(items))
+
+
+def entry_reader(**defaults: Any) -> Any:
+    """01 §7 条目读面的鸭子替身（`entry(config_id) -> 含 default 的条目`）。"""
+    def entry(config_id: str) -> Any:
+        if config_id in defaults:
+            return SimpleNamespace(config_id=config_id, default=defaults[config_id])
+        return None
+
+    return SimpleNamespace(entry=entry)
+
+
+WEEKLY_EVIDENCE: dict[str, Any] = {
+    "week_deliveries": 4,
+    "feedback_total": 5,
+    "rejected": 1,
+    "ignored": 5,
+    "delivery_ids": (DLV_ID,),
+    "feedback_ids": (FB_IGNORED,),
+}
+"""一份周报 `advisor` 的注入观察（`ignored` 占多数且达阈值 ⇒ 命中缺省规则 R1）。"""

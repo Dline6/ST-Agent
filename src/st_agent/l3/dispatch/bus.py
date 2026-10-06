@@ -18,6 +18,10 @@
 经注入的**多视角编排面**触发 [06-L4](06-L4-多视角推理.md) Deliberation；因 [铁律 7](../../../项目管理/工程宪法.md)
 禁 L3 import L4，该去向的载荷按**鸭子面**透出（本层只认其中的 `ResultEnvelope`，
 其余由渲染方按属性取值），见 :attr:`DispatchOutcome.analysis`。
+``train`` 由 [`T-L6-002.1`](../../../项目管理/tasks/T-L6-002.1-训练对话协议.md) 接入——
+经注入的**训练对话面**触发 [08-L6 §3](../../../../docs/技术架构-v2/08-L6-反思演进.md) 协议，
+形态与 ``analyze`` **同一条口径**（鸭子面透出、本层不 import L6），见
+:attr:`DispatchOutcome.training`。
 
 **`trace_id` 从哪来**（假设 A2）：[01 §1](../../../../docs/技术架构-v2/01-平台共享契约.md)
 登记其产生方为「L1 调度器」，故 ``query`` 去向的链**由 L1 产**、本层经
@@ -60,6 +64,7 @@ __all__ = [
     "LLM_DEGRADED_NOTICE",
     "ROUTE_BY_INTENT",
     "ROUTE_SPECS",
+    "TRAIN_ABSENT_REASON",
     "DispatchBus",
     "DispatchOutcome",
     "RouteSpec",
@@ -71,6 +76,8 @@ DISPATCH_INITIATOR = "l3-dispatch"
 DISPATCH_PURPOSE = "对话意图派发"
 
 ANALYZE_ABSENT_REASON = "未注入多视角编排面，无法派发 analyze 去向（05 §4）"
+
+TRAIN_ABSENT_REASON = "未注入训练对话面，无法派发 train 去向（05 §4 / 08 §3）"
 
 LLM_DEGRADED_NOTICE = (
     "云端 LLM 端点暂不可用；可改用本地推理模式（能力受限），或稍后重试。"
@@ -118,8 +125,8 @@ ROUTE_SPECS: tuple[RouteSpec, ...] = (
         note="经注入的冲突裁决面产出裁决卡（05 §9）；偏好写入支归 L2 写入面（04 §3.2），装配归 T-INT-002",
     ),
     RouteSpec(
-        intent="train", wired=False, owner="T-L6-002",
-        note="训练对话协议与主动提案（08 §3–§4）",
+        intent="train", wired=True,
+        note="经注入的训练对话面触发 08-L6 §3 协议（载荷按鸭子面透出，L3 不 import L6）",
     ),
     RouteSpec(
         intent="explain", wired=True,
@@ -211,6 +218,14 @@ class DispatchOutcome(BaseModel):
     消费 L4 视图的先例）。"""
     trace: Trace | None = None
     """本次派发关联的链（``explain`` 去向即其载荷；未接入去向为**空链**）。"""
+    training: Any = None
+    """``train`` 去向的**训练对话载荷**（[05 §3.1](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的
+    「[08-L6 训练对话协议](../../../../docs/技术架构-v2/08-L6-反思演进.md)」）；其余去向为 `None`。
+
+    **鸭子类型**（本层不 import L6，[铁律 7](../../../项目管理/工程宪法.md)；`LAYER_ORDER` 为
+    `l3 < l6`）：只要求含 `envelope`（本层已核为 `ResultEnvelope`）；会话 / 复述 / 提案候选
+    等 L6 产物由**渲染与后续轮次按属性取值**——用户对复述的确认是**下一轮**的事，其落账
+    由 L6 的 `record` 承担，总线只负责把这次理解递出去。"""
 
 
 def _now() -> datetime:
@@ -250,16 +265,21 @@ class DispatchBus:
         ``analyze(confirmation, *, values=None, now=None) -> 含 envelope 的载荷``，
         如 L4 的 ``AnalyzeService``——组合根注入，本层不 import L4）；
         缺省 ``None`` → ``analyze`` 去向 fail-closed（``unavailable`` + 点名），**不臆测**
+    :param trainings: 注入的训练对话面（鸭子类型
+        ``start(confirmation, *, values=None, now=None) -> 含 envelope 的载荷``，
+        如 L6 的 ``TrainingProtocol``——组合根注入，本层不 import L6）；
+        缺省 ``None`` → ``train`` 去向 fail-closed（``unavailable`` + 点名），**不臆测**
     """
 
     def __init__(
         self, *, runner: Any = None, configs: Any = None, adjudications: Any = None,
-        deliberations: Any = None,
+        deliberations: Any = None, trainings: Any = None,
     ) -> None:
         self._runner = runner
         self._configs = configs
         self._adjudications = adjudications
         self._deliberations = deliberations
+        self._trainings = trainings
 
     def dispatch(
         self,
@@ -301,6 +321,8 @@ class DispatchBus:
             return self._dispatch_memory_op(confirmation, spec, moment)
         if confirmation.intent == "analyze":
             return self._dispatch_analyze(confirmation, spec, values, moment)
+        if confirmation.intent == "train":
+            return self._dispatch_train(confirmation, spec, values, moment)
         return self._pending(spec, moment)
 
     # ───────────────────────── 去向实现 ─────────────────────────
@@ -499,6 +521,47 @@ class DispatchBus:
             envelope=envelope, trace_id=trace.trace_id.value,
             intent=confirmation.intent, route=confirmation.intent,
             wired=spec.wired, analysis=payload, trace=trace,
+        )
+
+    def _dispatch_train(
+        self,
+        confirmation: IntentConfirmation,
+        spec: RouteSpec,
+        values: Mapping[str, Any] | None,
+        moment: datetime,
+    ) -> DispatchOutcome:
+        """``train`` 去向：经注入的训练对话面触发 [08-L6 §3](../../../../docs/技术架构-v2/08-L6-反思演进.md) 协议（§3.1）。
+
+        未注入训练对话面 → ``unavailable`` + 原因（同 ``analyze`` 去向「未注入多视角编排面」
+        的写法），**不伪造**；训练面返回的载荷按**鸭子面**消费——只核其 ``envelope``
+        为 ``ResultEnvelope``（形状不合即 ``dependency_failed``），会话等其余字段原样承载
+        给渲染与**后续轮次**（用户对复述的确认属下一轮，其落账由 L6 的 ``record`` 承担；
+        本层不 import L6）。
+
+        链为**空链**（同 ``configure`` / ``memory_op`` 去向）——[01 §4](../../../../docs/技术架构-v2/01-平台共享契约.md)
+        的五类 ``step_type`` 无「派发」一类，不伪造步骤；理解端口缺席 / 给不出复述时其
+        失败信封（``unavailable``）**原样透出**，不重包、不改 status、不吞 reason。
+        """
+        chain = Trace(trace_id=TraceId.generate())
+        if self._trainings is None:
+            return self._outcome(
+                ResultEnvelope.unavailable(TRAIN_ABSENT_REASON, last_updated_at=moment),
+                chain, spec,
+            )
+        payload = self._trainings.start(confirmation, values=values, now=moment)
+        envelope = getattr(payload, "envelope", None)
+        if not isinstance(envelope, ResultEnvelope):
+            return self._outcome(
+                ResultEnvelope.dependency_failed(
+                    "训练对话面返回非法结构（须含 envelope: ResultEnvelope）："
+                    f"{type(payload).__name__}"
+                ),
+                chain, spec,
+            )
+        return DispatchOutcome(
+            envelope=envelope, trace_id=chain.trace_id.value,
+            intent=confirmation.intent, route=confirmation.intent,
+            wired=spec.wired, training=payload, trace=chain,
         )
 
     def _pending(self, spec: RouteSpec, moment: datetime) -> DispatchOutcome:

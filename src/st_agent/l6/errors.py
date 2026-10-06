@@ -10,16 +10,26 @@
 - :class:`WeeklyReportError`——**每周反思报告**（[08 §2](../../../docs/技术架构-v2/08-L6-反思演进.md)）：
   周键形态非法 · 时段 / 阈值 / 模板条目越界 · 落盘报告形态损坏。
   越界即拒、不落盘不留痕（同 [L5 各面](../../../src/st_agent/l5/errors.py) 的取向）。
+- :class:`TrainingError`——**训练对话协议**（[08 §3](../../../docs/技术架构-v2/08-L6-反思演进.md)）：
+  会话**未经用户确认**即落账 · 修正说明缺失 · 理解端口返回非法结构 · 会话落盘损坏。
+- :class:`ProposalError`——**主动提案与 A/B 实验**（[08 §4](../../../docs/技术架构-v2/08-L6-反思演进.md)）：
+  阈值 / 频率上限条目越界 · 观察面返回非法结构 · 提案落盘损坏 · 实验范围不在低风险清单内。
+- :class:`ExperimentError`——实验的启用 / 结算 / 判定面（[08 §4](../../../docs/技术架构-v2/08-L6-反思演进.md)）：
+  范围不合法 · 实验不存在 · 落盘形态损坏。
 
-**文案失败**（未过 [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md) 中性化校验）复用
-:class:`WeeklyReportError`——它是本层唯一的生成性文案面（反驳：不该为一种成因单立类型）。
+**文案失败**（未过 [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md) 中性化校验）复用**各自面**的错误类型
+（周报文案 → :class:`WeeklyReportError`，训练对话文案 → :class:`TrainingError`，以此类推）——
+生成性文案面自本层第二批起不止一处，按面归类比汇到一个类型更贴合「按失败成因分类」的取向。
 """
 
 from __future__ import annotations
 
 __all__ = [
+    "ExperimentError",
     "FeedbackPoolError",
     "L6Error",
+    "ProposalError",
+    "TrainingError",
     "WeeklyReportError",
 ]
 
@@ -34,3 +44,15 @@ class FeedbackPoolError(L6Error):
 
 class WeeklyReportError(L6Error):
     """每周反思报告的周键 / 条目 / 落盘形态越界（含文案未过 01 §6）。"""
+
+
+class TrainingError(L6Error):
+    """训练对话协议：未确认即落账 / 输入缺失 / 端口结构非法 / 落盘损坏（含文案未过 01 §6）。"""
+
+
+class ProposalError(L6Error):
+    """主动提案：条目越界 / 观察面结构非法 / 提案落盘损坏（含文案未过 01 §6）。"""
+
+
+class ExperimentError(L6Error):
+    """A/B 实验：范围不在低风险清单内 / 实验不存在 / 落盘形态损坏（含文案未过 01 §6）。"""
