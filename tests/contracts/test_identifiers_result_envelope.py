@@ -35,13 +35,14 @@ from st_agent.contracts.identifiers import digest_id
 
 TZ = timezone.utc
 
-LOCALLY_GENERATED = (SkillId, SkillRunId, MemoryNodeId, TraceId, SignalId,
+LOCALLY_GENERATED = (SkillId, SkillRunId, MemoryNodeId, TraceId,
                      DeliveryId, FeedbackId, ChangeId, LensId, TrialId, DescriptionId)
-"""**本机产生的 11 类**：`generate()` 返回新的全局唯一 ID（`<prefix>_<uuid4 前 20 位>`）。"""
+"""**本机产生的 10 类**：`generate()` 返回新的全局唯一 ID（`<prefix>_<uuid4 前 20 位>`）。"""
 
-NOT_LOCALLY_GENERATED = (StockId, FlowId, AnnouncementId, DatasetSnapshotId)
-"""**不由本机产生的 4 类**：`generate()` 须被拒绝——映射产生（`stock_id`）/ 拼接产生
-（`flow_id`）/ 确定性摘要（`announcement_id` / `dataset_snapshot_id`，T-SC-002）。"""
+NOT_LOCALLY_GENERATED = (StockId, FlowId, AnnouncementId, DatasetSnapshotId, SignalId)
+"""**不由本机产生的 5 类**：`generate()` 须被拒绝——映射产生（`stock_id`）/ 拼接产生
+（`flow_id`）/ 确定性摘要（`announcement_id` / `dataset_snapshot_id` / `signal_id`，
+T-SC-002 与 T-L5-001.1）。"""
 
 
 # ───────────────────────── §1 标识体系 ─────────────────────────
@@ -78,15 +79,16 @@ class TestSection1Identifiers:
         (FlowId, "flow_id_for"),         # 由 L1 按「注册名 + 版本」拼接产生
         (AnnouncementId, "digest_id"),   # 由 L0 按业务键的确定性摘要产生
         (DatasetSnapshotId, "snapshot_id"),  # 由 L0 按同步水位的确定性摘要产生
+        (SignalId, "digest_id"),         # 由 L5 采纳 SignalEmitted 时按投递内容的确定性摘要产生
     ])
     def test_not_locally_generated_types_reject_generate(self, typ, hint):
-        """01 §1：这 4 类的形态由产生方决定，随机产出即让形态与幂等/可复核性失效——
+        """01 §1：这 5 类的形态由产生方决定，随机产出即让形态与幂等/可复核性失效——
         拒绝说明须**可操作**（点名产生方或其构造路径）。"""
         with pytest.raises(ContractViolation, match=hint):
             typ.generate()
 
     def test_generation_partition_covers_all_kinds(self):
-        """产出面二分且不漏：本机产生 11 类 + 拒绝 4 类 = §1 的 15 类。"""
+        """产出面二分且不漏：本机产生 10 类 + 拒绝 5 类 = §1 的 15 类。"""
         both = LOCALLY_GENERATED + NOT_LOCALLY_GENERATED
         assert {t.id_kind for t in both} == set(ID_KINDS)
         assert len(both) == len(ID_KINDS) == 15

@@ -11,12 +11,14 @@
 - ``trial_id`` 为一次工作流试跑的留存与对比单位（2026-09-26 由 ``T-L1-003.3``
   触发登记进 §1）：形态与其余本机生成的 ID 同构；试跑共用一条推理链，
   但其标识**独立于** ``trace_id``（两者是不同实体）
-- 其余 13 类由本机产生（``generate()``：``<prefix>_<uuid4 前 20 位>``），
+- 其余 12 类由本机产生（``generate()``：``<prefix>_<uuid4 前 20 位>``），
   无中心分配方，与本地优先原则一致
-- 其中 ``announcement_id`` 与 ``dataset_snapshot_id`` 的形态是**确定性摘要**
-  （``<prefix>_<sha256 前 20 位十六进制>``，业务键稳定 → ID 稳定）而非随机
-  uuid4——两者共用 :func:`digest_id`，全平台只此一份实现，且 ``generate()``
-  被**拒绝**（同 ``stock_id`` / ``flow_id``，走 ``_generated_by``）
+- 其中 ``announcement_id`` / ``dataset_snapshot_id`` / ``signal_id`` 的形态是
+  **确定性摘要**（``<prefix>_<sha256 前 20 位十六进制>``，业务键稳定 → ID 稳定）
+  而非随机 uuid4——三者共用 :func:`digest_id`，全平台只此一份实现，且
+  ``generate()`` 被**拒绝**（同 ``stock_id`` / ``flow_id``，走 ``_generated_by``）；
+  ``signal_id`` 由 L5 在**采纳** ``SignalEmitted`` 时铸造（2026-10-06 由
+  ``T-L5-001.1`` 触发登记进 §1），故发布方无需分配、重复投递得同一 ID
 
 实现约定（④ 对齐确认，决策记执行日志）：
 - 每类 ID 是一个 frozen pydantic 值对象（``value`` + ``id_kind`` 判别字段），
@@ -176,7 +178,12 @@ SkillId = _make_id_type("skill_id", "sk")
 SkillRunId = _make_id_type("skill_run_id", "run")
 MemoryNodeId = _make_id_type("memory_node_id", "mn")
 TraceId = _make_id_type("trace_id", "tr")
-SignalId = _make_id_type("signal_id", "sig")
+SignalId = _make_id_type(
+    "signal_id", "sig",
+    generated_by="signal_id 由 L5 采纳 SignalEmitted 事件时按投递内容的确定性摘要产生"
+                 "（digest_id），不得本地随机生成；"
+                 "用 SignalId.of(digest_id('sig', level, dedup_key, source_trace_id, …)) 构造",
+)
 DeliveryId = _make_id_type("delivery_id", "dlv")
 FeedbackId = _make_id_type("feedback_id", "fb")
 ChangeId = _make_id_type("change_id", "chg")
