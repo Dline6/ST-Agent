@@ -9,12 +9,22 @@
 - :class:`BudgetValidationError`——**注意力预算**配置越界（[07 §2](../../../docs/技术架构-v2/07-L5-主动触达.md)）：
   未知级别 / 内容类型 / 时段 id · 时钟区间非法或时段集合未覆盖全天、相互重叠 ·
   空允许级别集 · 节奏上限 ≤0。越界即拒，**不静默落一个永不命中的格位**。
+- :class:`ChannelValidationError`——**渠道偏好**配置越界（[07 §3](../../../docs/技术架构-v2/07-L5-主动触达.md)）：
+  未知级别 / 未知渠道 / 空链 / 链内重复 / 未读等待与链长不匹配或时长 ≤0。
+  越界即拒，**不静默落一个永不生效的渠道链**。
+- :class:`ChannelNotWiredError`——**渠道未接线**（无适配器、或适配器缺原生能力 /
+  传输端口）：显式点名缺口，**不假装能投递**。
+- :class:`DeliveryValidationError`——**投递编排**的入参不合法（[07 §4](../../../docs/技术架构-v2/07-L5-主动触达.md)）：
+  负等待 / 未知渠道 / 时刻非法 / 未读对象不存在。留痕与升级链的形态校验失败同走此型。
 """
 
 from __future__ import annotations
 
 __all__ = [
     "BudgetValidationError",
+    "ChannelNotWiredError",
+    "ChannelValidationError",
+    "DeliveryValidationError",
     "L5Error",
     "SignalAdoptionError",
 ]
@@ -30,3 +40,15 @@ class SignalAdoptionError(L5Error):
 
 class BudgetValidationError(L5Error):
     """注意力预算配置越界（条目不落盘、不留痕）。"""
+
+
+class ChannelValidationError(L5Error):
+    """渠道偏好配置越界（条目不落盘、不留痕）。"""
+
+
+class ChannelNotWiredError(L5Error):
+    """渠道未接线（缺适配器 / 缺原生能力端口 / 缺传输端口）——显式点名缺口。"""
+
+
+class DeliveryValidationError(L5Error):
+    """投递编排入参或留痕形态不合法。"""

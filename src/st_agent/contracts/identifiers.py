@@ -11,14 +11,16 @@
 - ``trial_id`` 为一次工作流试跑的留存与对比单位（2026-09-26 由 ``T-L1-003.3``
   触发登记进 §1）：形态与其余本机生成的 ID 同构；试跑共用一条推理链，
   但其标识**独立于** ``trace_id``（两者是不同实体）
-- 其余 12 类由本机产生（``generate()``：``<prefix>_<uuid4 前 20 位>``），
+- 其余 9 类由本机产生（``generate()``：``<prefix>_<uuid4 前 20 位>``），
   无中心分配方，与本地优先原则一致
-- 其中 ``announcement_id`` / ``dataset_snapshot_id`` / ``signal_id`` 的形态是
-  **确定性摘要**（``<prefix>_<sha256 前 20 位十六进制>``，业务键稳定 → ID 稳定）
-  而非随机 uuid4——三者共用 :func:`digest_id`，全平台只此一份实现，且
+- 其中 ``announcement_id`` / ``dataset_snapshot_id`` / ``signal_id`` / ``delivery_id``
+  的形态是**确定性摘要**（``<prefix>_<sha256 前 20 位十六进制>``，业务键稳定 → ID 稳定）
+  而非随机 uuid4——四者共用 :func:`digest_id`，全平台只此一份实现，且
   ``generate()`` 被**拒绝**（同 ``stock_id`` / ``flow_id``，走 ``_generated_by``）；
   ``signal_id`` 由 L5 在**采纳** ``SignalEmitted`` 时铸造（2026-10-06 由
-  ``T-L5-001.1`` 触发登记进 §1），故发布方无需分配、重复投递得同一 ID
+  ``T-L5-001.1`` 触发登记进 §1），故发布方无需分配、重复投递得同一 ID；
+  ``delivery_id`` 由 L5 按（信号 + 渠道 + 升级级次）铸造（2026-10-06 由
+  ``T-L5-002.2`` 收窄），故同一级重放 / 补发得同一 ID（升级链可安全重入）
 
 实现约定（④ 对齐确认，决策记执行日志）：
 - 每类 ID 是一个 frozen pydantic 值对象（``value`` + ``id_kind`` 判别字段），
@@ -116,7 +118,7 @@ class PlatformId(BaseModel):
 
     @classmethod
     def generate(cls) -> "PlatformId":
-        """生成一个新 ID（仅限本机产生的 12 类；``StockId`` / ``FlowId`` 不适用）。"""
+        """生成一个新 ID（仅限本机产生的 9 类；映射 / 拼接 / 摘要产生的 6 类不适用）。"""
         if cls._generated_by:
             raise ContractViolation(cls._generated_by)
         return cls(value=new_id(cls._prefix))  # type: ignore[return-value, call-arg]
@@ -184,7 +186,13 @@ SignalId = _make_id_type(
                  "（digest_id），不得本地随机生成；"
                  "用 SignalId.of(digest_id('sig', level, dedup_key, source_trace_id, …)) 构造",
 )
-DeliveryId = _make_id_type("delivery_id", "dlv")
+DeliveryId = _make_id_type(
+    "delivery_id", "dlv",
+    generated_by="delivery_id 由 L5 投递编排按（信号 + 渠道 + 升级级次）的确定性摘要产生"
+                 "（digest_id），不得本地随机生成——同一级的重放 / 补发须得同一 ID"
+                 "（升级链可安全重入、补发不产生重复投递记录，01 §1）；"
+                 "用 DeliveryId.of(digest_id('dlv', signal_id, channel, step)) 构造",
+)
 FeedbackId = _make_id_type("feedback_id", "fb")
 ChangeId = _make_id_type("change_id", "chg")
 LensId = _make_id_type("lens_id", "lens")

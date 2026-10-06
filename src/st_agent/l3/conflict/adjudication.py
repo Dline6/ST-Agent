@@ -5,7 +5,9 @@ L3 **承接** L2 的 ``MemoryConflictDetected`` 事件（[01 §11](../../../../d
 
 1. **承接**——:meth:`ConflictAdjudicator.card_for` / :meth:`~ConflictAdjudicator.from_event`
    把一条待裁决提案（或一条事件）转成一张**裁决卡**：冲突两方内容 + 中性问句 +
-   可选方向候选 + ``accept`` / ``reject`` 两个动作。
+   可选方向候选 + ``accept`` / ``reject`` 两个动作。:meth:`ConflictAdjudicator.attach`
+   把本面**订阅**到 [01 §11](../../../../docs/技术架构-v2/01-平台共享契约.md) 的事件总线上，
+   故「L2 产生 → L3 承接」不再靠调用方手递（[L3 册 `A2`](../../../项目管理/遗留问题/L3-遗留问题.md)）。
 2. **裁决**——:meth:`ConflictAdjudicator.submit` 经 L2 ``ConflictQueue.resolve`` 落裁决。
 3. **呈现**——卡片的**渲染**归 [05 §6](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的
    骨架任务与 [`T-L3-004`](../../../项目管理/tasks/T-L3-004-GenerativeUI推理链可视化.md)，
@@ -173,6 +175,48 @@ class ConflictAdjudicator:
         self._graph = graph
         self._stance_judge = stance_judge
         self._guard = guard if guard is not None else NeutralityGuard()
+        self._received: list[ResultEnvelope] = []
+        self._subscription: Any = None
+
+    # ───────────────────────── 订阅（01 §11 的投递口径） ─────────────────────────
+
+    def attach(self, events: Any) -> Any:
+        """**订阅** ``MemoryConflictDetected``——L2 一产生就自动承接到本面。
+
+        [01 §11](../../../../docs/技术架构-v2/01-平台共享契约.md) 的投递口径落地前，两端齐备
+        却要靠**调用方手递**（[L3 册 `A2`](../../../项目管理/遗留问题/L3-遗留问题.md)）；本方法
+        把承接面挂到总线上，此后「L2 产生 ⇒ L3 收到」不再经过调用方。
+
+        :param events: 事件总线（鸭子类型 ``subscribe(event_name, handler, subscriber_id=…)``，
+            如 [`EventBus`](../../l1/events.py)）；返回其注销句柄
+        """
+        self._subscription = events.subscribe(
+            "MemoryConflictDetected", self._receive,
+            subscriber_id="l3:conflict-adjudicator",
+        )
+        return self._subscription
+
+    def detach(self, events: Any) -> bool:
+        """注销订阅（未订阅过 → ``False``，不报错）。"""
+        if self._subscription is None:
+            return False
+        removed = bool(events.unsubscribe(self._subscription))
+        self._subscription = None
+        return removed
+
+    def received(self) -> tuple[ResultEnvelope, ...]:
+        """**经总线**承接到的裁决面结果（按到达顺序）。
+
+        承接失败（`unavailable` / `validation_failed` 等）也**如实记下**——
+        「收到了但接不下去」与「没收到」是两回事。
+        """
+        return tuple(self._received)
+
+    def _receive(self, event: PlatformEvent) -> ResultEnvelope:
+        """总线回调：承接一条事件并记下结果（异常不吞，由总线逐条记因）。"""
+        envelope = self.from_event(event)
+        self._received.append(envelope)
+        return envelope
 
     # ───────────────────────── 承接 ─────────────────────────
 
