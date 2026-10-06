@@ -18,12 +18,14 @@
 - **投递编排与升级链**（[07 §4](../../../docs/技术架构-v2/07-L5-主动触达.md)）：`:mod:`delivery`（+ `:mod:`delivery_store``）——
   逐级升级与 `delivery_id` 留痕、已读结算、`routine` 汇总路由、离线补发；
   `:mod:`personalize`` 交付文案个性化（过 [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md)）
-- **薄装配缝**：`:mod:`runtime`` 的 `build_l5`——两个 01 §7 族的注入点与订阅面
+- **薄装配缝**：`:mod:`runtime`` 的 `build_l5`——各族注入点与订阅面
   （M3 的**跨层**组合根 `build_m3_runtime` 归关卡 [`T-INT-004`](../../../项目管理/tasks/T-INT-004-M3集成关卡主动触达投递闭环.md)）
-
-后续段次归同层下游任务：每日报告、去重频控、推送疲劳监控
-（[07 §5–§7](../../../docs/技术架构-v2/07-L5-主动触达.md)，
-[`T-L5-003`](../../../项目管理/tasks/T-L5-003-每日报告去重频控推送疲劳监控.md)）。
+- **每日报告**（[07 §5](../../../docs/技术架构-v2/07-L5-主动触达.md)）：`:mod:`daily_report`（+ `:mod:`daily_report_store``）——
+  四段「给你的信」的组装、到点判定与模板注册（[T-L5-003.1](../../../项目管理/tasks/T-L5-003.1-每日报告本体与模板配置.md)）
+- **去重与频控**（[07 §6](../../../docs/技术架构-v2/07-L5-主动触达.md)）：`:mod:`frequency`（+ `:mod:`frequency_store``）——
+  同 `dedup_key` 合并 + 触发次数、格位节奏计数与「排队进日报」（[T-L5-003.2](../../../项目管理/tasks/T-L5-003.2-去重合并与频控计数.md)）
+- **推送疲劳监控**（[07 §7](../../../docs/技术架构-v2/07-L5-主动触达.md)）：`:mod:`fatigue`（+ `:mod:`fatigue_store``）——
+  连续忽略计数与阈值、询问信号、答复落值与静音清单（[T-L5-003.3](../../../项目管理/tasks/T-L5-003.3-推送疲劳监控与答复回流.md)）
 
 层次：L5 在 L4 之上（[`tests/test_layering.py`](../../../tests/test_layering.py) 的 `LAYER_ORDER`），
 只向下消费契约与各层，不被任何层依赖。
@@ -72,16 +74,54 @@ from st_agent.l5.delivery import (
     DeliveryOrchestrator,
     DeliveryRecord,
 )
+from st_agent.l5.daily_report import (
+    NO_CONTENT_NOTE,
+    SECTION_LABELS,
+    SECTION_NAMES,
+    DailyReport,
+    DailyReportBuilder,
+    ReportSection,
+    ReportTemplate,
+    ReportTrace,
+)
 from st_agent.l5.errors import (
     BudgetValidationError,
     ChannelNotWiredError,
     ChannelValidationError,
+    DailyReportValidationError,
     DeliveryValidationError,
+    FatigueValidationError,
+    FrequencyValidationError,
     L5Error,
     SignalAdoptionError,
 )
+from st_agent.l5.fatigue import (
+    ANSWERS,
+    DEFAULT_THRESHOLD,
+    Answer,
+    AnswerResult,
+    FatigueMonitor,
+    FatigueState,
+    Inquiry,
+)
+from st_agent.l5.frequency import (
+    DEFAULT_WINDOW_MINUTES,
+    DedupCount,
+    FrequencyController,
+    GateResult,
+    RateDecision,
+)
 from st_agent.l5.personalize import DEFAULT_WORDING, Personalizer, WordingProfile
-from st_agent.l5.registry_adapter import AttentionBudgetFamily, attention_budget_family
+from st_agent.l5.registry_adapter import (
+    AttentionBudgetFamily,
+    DailyReportFamily,
+    FatigueFamily,
+    FrequencyFamily,
+    attention_budget_family,
+    daily_report_family,
+    fatigue_family,
+    frequency_family,
+)
 from st_agent.l5.runtime import L5Stack, build_l5
 from st_agent.l5.signal import (
     SIGNAL_EVENT,
@@ -95,6 +135,9 @@ from st_agent.l5.signal import (
 )
 
 __all__ = [
+    "ANSWERS",
+    "Answer",
+    "AnswerResult",
     "CHANNEL_KINDS",
     "CLOUD_CHANNELS",
     "CONTENT_TYPES",
@@ -103,13 +146,36 @@ __all__ = [
     "DEFAULT_CELLS",
     "DEFAULT_MODE",
     "DEFAULT_SLOTS",
+    "DEFAULT_THRESHOLD",
+    "DEFAULT_WINDOW_MINUTES",
     "DEFAULT_WORDING",
     "DELIVERY_EVENT",
+    "DailyReport",
+    "DailyReportBuilder",
+    "DailyReportFamily",
+    "DailyReportValidationError",
+    "DedupCount",
+    "FatigueFamily",
+    "FatigueMonitor",
+    "FatigueState",
+    "FatigueValidationError",
+    "FrequencyController",
+    "FrequencyFamily",
+    "FrequencyValidationError",
+    "GateResult",
+    "Inquiry",
     "LEVELS",
     "LOCAL_CHANNELS",
     "MATRIX_CONFIG_ID",
     "MODE_CONFIG_ID",
+    "NO_CONTENT_NOTE",
     "RESEND_CONFIG_ID",
+    "RateDecision",
+    "ReportSection",
+    "ReportTemplate",
+    "ReportTrace",
+    "SECTION_LABELS",
+    "SECTION_NAMES",
     "SIGNAL_EVENT",
     "SITUATION_MODES",
     "SLOTS_CONFIG_ID",
@@ -148,7 +214,10 @@ __all__ = [
     "attention_budget_family",
     "build_l5",
     "channel_policy_family",
+    "daily_report_family",
     "default_budget",
+    "fatigue_family",
+    "frequency_family",
     "policy_config_id",
     "signal_digest_key",
     "signal_event",

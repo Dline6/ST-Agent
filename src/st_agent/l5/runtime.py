@@ -31,9 +31,17 @@ from st_agent.l5.budget import AttentionBudget
 from st_agent.l5.channel_policy import ChannelPolicies
 from st_agent.l5.channel_registry import channel_policy_family
 from st_agent.l5.channels import ChannelDispatcher
+from st_agent.l5.daily_report import DailyReportBuilder
 from st_agent.l5.delivery import EVENT_OWNER, DeliveryDispatch, DeliveryOrchestrator
+from st_agent.l5.fatigue import FatigueMonitor
+from st_agent.l5.frequency import FrequencyController
 from st_agent.l5.personalize import Personalizer
-from st_agent.l5.registry_adapter import attention_budget_family
+from st_agent.l5.registry_adapter import (
+    attention_budget_family,
+    daily_report_family,
+    fatigue_family,
+    frequency_family,
+)
 from st_agent.l5.signal import SIGNAL_EVENT, adopt_signal
 
 __all__ = ["L5Stack", "build_l5"]
@@ -50,6 +58,12 @@ class L5Stack:
     delivery: DeliveryOrchestrator
     events: Any
     """事件面（缺省 :class:`~st_agent.l1.events.UndeliveredPublisher`——**不假装送达**）。"""
+    frequency: FrequencyController | None = None
+    """去重与频控面（07 §6）。"""
+    reports: DailyReportBuilder | None = None
+    """每日报告面（07 §5）。"""
+    fatigue: FatigueMonitor | None = None
+    """推送疲劳监控面（07 §7）。"""
     subscription: Any = None
     """`SignalEmitted` 的订阅句柄（未接入总线时为 ``None``）。"""
     registry: Any = None
@@ -69,17 +83,23 @@ def build_l5(
     budget: AttentionBudget | None = None,
     policies: ChannelPolicies | None = None,
     dispatcher: ChannelDispatcher | None = None,
+    frequency: FrequencyController | None = None,
+    reports: DailyReportBuilder | None = None,
+    fatigue: FatigueMonitor | None = None,
 ) -> L5Stack:
-    """装配 L5 面（两个 01 §7 族 + 渠道 + 编排 + 事件订阅）。
+    """装配 L5 面（两个 01 §7 族 + 渠道 + 编排 + 日报 + 频控 + 疲劳 + 事件订阅）。
 
     :param store: ``Store`` 句柄（预算 / 渠道偏好条目与投递留痕都落它；缺省纯内存态）
     :param registry: 01 §7 的 [`ConfigRegistryFacade`](../../l1/registry/facade.py)
-        （鸭子类型 ``register_family``）；缺省 ``None`` ⇒ 两个族**不登记**（读面仍可用）
+        （鸭子类型 ``register_family``）；缺省 ``None`` ⇒ 各族**不登记**（读面仍可用）
     :param events: 事件总线（鸭子类型 ``publish`` / ``subscribe``）；缺省 ``None`` ⇒
         用 `UndeliveredPublisher`（**不假装送达**，归属点名）
     :param channels: 渠道 → 适配器 的映射（[`.1`](channels.py) 的四类适配器由组合根接线；
         未接线的渠道走显式不可用）
-    :param reader: L2 `MemoryReader` 的鸭子面（个性化取材；缺省 ⇒ 中性缺省文案）
+    :param reader: L2 `MemoryReader` 的鸭子面（个性化与日报的 Memory 更新摘要取材）
+    :param frequency: 去重与频控面（缺省自建：与 :paramref:`fatigue` 的静音清单同接）
+    :param reports: 日报面（缺省自建：接投出面与频控面）
+    :param fatigue: 疲劳监控面（缺省自建：接编排面与渠道偏好写面）
     :param now: 取时函数（测试注入固定时钟；缺省本机当前时刻）
     """
     resolved_budget = budget if budget is not None else AttentionBudget(store=store, now=now)
@@ -92,7 +112,7 @@ def build_l5(
     personalizer = Personalizer(reader=reader)
 
     if registry is not None:
-        # 01 §7 的两个族：注入而非 import（适配器住 L5、门面住 L1）
+        # 01 §7 的三个族：注入而非 import（适配器住 L5、门面住 L1）
         registry.register_family(attention_budget_family(resolved_budget))
         registry.register_family(channel_policy_family(resolved_policies))
 
@@ -105,13 +125,28 @@ def build_l5(
         budget=resolved_budget, personalizer=personalizer,
         store=store, events=resolved_events, now=now,
     )
+    resolved_fatigue = fatigue if fatigue is not None else FatigueMonitor(
+        store=store, orchestrator=delivery, policies=resolved_policies, now=now,
+    )
+    resolved_frequency = frequency if frequency is not None else FrequencyController(
+        store=store, mutes=resolved_fatigue, now=now,
+    )
+    resolved_reports = reports if reports is not None else DailyReportBuilder(
+        store=store, orchestrator=delivery, reader=reader,
+        frequency=resolved_frequency, dispatcher=resolved_dispatcher, now=now,
+    )
     accepted: list[Any] = []
     stack = L5Stack(
         budget=resolved_budget, policies=resolved_policies,
         dispatcher=resolved_dispatcher, personalizer=personalizer,
         delivery=delivery, events=resolved_events, registry=registry,
+        frequency=resolved_frequency, reports=resolved_reports, fatigue=resolved_fatigue,
         accepted=accepted,
     )
+    if registry is not None:
+        registry.register_family(frequency_family(resolved_frequency))
+        registry.register_family(daily_report_family(resolved_reports))
+        registry.register_family(fatigue_family(resolved_fatigue))
     if events is None:                           # 只有真接了总线才订阅（缺省发布端不订阅）
         return stack
     return dataclasses.replace(stack, subscription=events.subscribe(
