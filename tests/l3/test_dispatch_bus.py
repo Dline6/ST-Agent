@@ -24,7 +24,9 @@ from st_agent.l3.dispatch import (
     RENDER_SEMANTICS,
     ROUTE_BY_INTENT,
     ROUTE_SPECS,
+    TRAIN_ABSENT_REASON,
     DispatchBus,
+    RouteSpec,
     render_semantics,
 )
 from st_agent.l3.intent import (
@@ -165,13 +167,19 @@ class TestGwt3PendingRoutes:
     def test_route_table_matches_05_3_1(self) -> None:
         assert tuple(spec.intent for spec in ROUTE_SPECS) == INTENT_KINDS
 
-    @pytest.mark.parametrize("intent", ["train"])
-    def test_pending_route_names_its_owner(self, intent: str) -> None:
-        outcome = DispatchBus().dispatch(_card(intent, SKILL))
-        assert outcome.envelope.status == "unavailable"
-        assert outcome.wired is False
-        assert outcome.owner == ROUTE_BY_INTENT[intent].owner
-        assert outcome.owner in outcome.envelope.reason
+    def test_no_route_is_left_unwired(self) -> None:
+        """六类去向**全部接入**（`train` 由 [T-L6-002.1] 接活，原登记 `owner=T-L6-002`）——
+        接线后不再有待接入去向，故无「点名归属任务」的 `_pending` 路径可达。"""
+        assert all(spec.wired for spec in ROUTE_SPECS), [
+            spec.intent for spec in ROUTE_SPECS if not spec.wired
+        ]
+        assert all(spec.owner is None for spec in ROUTE_SPECS)
+
+    def test_unwired_route_must_name_its_owner(self) -> None:
+        """「未接入即点名归属任务、不静默留悬」是 `RouteSpec` 的形状约束——**不随
+        接线而失效**：仍造得出「未接入且不点名」的登记即判非法。"""
+        with pytest.raises(ValueError, match="点名归属任务"):
+            RouteSpec(intent="train", wired=False)
 
     def test_analyze_route_is_wired_but_fail_closed_without_its_port(self) -> None:
         """`analyze` 由 T-INT-003 接活（`wired=True`，无归属任务可点名）；未注入编排面
@@ -183,18 +191,30 @@ class TestGwt3PendingRoutes:
         assert outcome.envelope.reason == ANALYZE_ABSENT_REASON
         assert outcome.analysis is None
 
+    def test_train_route_is_wired_but_fail_closed_without_its_port(self) -> None:
+        """`train` 由 [T-L6-002.1] 接活，形态与 `analyze` 同一条口径（鸭子面透出、
+        本层不 import L6）；未注入训练对话面仍 fail-closed + 原因，**不伪造**执行。"""
+        spec = ROUTE_BY_INTENT["train"]
+        assert spec.wired is True and spec.owner is None
+        outcome = DispatchBus().dispatch(_card("train", SKILL))
+        assert outcome.envelope.status == "unavailable"
+        assert outcome.envelope.reason == TRAIN_ABSENT_REASON
+        assert outcome.training is None
+
     def test_pending_route_disclaims_the_timestamp(self) -> None:
-        outcome = DispatchBus().dispatch(_card("train", SKILL), now=NOW)
+        """未接入去向（六类已全接，故直接以受约束的登记形态验该回落路径）不冒充
+        「最后更新时间 T」——`last_updated_at` 只是**派发时刻**，`reason` 里写明。"""
+        spec = RouteSpec(intent="train", wired=False, owner="T-XXX")
+        outcome = DispatchBus()._pending(spec, NOW)
         assert outcome.envelope.last_updated_at == NOW
         assert "不代表数据截止时间" in outcome.envelope.reason
 
-    def test_wired_routes_are_query_explain_configure_memory_op_and_analyze(self) -> None:
+    def test_wired_routes_cover_all_six_intents(self) -> None:
         """`configure` 由 T-L3-003.1 接活（原登记 `owner=T-L3-003`）；`memory_op` 由
         T-L3-005.1 接活（原登记 `owner=T-L3-005`）；`analyze` 由 T-INT-003（M2 关卡）
-        接活（原登记 `owner=T-L4-002`，**陈旧指针**，随接线一并订正）。"""
-        assert {s.intent for s in ROUTE_SPECS if s.wired} == {
-            "query", "explain", "configure", "memory_op", "analyze"
-        }
+        接活（原登记 `owner=T-L4-002`，**陈旧指针**，随接线一并订正）；`train` 由
+        [T-L6-002.1] 接活（原登记 `owner=T-L6-002`）。"""
+        assert {s.intent for s in ROUTE_SPECS if s.wired} == set(INTENT_KINDS)
 
 
 # ───────────────────────── explain 去向 ─────────────────────────

@@ -1,13 +1,16 @@
 """L6 的**薄装配缝**（[08](../../../docs/技术架构-v2/08-L6-反思演进.md) 全层的构造面）。
 
-[`.1`](pool.py) 交反思数据池、[`.2`](weekly.py) 交周报本体，两者各自独立可用；本模块把
-它们接成一个 `L6Stack`，由组合根调用：
+[`.1`](pool.py) 交反思数据池、[`.2`](weekly.py) 交周报本体、[`.3`](training.py) 交训练对话协议，
+[`proposal.py`](proposal.py) 交主动提案、[`experiment.py`](experiment.py) 交 A/B 实验——各自独立
+可用；本模块把它们接成一个 `L6Stack`，由组合根调用：
 
 - 把 ``weekly-report.*`` 族注入 [`ConfigRegistryFacade`](../l1/registry/facade.py)
   （**注入而非 import**：适配器住 L6、门面住 L1，方向向下，[铁律 7](../../../项目管理/工程宪法.md)）；
 - 把**反思数据池**挂到 [01 §11](../../../docs/技术架构-v2/01-平台共享契约.md) 的事件总线上
   （`FeedbackRecorded` ⇒ 落池）——反馈经总线**一跳到底**，调用方不必手递；
-- 周报的**投出面**（L5 渠道面）与四段取材面（L5 读面 / L2 记忆面 / 建议面）按注入接线。
+- 周报的**投出面**（L5 渠道面）与四段取材面（L5 读面 / L2 记忆面 / 建议面）按注入接线；
+- 训练对话的**理解端口**与**记忆写入面**按注入接线（缺省即 fail-closed / 显式未写入）；
+- 主动提案的**观察面**与 A/B 实验的**授权面**按注入接线（缺省即不产提案 / 不启用）。
 
 **边界**：本模块只装配 **L6 一层**。M4 的**跨层组合根** `build_m4_runtime`
 （把 L6 与 L0–L5、UI 面接起来、加常驻到点驱动）归关卡
@@ -27,8 +30,11 @@ import dataclasses
 from dataclasses import dataclass
 from typing import Any
 
+from st_agent.l6.experiment import DEFAULT_MIN_SAMPLE, ExperimentConsole
 from st_agent.l6.pool import FEEDBACK_EVENT, FeedbackPool
-from st_agent.l6.registry_adapter import weekly_report_family
+from st_agent.l6.proposal import ProposalEngine
+from st_agent.l6.registry_adapter import proposal_family, weekly_report_family
+from st_agent.l6.training import TrainingProtocol
 from st_agent.l6.weekly import WeeklyReportBuilder
 
 __all__ = ["L6Stack", "build_l6"]
@@ -45,6 +51,15 @@ class L6Stack:
     """反思数据池（[08 §1](../../../docs/技术架构-v2/08-L6-反思演进.md)）。"""
     reports: WeeklyReportBuilder
     """每周反思报告面（[08 §2](../../../docs/技术架构-v2/08-L6-反思演进.md)）。"""
+    training: TrainingProtocol
+    """训练对话协议面（[08 §3](../../../docs/技术架构-v2/08-L6-反思演进.md)）；供组合根注入
+    [05 §4](../../../docs/技术架构-v2/05-L3-对话主入口.md) 的 `train` 去向（**注入归里程碑集成关卡**）。"""
+    proposals: ProposalEngine
+    """主动提案面（[08 §4](../../../docs/技术架构-v2/08-L6-反思演进.md)）；其 :meth:`ProposalEngine.proposals`
+    即周报第四段的 ``advisor``（**两处同源**，故它**直接**充当该端口），:meth:`ProposalEngine.detect` 做模式识别。"""
+    experiments: ExperimentConsole
+    """A/B 实验面（[08 §4](../../../docs/技术架构-v2/08-L6-反思演进.md)）；启用门经**注入的授权面**，
+    缺省不注入即**不启用**（授权档位本体归 [T-L6-003](../../../项目管理/tasks/T-L6-003-演进授权与变更流回滚与出厂重置.md)）。"""
     events: Any = None
     """事件面（缺省 ``None`` ⇒ **未订阅**，池子仅可经显式 :meth:`FeedbackPool.consume` 写入）。"""
     registry: Any = None
@@ -64,33 +79,73 @@ def build_l6(
     fatigue: Any = None,
     reader: Any = None,
     advisor: Any = None,
+    understander: Any = None,
+    memory_writer: Any = None,
+    observer: Any = None,
+    rules: Any = None,
+    authorizer: Any = None,
+    min_sample: int = DEFAULT_MIN_SAMPLE,
     now: Any = None,
     pool: FeedbackPool | None = None,
     reports: WeeklyReportBuilder | None = None,
+    training: TrainingProtocol | None = None,
+    proposals: ProposalEngine | None = None,
+    experiments: ExperimentConsole | None = None,
 ) -> L6Stack:
-    """装配 L6 面（池子 + 周报 + 01 §7 族 + 事件订阅）。
+    """装配 L6 面（池子 + 周报 + 训练对话 + 主动提案 + A/B 实验 + 01 §7 族 + 事件订阅）。
 
     :param store: ``Store`` 句柄（反馈与周报都落它；缺省纯内存态）
     :param registry: 01 §7 的 [`ConfigRegistryFacade`](../l1/registry/facade.py)
-        （鸭子类型 ``register_family``）；缺省 ``None`` ⇒ 该族**不登记**（读面仍可用）
+        （鸭子类型 ``register_family``）；缺省 ``None`` ⇒ 各族**不登记**（读面仍可用）
     :param events: 事件总线（鸭子类型 ``subscribe``）；缺省 ``None`` ⇒ **不订阅**，
         池子仅可经显式 ``consume`` 写入（**不假装已接线**）
     :param dispatcher: L5 `ChannelDispatcher`（周报的投出面；缺省 ``None`` ⇒ 不投出）
     :param orchestrator / frequency / fatigue: L5 的投递 / 频控 / 疲劳面（周报 ① 的取材面）
     :param reader: L2 `MemoryReader` 鸭子面（周报 ② 的取材面）
-    :param advisor: 建议面鸭子端口（周报 ④ 的取材面；缺省 ``None`` ⇒ 该段显式写「未接入建议面」）
+    :param advisor: 建议面鸭子端口（周报 ④ 的取材面）；缺省 ``None`` ⇒ 用本层的
+        **提案引擎**（[08 §2](../../../docs/技术架构-v2/08-L6-反思演进.md) 第四段与
+        [§4](../../../docs/技术架构-v2/08-L6-反思演进.md) 同源）——**不传即接上规则表**
+    :param understander: **训练对话的理解端口**（鸭子类型
+        ``understand(correction, *, target="") -> TrainingDraft | Mapping | None``，
+        如组合根注入的真实 LLM 实现）；缺省 ``None`` ⇒ 训练对话 **fail-closed**
+        （`unavailable` + 点名），**不硬猜**
+    :param memory_writer: L2 ``MemoryWriter`` 鸭子面（训练确认后写 `pattern` 节点）；
+        缺省 ``None`` ⇒ 训练落账时**显式标注未写入记忆**，不假装写了
+    :param observer: **模式观察面**鸭子端口（``observations() -> Sequence[PatternObservation]``）；
+        缺省 ``None`` ⇒ :meth:`ProposalEngine.detect` **不产提案**（fail-closed + 原因）
+    :param rules: 提案的规则表（缺省用 [`DEFAULT_RULES`](proposal.py)；声明式数据）
+    :param authorizer: **A/B 实验的授权面**鸭子端口（``permits(scope) -> bool``）；
+        缺省 ``None`` ⇒ 实验**不启用**（`enabled=False` ＋原因、不落盘）——[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md)
+        的授权档位本体归 [T-L6-003](../../../项目管理/tasks/T-L6-003-演进授权与变更流回滚与出厂重置.md)
+    :param min_sample: A/B 实验的保守判定样本下限（缺省 5）
     :param now: 取时函数（测试注入固定时钟；缺省本机当前时刻）
-    :param pool / reports: 覆写口（**测试**注入确定性件；缺省自建）
+    :param pool / reports / training / proposals / experiments: 覆写口（**测试**注入确定性件；缺省自建）
     """
     resolved_pool = pool if pool is not None else FeedbackPool(store=store, now=now)
+    resolved_proposals = proposals if proposals is not None else ProposalEngine(
+        store=store, observer=observer, registry=registry, rules=rules, now=now,
+    )
     resolved_reports = reports if reports is not None else WeeklyReportBuilder(
         store=store, pool=resolved_pool, orchestrator=orchestrator,
-        frequency=frequency, fatigue=fatigue, reader=reader, advisor=advisor,
+        frequency=frequency, fatigue=fatigue, reader=reader,
+        advisor=advisor if advisor is not None else resolved_proposals,
         dispatcher=dispatcher, now=now,
     )
-    stack = L6Stack(pool=resolved_pool, reports=resolved_reports, events=events, registry=registry)
+    resolved_training = training if training is not None else TrainingProtocol(
+        store=store, understander=understander, memory_writer=memory_writer,
+        pool=resolved_pool, now=now,
+    )
+    resolved_experiments = experiments if experiments is not None else ExperimentConsole(
+        store=store, authorizer=authorizer, min_sample=min_sample, now=now,
+    )
+    stack = L6Stack(
+        pool=resolved_pool, reports=resolved_reports, training=resolved_training,
+        proposals=resolved_proposals, experiments=resolved_experiments,
+        events=events, registry=registry,
+    )
     if registry is not None:
         registry.register_family(weekly_report_family(resolved_reports))
+        registry.register_family(proposal_family(resolved_proposals))
     if events is None:                           # 只有真接了总线才订阅（缺省不假装已接线）
         return stack
     subscription = events.subscribe(

@@ -9,11 +9,15 @@
 - ``render_ledger`` 派生父 ``depends_on``（活跃区、按集合比较、剔父自身子树）与
   ``verify_docs`` 检查 9（2026-09-28 机制）；
 - ``verify_docs`` 的断链扫描跳过 ``.git`` 与 gitignored 的 ``tmp/`` ``temp/`` 草稿目录
-  （2026-09-27 加固）。
+  （2026-09-27 加固）；
+- **测试模块名全树唯一**（2026-10-06 由 T-L6-002 批次的 ⑥ 实测暴露：`tests/l5/test_runtime.py`
+  与 `tests/l6/test_runtime.py` 同名 ⇒ `pytest tests` 全量收集报 `import file mismatch`，
+  而范围套件各自跑得到——该缺陷随 PR #98 落到 main 后才被全量跑出来）。
 """
 
 from __future__ import annotations
 
+import pathlib
 import re
 import sys
 
@@ -582,3 +586,29 @@ def test_convert_store_cli_refuses_passphrase_in_argv(tmp_path):
         cs.main(["--source", str(tmp_path), "--target", str(tmp_path / "o"),
                  "--to", "plain", "--passphrase", "oops"])
 
+
+
+# ───────────────────────── 测试树：模块名全树唯一 ─────────────────────────
+
+def test_test_module_basenames_are_unique_across_the_tree():
+    """**测试模块名在全树唯一**——``tests/`` 下各目录都没有 ``__init__.py``、pytest 走
+    prepend 导入模式，故两个同名 ``test_*.py``（如 ``tests/l5/test_runtime.py`` 与
+    ``tests/l6/test_runtime.py``）会让**全量**收集直接报 ``import file mismatch``：
+    按层的范围套件各自跑得到，只有 ``pytest tests``（CI 的 ``push → main`` 兜底、
+    与集成关卡 ⑥ 的强制全量）才炸——静默得很（auto-merge 不等这个 job）。
+    本用例把该不变量钉在**恒随跑**的跨层套件里，新增测试文件时即时报错。
+    """
+    root = pathlib.Path(__file__).resolve().parent
+    seen: dict[str, str] = {}
+    clashes: list[str] = []
+    for path in sorted(root.rglob("test_*.py")):
+        if "__pycache__" in path.parts:
+            continue
+        rel = path.relative_to(root).as_posix()
+        other = seen.setdefault(path.name, rel)
+        if other != rel:
+            clashes.append(f"{path.name}: {other} / {rel}")
+    assert clashes == [], (
+        "测试模块名冲突——pytest 全量收集会报 import file mismatch（改名为全树唯一即可）："
+        f"{clashes}"
+    )

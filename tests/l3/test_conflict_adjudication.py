@@ -339,8 +339,15 @@ class TestGwt5MemoryOpRoute:
             _card("memory_op", None), now=NOW)
         assert outcome.envelope.status == "empty"
 
-    def test_other_pending_routes_are_untouched(self) -> None:
-        for intent in ("train",):
+    def test_other_routes_keep_their_own_fail_closed_paths(self) -> None:
+        """`memory_op` 的接线不牵连其余去向——未注入各自端口时，各去向**各报各的**原因，
+        互不冒充。`train` 由 [T-L6-002.1] 接活后口径**与 `analyze` 完全相同**
+        （`wired=True`，缺端口仍 fail-closed），故不再有「未接入去向」可比。"""
+        reasons = {}
+        for intent in ("train", "analyze", "configure"):
             outcome = DispatchBus().dispatch(_card(intent, "sk_probe_v1.0"))
             assert outcome.envelope.status == "unavailable"
-            assert outcome.wired is False
+            assert outcome.wired is True
+            reasons[intent] = outcome.envelope.reason
+        assert len(set(reasons.values())) == len(reasons)          # 各报各的，不串用别家原因
+        assert all(ROUTE_BY_INTENT[i].owner is None for i in reasons)
