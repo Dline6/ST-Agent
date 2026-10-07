@@ -54,6 +54,7 @@ from st_agent.l6.weekly_store import (
     MIN_FEEDBACK_CONFIG_ID,
     TEMPLATE_CONFIG_ID,
     TIME_CONFIG_ID,
+    WEEK_KEY_RE,
     WeeklyReportStore,
 )
 
@@ -117,7 +118,7 @@ DEFAULT_CHANNELS: tuple[str, ...] = ("desktop",)
 """缺省订阅渠道（最轻的一环；用户可配到任一渠道）。"""
 
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):([0-5]\d)$")
-_WEEK_RE = re.compile(r"^(\d{4})-W(\d{2})$")
+# 周键形态的唯一出处在 `weekly_store`（落盘侧列举读面也要用它筛键，见 `WEEK_KEY_RE`）。
 
 
 # ───────────────────────── 周键与窗口 ─────────────────────────
@@ -135,7 +136,7 @@ def week_key(day: date) -> str:
 
 def week_window(key: str) -> tuple[date, date]:
     """周键 → ``(周一, 周日)`` 闭区间（越界 / 非法形态即拒，不猜）。"""
-    match = _WEEK_RE.match((key or "").strip())
+    match = WEEK_KEY_RE.match((key or "").strip())
     if not match:
         raise WeeklyReportError(f"周键须为 <ISO 年>-W<ISO 周>，收到 {key!r}")
     iso_year, iso_week = int(match.group(1)), int(match.group(2))
@@ -475,6 +476,16 @@ class WeeklyReportBuilder:
             return WeeklyReport.model_validate(raw)
         except ValidationError as exc:
             raise WeeklyReportError(f"周报形态损坏（{week}）：{exc}") from exc
+
+    def stored_weeks(self) -> tuple[str, ...]:
+        """已生成过的周键（升序）——表现层列历史报告 / 取最近一期的读面。
+
+        与 :meth:`stored` 同属读面（**落盘即事实**）：只列形态合法的键，不判定内容；
+        未接落盘（``store is None``）⇒ 空（同 :meth:`stored` 的「读不到就是没有」口径）。
+        """
+        if self._store is None:
+            return ()
+        return self._store.weeks()
 
     def publish(self, week: str, *, now: datetime | None = None) -> WeeklyReport | None:
         """把 ``week`` 的报告**投出一次**——「一周一次」在这里落地、且**重启安全**。

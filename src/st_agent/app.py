@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from collections import deque
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -45,10 +46,20 @@ from st_agent.contracts.neutrality import (
 from st_agent.contracts.registry_types import SemVer
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.time_events import PlatformEvent
-from st_agent.eco import OfficialIndex, ShareExporter, ShareImporter
+from st_agent.eco import (
+    ECOSYSTEM_BOUNDARY,
+    EcoError,
+    EMPTY_STATE_TEXT,
+    IMPORT_CONFIRMATION,
+    SHARE_KINDS,
+    OfficialIndex,
+    ShareExporter,
+    ShareImporter,
+)
 from st_agent.l1.events import EventBus
 from st_agent.l1.pack import OfficialPack, ResourceEntry, load_official_pack
 from st_agent.l1.runtime import L1Runtime, open_runtime
+from st_agent.l1.skills.ids import parse_skill_id
 from st_agent.l1.skills.pack import ensure_official_pack
 from st_agent.l2.memory import (
     ONBOARDING_KIND,
@@ -68,6 +79,7 @@ from st_agent.l2.memory import (
     new_node_id,
     official_onboarding_entry,
 )
+from st_agent.l3.approval import ApprovalRequest, CapabilityApprovalPanel
 from st_agent.l3.chat import SessionStore
 from st_agent.l3.commands import COMMAND_KIND, CommandRegistry, official_command_entry
 from st_agent.l3.config import ConfigDraftHandling, ConfigDraftProtocol, WorkflowDraftBuilder
@@ -108,13 +120,27 @@ from st_agent.l5.sources import (
     signal_events_for_run,
 )
 from st_agent.l6 import (
+    DEFAULT_TIER,
+    GRADING_CONFIG_ID,
+    NO_AUTHORIZATION_REASON,
+    NO_REGISTRY_REASON,
+    RESET_CONFIRMATIONS,
+    RISK_CLASSES,
+    TIER_CONFIG_ID,
+    TIERS,
+    ChangeProposal,
+    ChangeRun,
+    EvolutionRiskRule,
+    L6Error,
     L6Stack,
     PatternObservation,
+    PendingChange,
     SkillDraft,
     SuggestionDraft,
     TrainingDraft,
     build_l6,
     week_key,
+    week_window,
 )
 
 __all__ = [
@@ -125,6 +151,7 @@ __all__ = [
     "M2Runtime",
     "M3Runtime",
     "M4Runtime",
+    "ReflectionFacade",
     "TickResult",
     "build_m1_runtime",
     "build_m2_runtime",
@@ -1420,6 +1447,518 @@ class _ChangeNotifier:
 # ── ECO 面的装配（[09] 三类分享动作） ─────────────────────────────────────────
 
 
+_DECISION_ACTIONS = ("accept", "reject", "defer")
+"""提案处置的三动作（[08 §5]：接受 / 否决 / 延后——**排队而非丢弃**）。"""
+
+_NO_FACTORY_RESET_REASON = "未接入出厂重置面，无法清空演进状态（装配归组合根）"
+"""出厂重置子面缺席时的点名原因（同 [08 §5] 的「未接判据即 fail-closed」口径）。"""
+
+_NOT_FILED_NOTE = (
+    "该提案未进入待批准队列（当前档位或风险类不予立案），无可否决 / 延后的项"
+    "——「手动」档下提案止步于建议面（08 §5）"
+)
+"""对未立案提案做否决 / 延后时的如实说明（**不是**失败：确实无事可做）。"""
+
+
+def _require_week(week: str) -> str:
+    """校验周键形态——非法即 ``ValueError``（用户可修正的输入，表现层回 `validation_failed`）。
+
+    复用 L6 的 :func:`week_window` 作判据（**不另写一份正则**：周键口径只有一处）。
+    """
+    try:
+        week_window(week)
+    except L6Error as exc:
+        raise ValueError(str(exc)) from exc
+    return week
+
+
+def _change_proposal(raw: Mapping[str, Any]) -> ChangeProposal:
+    """请求体 → :class:`ChangeProposal`（形态非法 ⇒ pydantic 的 `ValidationError`，属 `ValueError`）。"""
+    payload = dict(raw)
+    for required in ("config_id", "current", "suggested", "reason"):
+        if required not in payload:
+            raise ValueError(f"提案缺少 {required!r}（见 08 §5 的提案形态）")
+    return ChangeProposal(**payload)
+
+
+def _grading_rules(raw: Any) -> tuple[EvolutionRiskRule, ...]:
+    """请求体 → 风险分级规则表（逐条构造即校验，不吃裸 dict）。"""
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("风险分级清单须为条目列表")
+    rules: list[EvolutionRiskRule] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            raise ValueError("风险分级条目须为对象（prefix / risk_class）")
+        rules.append(EvolutionRiskRule(**dict(item)))
+    return tuple(rules)
+
+
+class ReflectionFacade:
+    """L6 反思演进栈的**表现层适配面**（组合根所有；`ui` 只经鸭子端口消费，[`T-UI-004.2`]）。
+
+    两件事都在组合根做完，故表现层不必（也不得）import 任何 L6 类型：
+
+    - **取数**——把 L6 读面的 pydantic 形态转成 JSON 就绪的普通结构；
+    - **输入类失败归一**——用户可修正的输入（周键形态 / 档位取值 / 待批准项不存在 / 确认次数不足）
+      在**调到 L6 之前**就地转 ``ValueError``，表现层据此回 ``validation_failed``（[01 §5]）；
+      **状态损坏**这类内部失败**不吞、不上抛为输入错**，原样传出，由表现层回 ``failed`` + `log_ref`
+      （[00 §6] 失败显式化）。判据一律复用 L6 自己的常量 / 校验函数，不另写一份。
+
+    **子面未接线**（`authorization` / `change_flow` / `factory_reset` 缺）时返回
+    ``{"available": False, "reason": …}``——表现层据此回 ``unavailable`` + 点名，与「面在但无数据」
+    分开（[01 §5] 六态不可混用）。
+    """
+
+    def __init__(self, *, l6: L6Stack, feedback: Any) -> None:
+        self._l6 = l6
+        self._feedback = feedback
+        """L3 的反馈采集面（`FeedbackCollector.record` 的绑定方法）——反馈的**产生方是交互层**，
+        本面只转发（[01 §1] / [05 §9]）。"""
+
+    # ── 周报 ────────────────────────────────────────────────────────────────
+    def report_weeks(self) -> tuple[str, ...]:
+        """已生成过的周键（升序）——表现层列历史与取最近一期。"""
+        return tuple(self._l6.reports.stored_weeks())
+
+    def report(self, week: str) -> dict[str, Any] | None:
+        """某周的报告；从未生成 ⇒ ``None``（表现层据此给「尚未生成」而非空报告）。"""
+        stored = self._l6.reports.stored(_require_week(week))
+        return None if stored is None else stored.model_dump(mode="json")
+
+    # ── 反馈采集 ────────────────────────────────────────────────────────────
+    def record_feedback(
+        self,
+        *,
+        target: Any,
+        action: str,
+        reason: str | None = None,
+        context: Mapping[str, Any] | None = None,
+    ) -> ResultEnvelope:
+        """转交 L3 采集面（载荷不合契约时它自己回 `validation_failed`，本面不预判）。"""
+        if not isinstance(action, str) or not action:
+            raise ValueError("反馈动作须为非空字符串（08 §1 的五类之一）")
+        if target is None:
+            raise ValueError("反馈对象（target）必填——无法寻址的反馈一律拒收")
+        return self._feedback(target, action, reason=reason, context=context)
+
+    # ── 提案与待批准项 ──────────────────────────────────────────────────────
+    def proposals(self) -> list[dict[str, Any]]:
+        """已检出的主动提案（含 Skill 草稿）。"""
+        return [item.model_dump(mode="json") for item in self._l6.proposals.all()]
+
+    def pending(self) -> list[dict[str, Any]]:
+        """待批准 / 已延后的提案（**留痕即事实**，处置过的也在）。"""
+        return [item.model_dump(mode="json") for item in self._l6.change_flow.pending()]
+
+    def decide(
+        self,
+        *,
+        action: str,
+        proposal: Mapping[str, Any] | None = None,
+        pending_id: str = "",
+    ) -> dict[str, Any]:
+        """逐条处置（接受 / 否决 / 延后）——**唯一通道是变更流**（08 §5 / §7 红线）。
+
+        接受：立案件**经 01 §7 门面落值生效**并产生 `change_id`；否决：留痕而值逐字节不变；
+        延后：排队而非丢弃（可再处置）。三者的落点都在 L6，本面只把结论归一成一份结构。
+        """
+        if action not in _DECISION_ACTIONS:
+            raise ValueError(f"处置动作须为 {'/'.join(_DECISION_ACTIONS)}，收到 {action!r}")
+        if not pending_id and proposal is None:
+            raise ValueError("需给出待批准项 id 或提案内容")
+        if pending_id:
+            return self._decide_pending(action, pending_id)
+        flow = self._l6.change_flow
+        candidate = _change_proposal(proposal or {})
+        if action == "accept":
+            run = flow.submit(candidate)
+            if run.pending is not None:
+                return self._decide_pending("accept", run.pending.pending_id)
+            return _run_payload(run, action)
+        # 否决 / 延后只对**已立案**的项有意义：先问审批门，未立案就别去 submit——
+        # 自主档下 submit 会直接落值生效，那样「否决」反而改了值（08 §5 的档位语义）。
+        if not flow.gate(candidate).filed:
+            return _run_payload(None, action, note=_NOT_FILED_NOTE)
+        run = flow.submit(candidate)
+        if run.pending is None:
+            return _run_payload(run, action)
+        return self._decide_pending(action, run.pending.pending_id)
+
+    def _decide_pending(self, action: str, pending_id: str) -> dict[str, Any]:
+        flow = self._l6.change_flow
+        pending = flow.get_pending(pending_id)
+        if pending is None:
+            raise ValueError(f"待批准项不存在：{pending_id!r}")
+        if pending.status in ("accepted", "rejected"):
+            # 重复处置是**输入类**失败（用户点重了），不是内部错——就地转 `ValueError`，
+            # 与 L6 自己的「显式失败而非吞错」一致（08 §5）。
+            raise ValueError(f"该提案已处置过（{pending.status}），不可重复处置")
+        if action == "accept":
+            return _run_payload(flow.accept(pending_id), action)
+        return _run_payload(
+            None, action,
+            pending=flow.reject(pending_id) if action == "reject" else flow.defer(pending_id),
+        )
+
+    # ── A/B 实验 ────────────────────────────────────────────────────────────
+    def experiments(self) -> list[dict[str, Any]]:
+        """全部实验（五字段 + 状态 + 决策；判定**保守**，不产 p 值）。"""
+        return [item.model_dump(mode="json") for item in self._l6.experiments.all()]
+
+    # ── 训练对话 ────────────────────────────────────────────────────────────
+    def trainings(self) -> list[dict[str, Any]]:
+        """训练会话留痕（含「已确认 / 未确认」）。"""
+        return [item.model_dump(mode="json") for item in self._l6.training.all()]
+
+    def callbacks(self) -> list[dict[str, Any]]:
+        """待回访项（含已提及的）——「下次对话主动提及」的取材面。"""
+        return [
+            item.model_dump(mode="json")
+            for item in self._l6.training.callbacks(pending_only=False)
+        ]
+
+    # ── 变更历史 ────────────────────────────────────────────────────────────
+    def changes(self) -> list[dict[str, Any]]:
+        """演进变更时间线（含回滚记录与已回滚标注）。"""
+        flow = self._l6.change_flow
+        if flow is None:
+            return []
+        return [item.model_dump(mode="json") for item in flow.history()]
+
+    def rollback(self, change_id: str) -> dict[str, Any]:
+        """按该变更的**生效前取值**回放（本身也是一次变更，产生新 `change_id`）。"""
+        flow = self._l6.change_flow
+        if flow is None:
+            raise ValueError(NO_REGISTRY_REASON)
+        if not change_id:
+            raise ValueError("需给出要回滚的 change_id")
+        if flow.get(change_id) is None:
+            raise ValueError(f"变更不存在：{change_id!r}")
+        return _run_payload(flow.rollback(change_id), "rollback")
+
+    # ── 演进授权 ────────────────────────────────────────────────────────────
+    def authorization(self) -> dict[str, Any]:
+        """档位 + 风险分级清单 + 三档取值（表现层据此渲染设置页）。"""
+        auth = self._l6.authorization
+        if auth is None:
+            return {"available": False, "reason": NO_AUTHORIZATION_REASON}
+        return {
+            "available": True,
+            "tier": auth.tier(),
+            "tiers": list(TIERS),
+            "grading": [rule.model_dump(mode="json") for rule in auth.grading()],
+            "risk_classes": list(RISK_CLASSES),
+            "default_tier": DEFAULT_TIER,
+            "tier_config_id": TIER_CONFIG_ID,
+            "grading_config_id": GRADING_CONFIG_ID,
+        }
+
+    def set_authorization(
+        self, *, tier: Any = None, grading: Any = None
+    ) -> dict[str, Any]:
+        """切换档位 / 替换风险分级清单——**经统一标量落值面生效并留痕**（08 §5）。"""
+        auth = self._l6.authorization
+        if auth is None:
+            return {"available": False, "reason": NO_AUTHORIZATION_REASON}
+        if tier is not None:
+            if tier not in TIERS:
+                raise ValueError(f"档位须为 {'/'.join(TIERS)}，收到 {tier!r}")
+            record = auth.set_tier(tier)
+            return {"available": True, "tier": auth.tier(), "changed": record is not None}
+        if grading is not None:
+            rules = _grading_rules(grading)
+            if not rules:
+                raise ValueError("风险分级清单不得为空（08 §5）")
+            record = auth.set_grading(rules)
+            return {
+                "available": True,
+                "grading": [rule.model_dump(mode="json") for rule in auth.grading()],
+                "changed": record is not None,
+            }
+        raise ValueError("需给出 tier 或 grading")
+
+    # ── 出厂重置 ────────────────────────────────────────────────────────────
+    def factory_reset(self, confirmations: Any) -> dict[str, Any]:
+        """「回滚到出厂设置」——**三次确认**是硬门：不足即**就地拒**，一步都不做。"""
+        reset = self._l6.factory_reset
+        if reset is None:
+            return {"available": False, "reason": _NO_FACTORY_RESET_REASON}
+        if isinstance(confirmations, bool) or not isinstance(confirmations, int):
+            raise ValueError("确认次数须为整数")
+        if confirmations != RESET_CONFIRMATIONS:
+            raise ValueError(
+                f"出厂重置需 {RESET_CONFIRMATIONS} 次确认，收到 {confirmations}"
+                "——不足即拒、不留痕、不执行任何动作（08 §6）"
+            )
+        return reset.request(confirmations).model_dump(mode="json")
+
+
+def _run_payload(
+    run: ChangeRun | None,
+    action: str,
+    *,
+    pending: PendingChange | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """把变更流的一次动作归一成一份结构（提交 / 接受 / 否决 / 延后 / 回滚共用）。"""
+    item = pending if pending is not None else (run.pending if run is not None else None)
+    return {
+        "action": action,
+        "applied": bool(run.applied) if run is not None else False,
+        "decision": run.decision.model_dump(mode="json") if run is not None else None,
+        "change": run.change.model_dump(mode="json") if run is not None and run.change else None,
+        "pending": item.model_dump(mode="json") if item is not None else None,
+        "note": note if note is not None else (run.note if run is not None else ""),
+    }
+
+
+class _ViolationRecorder:
+    """越界行为（`BehaviorViolation`）的**表现层取数面**：订阅留痕、按需拉取。
+
+    [01 §11] 明写「**跨进程**（常驻后端 → 可分离 UI 客户端）的推送是表现层消费面的事，
+    **不在本口径内**」——故本批取**拉取式**（进程内记最近若干条，表现层按需取），
+    不引入推式通道（SSE / 长轮询）。跨进程推送仍待。
+
+    未接订阅面时 :attr:`attached` 为假——表现层据此**如实标注未受理 + 点名**（不假装送达）。
+    """
+
+    EVENT = "BehaviorViolation"
+
+    def __init__(self, *, limit: int = 50, failures: list | None = None) -> None:
+        self._records: deque[dict[str, Any]] = deque(maxlen=limit)
+        self._failures = failures if failures is not None else []
+        self.subscription: tuple[Any, ...] = ()
+
+    @property
+    def attached(self) -> bool:
+        return bool(self.subscription)
+
+    def attach(self, events: Any, *, subscriber_id: str = "m4:violation-recorder") -> tuple[Any, ...]:
+        """把本面订阅到总线（[01 §11] 的 `BehaviorViolation`）。"""
+        self.subscription = (events.subscribe(self.EVENT, self._handle, subscriber_id=subscriber_id),)
+        return self.subscription
+
+    def _handle(self, event: Any) -> None:
+        payload = dict(getattr(event, "payload", None) or {})
+        self._records.append({
+            "skill_id": str(payload.get("skill_id") or ""),
+            "violation": str(payload.get("violation") or ""),
+            "trace_id": str(getattr(event, "trace_id", None) or ""),
+            "occurred_at": str(getattr(event, "occurred_at", None) or ""),
+        })
+
+    def records(self) -> tuple[dict[str, Any], ...]:
+        """已记下的越界（新者在前）——**留痕即事实**，不重排、不合并。"""
+        return tuple(reversed(self._records))
+
+
+class EcoFacade:
+    """ECO 生态面的**表现层适配面**（组合根所有；`ui` 只经鸭子端口消费，[`T-UI-004.4`]）。
+
+    与 :class:`ReflectionFacade` 同口径：取数转 JSON 就绪结构 · **输入类失败就地转 `ValueError`** ·
+    子面未接线回 ``{"available": False, "reason": …}``。
+
+    **文件面**（[09 §6] 的表现层口径）：导出 / 导入**只在两处目录内**读写——导出物落
+    `exports_dir`、待导入文件放进 `inbox_dir`。本面**不提供**「按任意路径读 / 写」的原语：
+    文件名一律按**单段名**校验，路径分隔符 / 绝对路径 / 上跳一律拒。
+    """
+
+    def __init__(
+        self,
+        *,
+        eco: Any,
+        approvals: Any,
+        violations: Any,
+        sandbox: Any,
+        exports_dir: Path,
+        inbox_dir: Path,
+    ) -> None:
+        self._eco = eco
+        self._approvals = approvals
+        self._violations = violations
+        self._sandbox = sandbox
+        self._exports_dir = Path(exports_dir)
+        self._inbox_dir = Path(inbox_dir)
+
+    # ── 导出（[09 §2] 的三步：清单 → 用户确认 → 生成） ────────────────────────
+    def export_plan(self) -> dict[str, Any]:
+        """「本次导出包含以下公开信息」清单——**直接取 L2 的计划**，本面不自行筛。"""
+        plan = self._eco.exporter.plan_memory()
+        return {
+            "included": list(plan.included_summary),
+            "excluded_nodes": int(plan.excluded_nodes),
+            "confirmed_by_required": IMPORT_CONFIRMATION,
+            "exports_dir": str(self._exports_dir),
+        }
+
+    def export(
+        self, *, kind: str, ref: str = "", author: str = "", confirmed_by: str = ""
+    ) -> dict[str, Any]:
+        """按 `kind` 导出到**导出目录**，回路径 + 分享卡片。"""
+        if kind not in SHARE_KINDS:
+            raise ValueError(f"分享物种类须为 {'/'.join(SHARE_KINDS)}，收到 {kind!r}")
+        if not str(author).strip():
+            raise ValueError("导出须给出 author（manifest 的作者声明，09 §1）")
+        exporter = self._eco.exporter
+        if kind == "mem":
+            if confirmed_by != IMPORT_CONFIRMATION:
+                raise ValueError(
+                    "导出记忆片段须由用户确认（三步的第 3 步，09 §2）——未确认即不生成文件"
+                )
+            container = exporter.export_memory(author=author, confirmed_by=confirmed_by)
+        else:
+            if not str(ref).strip():
+                raise ValueError(f"导出 {kind} 须给出 ref（其 skill_id / flow_id / lens_id）")
+            container = {
+                "skill": exporter.export_skill,
+                "flow": exporter.export_flow,
+                "lens": exporter.export_lens,
+            }[kind](str(ref), author=author)
+        card = exporter.card_for(container)
+        target = container.save_to(self._exports_dir / card.file_name)
+        return {
+            "kind": kind,
+            "path": str(target),
+            "checksum": card.checksum,
+            "card": card.model_dump(mode="json"),
+        }
+
+    # ── 导入（[09 §3] 的五段） ────────────────────────────────────────────────
+    def inbox(self) -> list[dict[str, Any]]:
+        """收件目录里的待导入文件（只列文件名与大小，**不读内容**）。"""
+        if not self._inbox_dir.is_dir():
+            return []
+        return [
+            {"file_name": path.name, "size": path.stat().st_size}
+            for path in sorted(self._inbox_dir.iterdir())
+            if path.is_file()
+        ]
+
+    def review(self, *, file_name: str, received_from: str = "") -> dict[str, Any]:
+        """格式校验 + 依赖解析 + 权限登记后的审核面（[09 §3] 的第 1–3 段，**尚未安装**）。"""
+        plan = self._plan(file_name, received_from=received_from)
+        return {
+            "file_name": file_name,
+            "kind": plan.kind,
+            "identity": plan.identity(),
+            "wants": list(plan.what_it_wants()),
+            "permissions": self._approval_items(plan),
+            "missing": [gap.model_dump(mode="json") for gap in plan.missing],
+            "provenance": plan.provenance.model_dump(mode="json"),
+        }
+
+    def decide_import(self, *, file_name: str, permission: str, decision: str = "approve") -> dict[str, Any]:
+        """逐项批准 / 拒绝一条已声明的权限（[01 §10] 的逐项批准，经 L3 审批面落账）。"""
+        if decision not in ("approve", "reject"):
+            raise ValueError(f"决定须为 approve / reject，收到 {decision!r}")
+        plan = self._plan(file_name)
+        if not plan.permissions:
+            raise ValueError("该导入物未声明任何权限，无可批准项")
+        if permission not in plan.permissions:
+            raise ValueError(f"该导入物未声明这条权限：{permission!r}")
+        request = self._approval_request(plan)
+        envelope = (
+            self._approvals.approve(request, permission)
+            if decision == "approve"
+            else self._approvals.reject(request, permission)
+        )
+        if envelope.status != "ok":
+            raise ValueError(envelope.reason or "权限审批面未受理本次决定")
+        return {
+            "permission": permission,
+            "decision": decision,
+            "permissions": self._approval_items(plan),
+        }
+
+    def install(
+        self, *, file_name: str, confirmed_by: str = "", received_from: str = ""
+    ) -> dict[str, Any]:
+        """用户确认后安装（[09 §3] 第 4–5 段）——`.stskill` 另需权限声明**全部已批准**。"""
+        if confirmed_by != IMPORT_CONFIRMATION:
+            raise ValueError("安装须由用户确认（09 §3 第 4 段）")
+        plan = self._plan(file_name, received_from=received_from)
+        try:
+            outcome = self._eco.importer.install(plan, confirmed_by=confirmed_by)
+        except EcoError as exc:
+            raise ValueError(f"安装未通过：{exc}") from exc
+        return outcome.model_dump(mode="json")
+
+    def imports_ledger(self) -> dict[str, Any]:
+        """来源追溯：全部导入留痕（**空即空态**，用 L1 的中性文本，不硬凑列表）。"""
+        records = [item.model_dump(mode="json") for item in self._eco.importer.ledger_records()]
+        return {"records": records, "empty_text": "" if records else EMPTY_STATE_TEXT}
+
+    # ── 官方索引（[09 §4]） ───────────────────────────────────────────────────
+    def index(self) -> dict[str, Any]:
+        """只读浏览；**不可用即如实不可用**（离线 / 未配端点），不留半截数据。"""
+        try:
+            entries = self._eco.index.browse()
+        except Exception as exc:  # noqa: BLE001 —— 未配端点 / 离线：如实记因，不吞成空列表
+            return {"available": False, "reason": f"官方 Skill 索引不可用：{exc}"}
+        return {
+            "available": True,
+            "entries": [entry.model_dump(mode="json") for entry in entries],
+            "boundary": ECOSYSTEM_BOUNDARY,
+        }
+
+    # ── 越界行为警示（[09 §3] 的运行时防护） ──────────────────────────────────
+    def violations(self) -> dict[str, Any]:
+        if self._violations is None:
+            return {
+                "available": False,
+                "reason": "未接入越界行为的订阅面（装配归组合根）",
+            }
+        return {
+            "available": True,
+            "attached": bool(self._violations.attached),
+            "records": list(self._violations.records()),
+            "disabled": list(self._sandbox.disabled_skills()),
+        }
+
+    def disable(self, *, skill_id: str) -> dict[str, Any]:
+        """禁用越界能力（[03 §1.5] 的禁用面）——写面在沙箱，本面只转交。"""
+        if not str(skill_id).strip():
+            raise ValueError("须给出要禁用的 skill_id")
+        self._sandbox.disable(str(skill_id))
+        return {"skill_id": skill_id, "disabled": True}
+
+    # ── 内部工具 ─────────────────────────────────────────────────────────────
+    def _plan(self, file_name: str, *, received_from: str = "") -> Any:
+        path = self._inbox_path(file_name)
+        try:
+            blob = path.read_bytes()
+        except OSError as exc:
+            raise ValueError(f"收件目录里读不到该文件：{file_name!r}") from exc
+        try:
+            return self._eco.importer.inspect(blob, received_from=received_from or None)
+        except EcoError as exc:
+            # 生态面的自有失败都源于**输入**（文件形态 / 缺来源 / 版本不兼容）⇒ 转成输入类失败
+            raise ValueError(f"导入校验未通过：{exc}") from exc
+
+    def _inbox_path(self, file_name: str) -> Path:
+        """**只在收件目录内**解析文件名（单段名；分隔符 / 绝对路径 / 上跳一律拒）。"""
+        if not isinstance(file_name, str) or not file_name.strip():
+            raise ValueError("须给出收件目录里的文件名")
+        if Path(file_name).name != file_name:
+            raise ValueError(f"只接受收件目录内的文件名（不接受路径）：{file_name!r}")
+        return self._inbox_dir / file_name
+
+    def _approval_request(self, plan: Any) -> Any:
+        payload = plan.container.payload
+        skill_id = str(getattr(payload, "skill_id", "") or "")
+        base, _version = parse_skill_id(skill_id)
+        return ApprovalRequest(key=base, source="imported", permissions=plan.permissions)
+
+    def _approval_items(self, plan: Any) -> list[dict[str, Any]]:
+        """逐条权限的批准态（经 **L3 审批面**取，不自行读账本）。"""
+        if not plan.permissions:
+            return []
+        envelope = self._approvals.open(self._approval_request(plan))
+        if envelope.status != "ok":
+            raise ValueError(envelope.reason or "权限审批面不可用")
+        return [item.model_dump(mode="json") for item in envelope.data.items]
+
+
 @dataclass(frozen=True)
 class _EcoStack:
     """ECO 三面（[09](../../docs/技术架构-v2/09-生态与分享.md) 跨层生态面）：导出 / 导入校验 / 官方索引。"""
@@ -1499,6 +2038,10 @@ class M4Runtime:
     l6: L6Stack
     eco: _EcoStack
     notifier: Any = None
+    ecosystem: Any = None
+    """ECO 生态面的**表现层适配面**（[`T-UI-004.4`]；组合根所有，表现层只经鸭子端口消费）。"""
+    violations: Any = None
+    """越界行为（`BehaviorViolation`）的**订阅留痕面**（表现层经 :attr:`ecosystem` 拉取）。"""
     l6_failures: list = field(default_factory=list)
     """L6 侧推进的显式失败记录（如模式识别未完成；**可查**，不吞）。"""
 
@@ -1528,8 +2071,17 @@ class M4Runtime:
     def chat(self) -> DialogFacade:
         return self.m3.chat
 
+    @property
+    def reflection(self) -> ReflectionFacade:
+        """L6 的**表现层适配面**——表现层入口（反思中心 / 变更历史 / 演进授权）经它取数与处置。
+
+        反馈采集仍走**交互层**的采集面（[01 §1]：`feedback_id` 的产生方是 L3），故这里把
+        :meth:`DialogFacade.record_feedback` 一并交给它转发，而**不是**让表现层直写 L6 池。
+        """
+        return ReflectionFacade(l6=self.l6, feedback=self.m3.chat.record_feedback)
+
     def training_callbacks(self) -> tuple[Any, ...]:
-        """待回访项读面（[08 §3] 第 3 步；表现层入口归后续 `T-UI-*` 任务）。"""
+        """待回访项读面（[08 §3] 第 3 步；表现层入口见 [`T-UI-004.2`]）。"""
         return tuple(self.l6.training.callbacks())
 
     # ── 职责循环（[00 §5] 步 4–8） ─────────────────────────────────────────
@@ -1557,6 +2109,25 @@ class M4Runtime:
             self.l6.proposals.detect(now=moment)
         except Exception as exc:  # noqa: BLE001 —— 记因不吞；一次识别失败不该拖垮当轮报告
             self.l6_failures.append(f"模式识别未完成（{type(exc).__name__}）：{exc}")
+
+
+
+EXPORTS_DIR_NAME = "exports"
+"""导出目录名（存储根下；表现层文件面的**固定常量**，非 [01 §7] 条目——见 [09 §6]）。"""
+
+INBOX_DIR_NAME = "inbox"
+"""导入收件目录名（同上）。"""
+
+
+def _eco_dir(root: Path | str, name: str) -> Path:
+    """建好（若缺）表现层的分享文件目录并返回它。
+
+    [09 §6] 的表现层口径：导入导出**只在两处目录内**读写，故目录在装配期先立好——
+    导出时若父目录不存在，`ShareContainer.save_to` 会显式报错（它**不自建目录**）。
+    """
+    target = Path(root) / name
+    target.mkdir(parents=True, exist_ok=True)
+    return target
 
 
 def build_m4_runtime(
@@ -1656,6 +2227,18 @@ def build_m4_runtime(
         dispatcher=l5.dispatcher, policies=l5.policies, level=notice_level, failures=failures,
     )
     notifier.attach(bus)
+    violations = _ViolationRecorder(failures=failures)
+    violations.attach(bus)
+    exports_dir = _eco_dir(root, EXPORTS_DIR_NAME)
+    inbox_dir = _eco_dir(root, INBOX_DIR_NAME)
+    ecosystem = EcoFacade(
+        eco=eco,
+        approvals=CapabilityApprovalPanel(book=runtime.skill_permissions),
+        violations=violations,
+        sandbox=runtime.sandbox,
+        exports_dir=exports_dir,
+        inbox_dir=inbox_dir,
+    )
     m3 = M3Runtime(
         m2=M2Runtime(
             m1=M1Runtime(runtime=runtime, **_as_kwargs(l2), **_as_kwargs(l3)),
@@ -1665,4 +2248,7 @@ def build_m4_runtime(
         l5=l5, events=bus, monitor_rules=monitor_rules,
         emission_failures=failures, now=now,
     )
-    return M4Runtime(m3=m3, l6=l6, eco=eco, notifier=notifier)
+    return M4Runtime(
+        m3=m3, l6=l6, eco=eco, notifier=notifier,
+        ecosystem=ecosystem, violations=violations,
+    )

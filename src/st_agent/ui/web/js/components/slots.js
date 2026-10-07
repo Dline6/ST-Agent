@@ -1,4 +1,4 @@
-// L3 渲染件共用的取值与「未识别槽」兜底。
+// 表现层渲染件共用的取值与「未识别槽」兜底（通用件，故住 `components/`）。
 //
 // 与 `components/` 下的通用件同规矩：**只解析描述、不解析任意代码**，只用
 // `textContent` / `replaceChildren` 构造 DOM，不做动态求值（见 render.js 的模块注释）。

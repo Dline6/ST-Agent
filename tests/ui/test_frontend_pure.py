@@ -48,3 +48,23 @@ def test_dev_panel_lives_under_the_dev_package() -> None:
 def test_index_html_carries_the_dev_marker() -> None:
     html = (_UI / "web" / "index.html").read_text(encoding="utf-8")
     assert "<!--ST_DEV_SCRIPT-->" in html
+
+
+_RELATIVE_IMPORT = re.compile(r"""from\s+'(\.{1,2}/[^']+)'""")
+
+
+def test_every_relative_import_resolves_to_a_file() -> None:
+    """前端模块图必须**可解析**：相对 import 指到盘上不存在的文件即失败。
+
+    本组不跑 JS；这条是**静态**兜底，专拦「路径深度写错」那类错（如 `plugins/reflection/`
+    里的 `../components/` 实际解析到 `plugins/components/`）。它在浏览器里表现为**整页停在
+    加载态**，而服务端用例与「注册表两侧一致」的断言都看不见——2026-10-07 由
+    [`T-UI-004.2`](../../项目管理/tasks/T-UI-004.2-反思中心表现层入口.md) 的浏览器实测撞出。
+    """
+    missing = [
+        (path.name, target)
+        for path in JS_FILES
+        for target in _RELATIVE_IMPORT.findall(path.read_text(encoding="utf-8"))
+        if not (path.parent / target).resolve().is_file()
+    ]
+    assert not missing, f"相对 import 指向不存在的文件：{missing}"

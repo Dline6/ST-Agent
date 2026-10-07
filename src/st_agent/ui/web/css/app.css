@@ -44,6 +44,24 @@ body {
 .masthead h1 { margin: 0 0 .25rem; font-size: 1.4rem; letter-spacing: .01em; }
 .hint { margin: 0; color: var(--fg-muted); font-size: .9rem; }
 
+/* 页面导航（壳）：与主区同宽；跳页链接由 main.js 拼回 fragment 里的令牌。 */
+.nav { max-width: 46rem; margin: 0 auto .75rem; }
+.nav__list { display: flex; flex-wrap: wrap; gap: .25rem .5rem; margin: 0; padding: 0; list-style: none; }
+.nav__link {
+  display: inline-block;
+  padding: .15rem .45rem;
+  border-radius: 6px;
+  color: var(--fg-muted);
+  font-size: .9rem;
+  text-decoration: none;
+}
+.nav__link:hover { color: var(--fg); background: var(--line); }
+.nav__link[aria-current="page"] { color: var(--fg); font-weight: 600; background: var(--line); }
+
+/* 未实现页面的可用性探针占位（只证明路由通、端口在不在，不冒充业务内容）。 */
+.page-probe__title { margin: 0 0 .25rem; font-size: 1.05rem; }
+.page-probe__body { margin-top: .75rem; }
+
 main {
   max-width: 46rem;
   margin: 0 auto;
@@ -193,3 +211,91 @@ main {
 .divergence__notes { margin: .25rem 0; padding-left: 1.1rem; }
 .divergence__nodes { list-style: none; padding-left: 0; }
 .divergence__conflict { padding: .5rem .75rem; border: 1px solid var(--line); border-radius: 8px; }
+
+/* 反思中心的页面装配（/reflection 及其子页）：块与块自上而下并列 */
+.page__title { margin: 0 0 .5rem; font-size: 1.1rem; }
+.page__block { margin: 0 0 1.25rem; }
+.page__block-title { margin: 0 0 .35rem; font-size: .95rem; color: var(--fg-muted); }
+
+/* feedback_capture（01 §12 / 08 §1）：五类动作并列，原因入口独立一行 */
+.component--feedback { padding: .75rem; border: 1px solid var(--line); border-radius: 8px; }
+.feedback__actions { display: flex; flex-wrap: wrap; gap: .4rem; margin: .5rem 0; }
+.feedback__button,
+.proposal-actions__button {
+  font: inherit;
+  padding: .2rem .6rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--fg);
+  cursor: pointer;
+}
+.feedback__button:hover,
+.proposal-actions__button:hover { border-color: var(--fg-muted); }
+.feedback__button:disabled,
+.proposal-actions__button:disabled { opacity: .5; cursor: progress; }
+.feedback__reason {
+  font: inherit;
+  width: 100%;
+  padding: .25rem .45rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--fg);
+}
+
+/* proposal_card（01 §12 / 08 §3–§5）：逐条并列，动作行附在每条之下 */
+.proposal-list { margin: .5rem 0; padding: 0; list-style: none; }
+.proposal-item { padding: .6rem .75rem; border: 1px solid var(--line); border-radius: 8px; margin-bottom: .5rem; }
+.proposal-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin: .4rem 0 .2rem; }
+.proposal-skill { padding: .2rem 0; }
+
+/* change_timeline（01 §12 / 08 §5–§6）：逐条变更并列，回滚动作附在每条之下 */
+.component--changes { padding: .75rem; border: 1px solid var(--line); border-radius: 8px; }
+.change-list { margin: .5rem 0; padding-left: 1.2rem; }
+.change-item { margin-bottom: .6rem; padding: .5rem .75rem; border: 1px solid var(--line); border-radius: 8px; }
+.change-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin: .4rem 0 .2rem; }
+.change-actions__button,
+.setting-actions__button {
+  font: inherit;
+  padding: .2rem .6rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--fg);
+  cursor: pointer;
+}
+.change-actions__button:hover,
+.setting-actions__button:hover { border-color: var(--fg-muted); }
+.change-actions__button:disabled,
+.setting-actions__button:disabled { opacity: .5; cursor: progress; }
+
+/* setting_panel（01 §12 / 08 §5）：逐条设置项，候选值 + 应用动作 */
+.component--setting { padding: .75rem; border: 1px solid var(--line); border-radius: 8px; }
+.setting-list { margin: .5rem 0; padding: 0; list-style: none; }
+.setting-item { padding: .5rem .75rem; border: 1px solid var(--line); border-radius: 8px; margin-bottom: .5rem; }
+.setting-item__name { margin: 0; font-weight: 600; }
+.setting-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin: .4rem 0 .2rem; }
+.setting__select {
+  font: inherit;
+  padding: .2rem .4rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--fg);
+}
+
+/* violation_alert（01 §12；09 §3 的运行时防护）：警示 + 越界事实 + 禁用动作 */
+.component--violation { padding: .75rem; border: 1px solid var(--error); border-radius: 8px; }
+.violation-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin: .4rem 0 .2rem; }
+.violation-actions__button {
+  font: inherit;
+  padding: .2rem .6rem;
+  border: 1px solid var(--error);
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--error);
+  cursor: pointer;
+}
+.violation-actions__button:hover { background: var(--error); color: var(--card); }
+.violation-actions__button:disabled { opacity: .5; cursor: progress; }

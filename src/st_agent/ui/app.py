@@ -10,8 +10,10 @@ dev 面的开关是**构建期**语义：``st_agent.ui.dev`` 子包在发布构�
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -19,7 +21,7 @@ from typing import Any
 
 from st_agent import __version__
 from st_agent.contracts.result_envelope import ResultEnvelope
-from st_agent.contracts.ui_description import UiDescription
+from st_agent.contracts.ui_description import UiDescription, checked_description, new_description_id
 
 from st_agent.ui.envelope import envelope_payload
 from st_agent.ui.errors import DevSurfaceUnavailable
@@ -27,10 +29,29 @@ from st_agent.ui.neutrality_gate import NeutralityGate
 from st_agent.ui.registry import slot_gaps
 from st_agent.ui.security import RequestGuard, new_token, resolve_static
 
-__all__ = ["DEV_SCRIPT_MARKER", "UiApp", "WEB_ROOT", "build_ui"]
+__all__ = ["DEV_SCRIPT_MARKER", "PAGE_PATHS", "UiApp", "WEB_ROOT", "build_ui"]
 
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 """生产静态资产根（无构建 ES modules）。"""
+
+PAGE_PATHS = frozenset({
+    "/reflection",
+    "/reflection/changes",
+    "/reflection/experiments",
+    "/reflection/training",
+    "/settings/evolution",
+    "/eco",
+    "/eco/import",
+    "/eco/index",
+    "/eco/imports",
+    "/eco/security",
+})
+"""已知**页面路径**——它们回同一静态壳（SPA 回退），与 `ui/web/js/pages.js` 的登记表同源。
+
+页面路径属**静态壳档**（只校 `Host` / 存在的 `Origin`），故首次导航不必带令牌
+（[D-063] 的令牌分档：令牌只压 `/api/*`）；用户数据的取数一律在 `/api/*` 之后。
+**未知路径仍 404**——不把任意路径都当页面（否则静态壳会吞掉资产缺失的错误）。
+"""
 
 DEV_SCRIPT_MARKER = "<!--ST_DEV_SCRIPT-->"
 """`index.html` 里的 dev 脚本占位：dev 关闭时被替换为空串，故**发布产物不含 dev 引用**。"""
@@ -55,6 +76,55 @@ def _load_dev() -> Any | None:
     return dev
 
 
+def _required(body: Mapping[str, Any], key: str) -> Any:
+    """取请求体的必填项；缺失 / 空白即 ``ValueError``（表现层据此回 `validation_failed`）。"""
+    value = body.get(key)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        raise ValueError(f"请求体缺少必填项 {key!r}")
+    return value
+
+
+def _compact(value: Any) -> Any:
+    """表格单元格的取值：容器压成一行 JSON、其余原样（**不臆造摘要**）。"""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _anchor_text(item: Any) -> str:
+    """一个留痕锚点的展示文本（证据引用是 ``{kind, ref}`` 对象，其余为 ID 字符串）。"""
+    if isinstance(item, Mapping):
+        return f"{item.get('kind')}:{item.get('ref')}"
+    return str(item)
+
+
+_FEEDBACK_ACTIONS = ("adopted", "ignored", "rejected", "queried", "liked")
+"""反馈的五类动作（[08 §1]；与 L3 采集面的 `ACTIONS` 同序同集）。"""
+
+_FEEDBACK_REASON_REQUIRED = ("rejected",)
+"""其中**必填原因**的一类——「否定 + 说明原因」是 story-09 的原始要求。"""
+
+_FEEDBACK_LABELS = {
+    "adopted": "采纳",
+    "ignored": "忽略",
+    "rejected": "否定",
+    "queried": "追问",
+    "liked": "点赞",
+}
+"""动作键 → 中性中文标签（**本层生成文案**，过 [01 §6] 执行点 2）。"""
+
+
+def _as_datetime(value: Any) -> datetime | None:
+    """把 ISO 串还原成**带时区**的 ``datetime``（[01 §8]：`as_of` 须带时区语义）。"""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
 @dataclass(frozen=True)
 class UiApp:
     """一次服务进程的装配结果（不可变；由 :func:`build_ui` 构造）。"""
@@ -70,6 +140,16 @@ class UiApp:
     由 M1 关卡的组合根注入（`ui` **不 import** `st_agent.app`，只经此鸭子端口消费，
     否则破 `test_ui_is_client_only`；见 [T-INT-002] 假设 A2）。
     """
+
+    reflection: Any = None
+    """L6 反思演进栈（鸭子端口；缺省 ``None`` → 反思 / 演进而端点 fail-closed）。
+
+    同一端口服务 `/api/reflection/*` 与 `/api/evolution/*`——两者同属 L6（[08-L6] 的
+    反思面与演进面）。由生产入口注入（`ui` 不 import `l6` 的类型，也不 import `app`）。
+    """
+
+    eco: Any = None
+    """生态面（鸭子端口：`exporter` / `importer` / `index`）；缺省 ``None`` → 生态面 fail-closed。"""
 
     @property
     def dev_enabled(self) -> bool:
@@ -144,6 +224,804 @@ class UiApp:
             )
         )
 
+    def api_face_status(self, face: str) -> dict[str, Any]:
+        """面可用性探针：端口在 ⇒ `ok`；不在 ⇒ `unavailable` + 点名。
+
+        表现层壳用它决定导航项是否可用。**「未接入」与「接入但无数据」是两回事**——
+        前者是本进程没拿到该面的装配口（点名归属），后者由各面自己的读面给空态
+        （[01 §5] 六态不可混用，同 [08 §4]「不由计数 0 反推」的口径）。
+        """
+        if getattr(self, face, None) is None:
+            return envelope_payload(
+                ResultEnvelope.unavailable(
+                    f"未接入 {face} 面：该面端点在本次装配中不可用（装配归生产入口）",
+                    last_updated_at=_now(),
+                )
+            )
+        return envelope_payload(ResultEnvelope.ok({"face": face, "available": True}))
+
+    # ───────────────────── 反思中心（[T-UI-004.2]） ─────────────────────
+
+    def api_reflection_report(self, *, week: str = "") -> dict[str, Any]:
+        """每周反思报告：四段式 `report_card`；两种空态**分开判定、皆不硬凑**（[08 §2]）。"""
+        return self._call_face(
+            "reflection-report", self.reflection, "L6 反思演进面",
+            lambda face: self._report_envelope(face, week),
+        )
+
+    def api_reflection_trace(self, *, week: str = "") -> dict[str, Any]:
+        """报告的**留痕锚点**（`trace_timeline`）——兑现「报告生成走完整 Trace」（[08 §2]）。"""
+        return self._call_face(
+            "reflection-trace", self.reflection, "L6 反思演进面",
+            lambda face: self._trace_envelope(face, week),
+        )
+
+    def api_reflection_feedback_capture(self) -> dict[str, Any]:
+        """反馈采集组件：对**本周这次触达**采集反馈（目标取自最近一期报告的投递留痕）。
+
+        写面在 :meth:`api_reflection_feedback`；本端点只把「可反馈的对象」喂给组件——
+        没有可反馈对象时给 `empty`，**不硬凑**一个假目标。
+        """
+        return self._call_face(
+            "reflection-feedback-capture", self.reflection, "L6 反思演进面",
+            lambda face: self._feedback_envelope(face),
+        )
+
+    def _feedback_envelope(self, face: Any) -> ResultEnvelope:
+        report = self._latest_report(face, "")
+        if isinstance(report, ResultEnvelope):
+            return report
+        deliveries = (report.get("trace") or {}).get("delivery_ids") or []
+        if not deliveries:
+            return ResultEnvelope.empty("本周没有可反馈的触达（报告无投递留痕）")
+        return ResultEnvelope.ok(
+            self._gated_description(
+                "feedback_capture",
+                slots={
+                    "target": {"kind": "delivery", "ref": str(deliveries[-1])},
+                    "actions": list(_FEEDBACK_ACTIONS),
+                    "reason_required": list(_FEEDBACK_REASON_REQUIRED),
+                    "labels": dict(_FEEDBACK_LABELS),
+                    "prompt": "否定类反馈必须说明原因",
+                },
+                text_kinds={
+                    "target": "data",
+                    "actions": "data",
+                    "reason_required": "data",
+                    "labels": "generated",
+                    "prompt": "generated",
+                },
+                title=f"对本周触达的反馈 · {report.get('week')}",
+            )
+        )
+
+    def api_reflection_proposals(self) -> dict[str, Any]:
+        """待处置的建议：待批准队列 + 最近一期周报的候选 + 主动提案（`proposal_card`）。"""
+        return self._call_face(
+            "reflection-proposals", self.reflection, "L6 反思演进面",
+            lambda face: self._proposals_envelope(face),
+        )
+
+    def api_reflection_feedback(self, body: dict[str, Any]) -> dict[str, Any]:
+        """反馈采集（写面）——**产生方是交互层**，本层只把请求转给注入的采集面（[01 §1]）。
+
+        `feedback_id` 由采集面铸造、`rejected` 的 `reason` 由它校验必填；本层**不预判、
+        也不落盘**（[05 §9]：L3 只产事件、反馈池归 L6）。
+        """
+        return self._call_face(
+            "reflection-feedback", self.reflection, "L6 反思演进面",
+            lambda face: face.record_feedback(
+                target=_required(body, "target"),
+                action=_required(body, "action"),
+                reason=body.get("reason"),
+                context=body.get("context"),
+            ),
+        )
+
+    def api_reflection_decide(self, body: dict[str, Any]) -> dict[str, Any]:
+        """逐条处置提案（接受 / 否决 / 延后）——**唯一通道是变更流**（[08 §5] / §7 红线）。"""
+        return self._call_face(
+            "reflection-decide", self.reflection, "L6 反思演进面",
+            lambda face: ResultEnvelope.ok(
+                face.decide(
+                    action=_required(body, "action"),
+                    proposal=body.get("proposal"),
+                    pending_id=str(body.get("pending_id") or ""),
+                )
+            ),
+        )
+
+    def api_reflection_experiments(self) -> dict[str, Any]:
+        """A/B 实验日志（`table`）——五字段 + 状态与决策；判定**保守**，不产 p 值（[08 §4]）。"""
+        return self._call_face(
+            "reflection-experiments", self.reflection, "L6 反思演进面",
+            lambda face: ResultEnvelope.ok(
+                self._gated_description(
+                    "table",
+                    slots={
+                        "columns": ["假设", "范围", "样本", "结果", "决策", "状态"],
+                        "rows": [
+                            [
+                                item.get("hypothesis"),
+                                item.get("scope"),
+                                _compact(item.get("sample")),
+                                _compact(item.get("result")),
+                                item.get("decision"),
+                                item.get("status"),
+                            ]
+                            for item in face.experiments()
+                        ],
+                    },
+                    text_kinds={"columns": "generated", "rows": "data"},
+                    title="A/B 实验日志",
+                )
+            ),
+        )
+
+    def api_reflection_training(self) -> dict[str, Any]:
+        """训练会话与待回访项（`table`）——用户原话按 `data` **原样呈现**（[D-053]）。"""
+        return self._call_face(
+            "reflection-training", self.reflection, "L6 反思演进面",
+            lambda face: ResultEnvelope.ok(
+                self._gated_description(
+                    "table",
+                    slots={
+                        "columns": [
+                            "训练 id", "用户的修正（原话）", "复述", "模式", "已确认", "时刻",
+                        ],
+                        "rows": [
+                            [
+                                (item.get("session") or {}).get("training_id"),
+                                (item.get("session") or {}).get("correction"),
+                                (item.get("session") or {}).get("restatement"),
+                                _compact((item.get("session") or {}).get("pattern")),
+                                "是" if (item.get("session") or {}).get("confirmed") else "否",
+                                (item.get("session") or {}).get("created_at"),
+                            ]
+                            for item in face.trainings()
+                        ],
+                    },
+                    text_kinds={"columns": "generated", "rows": "data"},
+                    title="训练对话留痕",
+                )
+            ),
+        )
+
+    # ───────────────────── 反思中心的取数装配 ─────────────────────
+
+    def _report_envelope(self, face: Any, week: str) -> ResultEnvelope:
+        """周报信封：无报告 ⇒ `empty`；**无触达 / 数据不足两态由 L6 的正文原话承载**
+        （本层不自行推断——按反馈数为 0 反推「无触达」正是 [08 §4] 明禁的那种误判）。"""
+        report = self._latest_report(face, week)
+        if isinstance(report, ResultEnvelope):
+            return report
+        if report.get("empty") or report.get("insufficient"):
+            return ResultEnvelope.empty(str(report.get("body") or ""))
+        sections = [
+            {
+                "title": section.get("label"),
+                "lines": [line.get("text") for line in section.get("lines") or []],
+            }
+            for section in report.get("sections") or []
+        ]
+        return ResultEnvelope.ok(
+            self._gated_description(
+                "report_card",
+                slots={"sections": sections},
+                text_kinds={"sections": "data"},
+                title=f"反思报告 · {report.get('week')}",
+                as_of=_as_datetime(report.get("generated_at")),
+            )
+        )
+
+    def _trace_envelope(self, face: Any, week: str) -> ResultEnvelope:
+        """留痕锚点信封——每一环 = 一类留痕（投递 / 信号 / 反馈 / 记忆 / 证据 / 推理链）。"""
+        report = self._latest_report(face, week)
+        if isinstance(report, ResultEnvelope):
+            return report
+        trace = report.get("trace") or {}
+        window = f"{report.get('period_start')}–{report.get('period_end')}"
+        plan = (
+            ("投递留痕", trace.get("delivery_ids") or []),
+            ("信号留痕", trace.get("signal_ids") or []),
+            ("反馈留痕", trace.get("feedback_ids") or []),
+            ("记忆读取", trace.get("memory_node_ids") or []),
+            ("证据引用", trace.get("evidence_refs") or []),
+            ("推理链引用", trace.get("trace_ids") or []),
+        )
+        steps = [
+            {
+                "step_type": name,
+                "ref": "、".join(_anchor_text(item) for item in anchors) or "—",
+                "input_digest": f"取材窗口 {window}",
+                "output_digest": f"{len(anchors)} 条",
+                "duration_ms": 0,
+                "timestamp": report.get("generated_at"),
+                "degraded": not anchors,
+            }
+            for name, anchors in plan
+        ]
+        return ResultEnvelope.ok(
+            self._gated_description(
+                "trace_timeline",
+                slots={"steps": steps},
+                text_kinds={"steps": "generated"},
+                title=(
+                    f"留痕锚点 · {report.get('week')}"
+                    "（报告生成不逐环计时，耗时恒记 0；degraded 标记该类留痕为空）"
+                ),
+            )
+        )
+
+    def _proposals_envelope(self, face: Any) -> ResultEnvelope:
+        """建议信封：待批准队列（三动作）+ 周报候选（可接受）+ 主动提案（**信息面**）。"""
+        items: list[dict[str, Any]] = []
+        for pending in face.pending():
+            if pending.get("status") not in ("pending", "deferred"):
+                continue
+            proposal = pending.get("proposal") or {}
+            items.append({
+                "kind": "change",
+                "pending_id": pending.get("pending_id"),
+                "status": pending.get("status"),
+                "deferrals": pending.get("deferrals", 0),
+                "config_id": proposal.get("config_id"),
+                "current": proposal.get("current"),
+                "suggested": proposal.get("suggested"),
+                "reason": proposal.get("reason"),
+                "trace_ref": proposal.get("trace_ref"),
+                "source": proposal.get("source"),
+                "actions": ["accept", "reject", "defer"],
+            })
+        report = self._latest_report(face, "")
+        if not isinstance(report, ResultEnvelope):
+            for candidate in report.get("proposals") or []:
+                items.append({
+                    "kind": "change",
+                    "pending_id": "",
+                    "config_id": candidate.get("config_id"),
+                    "current": candidate.get("current"),
+                    "suggested": candidate.get("suggested"),
+                    "reason": candidate.get("reason"),
+                    "trace_ref": candidate.get("trace_ref"),
+                    "source": f"周报 {report.get('week')}",
+                    "actions": ["accept"],
+                })
+        for proposal in face.proposals():
+            draft = proposal.get("draft") or {}
+            items.append({
+                "kind": "skill",
+                "proposal_id": proposal.get("proposal_id"),
+                "key": proposal.get("key"),
+                "count": proposal.get("count"),
+                "reason": proposal.get("reason"),
+                "sample": proposal.get("sample"),
+                "draft": {
+                    "name": draft.get("name"),
+                    "description": draft.get("description"),
+                    "nodes": len(draft.get("nodes") or []),
+                    "queued": not proposal.get("released_week"),
+                },
+                "actions": [],
+                "note": "该提案的落地路径是 Studio 的草稿接收面：本卡只呈现提案与草稿，"
+                        "创建流程在 Studio 发起",
+            })
+        return ResultEnvelope.ok(
+            self._gated_description(
+                "proposal_card",
+                slots={
+                    "proposals": items,
+                    "labels": {"accept": "接受", "reject": "否决", "defer": "延后"},
+                },
+                text_kinds={"proposals": "data", "labels": "generated"},
+                title="建议与提案",
+            )
+        )
+
+    def _latest_report(self, face: Any, week: str) -> Any:
+        """取目标周的报告；无周可读 / 尚未生成 ⇒ 一条 `empty` 信封（**不是**空报告）。"""
+        weeks = face.report_weeks()
+        target = week or (weeks[-1] if weeks else "")
+        if not target:
+            return ResultEnvelope.empty("尚无任何一期反思报告（到点后由常驻循环生成）")
+        report = face.report(target)
+        if report is None:
+            return ResultEnvelope.empty(f"{target} 的反思报告尚未生成")
+        return report
+
+    # ───────────────────── 演进面（[T-UI-004.3]） ─────────────────────
+
+    def api_evolution_changes(self) -> dict[str, Any]:
+        """变更历史时间线（`change_timeline`）——含回滚状态与「一键回滚」动作。"""
+        return self._call_face(
+            "evolution-changes", self.reflection, "L6 反思演进面",
+            lambda face: ResultEnvelope.ok(self._changes_description(face)),
+        )
+
+    def api_evolution_rollback(self, body: dict[str, Any]) -> dict[str, Any]:
+        """一键回滚——按该变更的**生效前取值**回放；回滚**本身也是一次变更**（[08 §6]）。"""
+        return self._call_face(
+            "evolution-rollback", self.reflection, "L6 反思演进面",
+            lambda face: ResultEnvelope.ok(face.rollback(str(_required(body, "change_id")))),
+        )
+
+    def api_evolution_authorization(self) -> dict[str, Any]:
+        """演进授权设置面（`setting_panel`）——档位可改，风险分级清单只呈现。"""
+        return self._call_face(
+            "evolution-authorization", self.reflection, "L6 反思演进面",
+            lambda face: self._authorization_envelope(face),
+        )
+
+    def api_evolution_set(self, body: dict[str, Any]) -> dict[str, Any]:
+        """应用一条设置——经 [01 §7] 的落值面生效（**切换留痕**，[08 §5]）。"""
+        return self._call_face(
+            "evolution-set", self.reflection, "L6 反思演进面",
+            lambda face: ResultEnvelope.ok(
+                self._apply_setting(face, str(_required(body, "config_id")), body.get("value"))
+            ),
+        )
+
+    def api_evolution_factory_reset(self, body: dict[str, Any]) -> dict[str, Any]:
+        """「回滚到出厂设置」——**三次确认**是硬门（不足即拒、不留痕、不执行任何动作，[08 §6]）。"""
+        return self._call_face(
+            "evolution-factory-reset", self.reflection, "L6 反思演进面",
+            lambda face: ResultEnvelope.ok(face.factory_reset(body.get("confirmations"))),
+        )
+
+    # ───────────────────── 演进面的取数装配 ─────────────────────
+
+    def _changes_description(self, face: Any) -> UiDescription:
+        items = []
+        for change in face.changes():
+            rolled_back = bool(change.get("rolled_back_at"))
+            items.append({
+                **change,
+                "rolled_back": rolled_back,
+                # 已回滚过的条目不再给回滚动作——重复回滚会被 L6 显式拒（不静默）
+                "actions": [] if rolled_back else ["rollback"],
+            })
+        return self._gated_description(
+            "change_timeline",
+            slots={"changes": items, "labels": {"rollback": "一键回滚"}},
+            text_kinds={"changes": "data", "labels": "generated"},
+            title="变更历史",
+        )
+
+    def _authorization_envelope(self, face: Any) -> ResultEnvelope:
+        info = face.authorization()
+        if not info.get("available"):
+            return ResultEnvelope.unavailable(
+                str(info.get("reason") or "演进授权面未接线"), last_updated_at=_now()
+            )
+        entries = [
+            {
+                "config_id": info.get("tier_config_id"),
+                "params": {"config_id": info.get("tier_config_id")},
+                "current": info.get("tier"),
+                "options": [{"value": value} for value in info.get("tiers") or ()],
+                "actions": ["set"],
+            },
+            {
+                "config_id": info.get("grading_config_id"),
+                "current": f"{len(info.get('grading') or ())} 条规则",
+                "detail": info.get("grading") or [],
+                "options": [],
+                "actions": [],
+                "note": "本页只呈现当前清单；清单整体替换不在本页范围",
+            },
+        ]
+        return ResultEnvelope.ok(
+            self._gated_description(
+                "setting_panel",
+                slots={
+                    "entries": entries,
+                    "surface": "evolution",
+                    "labels": {
+                        "set": "应用",
+                        "manual": "手动",
+                        "collaborative": "协作",
+                        "autonomous": "自主",
+                    },
+                },
+                text_kinds={"entries": "data", "surface": "data", "labels": "generated"},
+                title="演进授权",
+            )
+        )
+
+    def _apply_setting(self, face: Any, config_id: str, value: Any) -> dict[str, Any]:
+        info = face.authorization()
+        if not info.get("available"):
+            raise ValueError(str(info.get("reason") or "演进授权面未接线"))
+        if config_id == info.get("tier_config_id"):
+            if value is None:
+                raise ValueError("切换档位须给出 value")
+            return face.set_authorization(tier=value)
+        if config_id == info.get("grading_config_id"):
+            if value is None:
+                raise ValueError("替换风险分级清单须给出 value")
+            return face.set_authorization(grading=value)
+        raise ValueError(f"该设置面不认这个条目：{config_id!r}")
+
+    # ───────────────────── 生态面（[T-UI-004.4]） ─────────────────────
+
+    def api_eco_export_plan(self) -> dict[str, Any]:
+        """导出计划的「本次导出包含以下公开信息」清单（`report_card`）。"""
+        return self._call_face(
+            "eco-export-plan", self.eco, "ECO 生态面",
+            lambda face: ResultEnvelope.ok(self._export_plan_description(face)),
+        )
+
+    def api_eco_export(self, body: dict[str, Any]) -> dict[str, Any]:
+        """按种类导出到**导出目录**并回路径 + 分享卡片（[09 §2]）。"""
+        return self._call_face(
+            "eco-export", self.eco, "ECO 生态面",
+            lambda face: ResultEnvelope.ok(face.export(
+                kind=str(_required(body, "kind")),
+                ref=str(body.get("ref") or ""),
+                author=str(body.get("author") or ""),
+                confirmed_by=str(body.get("confirmed_by") or ""),
+            )),
+        )
+
+    def api_eco_inbox(self) -> dict[str, Any]:
+        """收件目录里的待导入文件（`table`；空即空态，不硬凑）。"""
+        return self._call_face(
+            "eco-inbox", self.eco, "ECO 生态面",
+            lambda face: ResultEnvelope.ok(self._inbox_description(face)),
+        )
+
+    def api_eco_import_review(self, body: dict[str, Any]) -> dict[str, Any]:
+        """导入校验：身份 / 权限申请 / 依赖 / 来源追溯**四段并列**（`report_card`）。"""
+        file_name = str(_required(body, "file_name"))
+        return self._call_face(
+            "eco-import-review", self.eco, "ECO 生态面",
+            lambda face: ResultEnvelope.ok(
+                self._review_description(face, file_name, str(body.get("received_from") or ""))
+            ),
+        )
+
+    def api_eco_import_permissions(self, body: dict[str, Any]) -> dict[str, Any]:
+        """逐项批准 / 拒绝的处置面（`setting_panel`，面键 `import`）——[01 §10] 逐项、不合并。"""
+        file_name = str(_required(body, "file_name"))
+        received_from = str(body.get("received_from") or "")
+        return self._call_face(
+            "eco-import-permissions", self.eco, "ECO 生态面",
+            lambda face: ResultEnvelope.ok(
+                self._permissions_description(face, file_name, received_from)
+            ),
+        )
+
+    def api_eco_import_decide(self, body: dict[str, Any]) -> dict[str, Any]:
+        """批准 / 拒绝一条已声明的权限（经 **L3 审批面**落账，[01 §10]）。"""
+        return self._call_face(
+            "eco-import-decide", self.eco, "ECO 生态面",
+            lambda face: ResultEnvelope.ok(face.decide_import(
+                file_name=str(_required(body, "file_name")),
+                permission=str(_required(body, "permission")),
+                decision=str(_required(body, "action")),
+            )),
+        )
+
+    def api_eco_import_install(self, body: dict[str, Any]) -> dict[str, Any]:
+        """用户确认后安装（[09 §3] 第 4–5 段）——权限声明未全部批准即**显式拒**。"""
+        file_name = str(_required(body, "file_name"))
+        return self._call_face(
+            "eco-import-install", self.eco, "ECO 生态面",
+            lambda face: ResultEnvelope.ok(face.install(
+                file_name=file_name,
+                confirmed_by=str(body.get("confirmed_by") or ""),
+                received_from=str(body.get("received_from") or ""),
+            )),
+        )
+
+    def api_eco_index(self) -> dict[str, Any]:
+        """官方 Skill 索引浏览（`table`）；不可用即 `unavailable`（不留半截数据）。"""
+        return self._call_face(
+            "eco-index", self.eco, "ECO 生态面",
+            lambda face: self._index_envelope(face),
+        )
+
+    def api_eco_imports(self) -> dict[str, Any]:
+        """来源追溯：导入留痕（`table`）；**没有留痕即 `empty`**（用既有中性文本，不硬凑空表）。"""
+        return self._call_face(
+            "eco-imports", self.eco, "ECO 生态面",
+            lambda face: self._imports_envelope(face),
+        )
+
+    def api_eco_violations(self) -> dict[str, Any]:
+        """越界行为警示（`violation_alert`）——取**最新一条**，附「禁用该能力」动作。"""
+        return self._call_face(
+            "eco-violations", self.eco, "ECO 生态面",
+            lambda face: self._violation_envelope(face),
+        )
+
+    def api_eco_violation_history(self) -> dict[str, Any]:
+        """越界留痕全表（`table`）——警示之外仍可复核全部记录。"""
+        return self._call_face(
+            "eco-violation-history", self.eco, "ECO 生态面",
+            lambda face: ResultEnvelope.ok(self._violation_history_description(face)),
+        )
+
+    def api_eco_disable(self, body: dict[str, Any]) -> dict[str, Any]:
+        """禁用越界能力（[03 §1.5] 的禁用面）。"""
+        return self._call_face(
+            "eco-disable", self.eco, "ECO 生态面",
+            lambda face: ResultEnvelope.ok(
+                face.disable(skill_id=str(_required(body, "skill_id")))
+            ),
+        )
+
+    # ───────────────────── 生态面的取数装配 ─────────────────────
+
+    def _export_plan_description(self, face: Any) -> UiDescription:
+        plan = face.export_plan()
+        lines = [f"包含：{item}" for item in plan.get("included") or []]
+        if not lines:
+            lines = ["本次导出没有可公开的信息"]
+        return self._gated_description(
+            "report_card",
+            slots={"sections": [
+                {"title": "本次导出包含以下公开信息", "lines": lines},
+                {
+                    "title": "隐私过滤",
+                    "lines": [f"已过滤（未包含）的节点数：{plan.get('excluded_nodes', 0)}"],
+                },
+                {
+                    "title": "导出位置",
+                    "lines": [f"生成的文件落在：{plan.get('exports_dir', '')}（09 §6 的表现层口径）"],
+                },
+            ]},
+            text_kinds={"sections": "data"},
+            title="导出记忆片段",
+        )
+
+    def _inbox_description(self, face: Any) -> UiDescription:
+        files = face.inbox()
+        return self._gated_description(
+            "table",
+            slots={
+                "columns": ["文件名", "大小（字节）"],
+                "rows": [[item.get("file_name"), item.get("size")] for item in files],
+            },
+            text_kinds={"columns": "generated", "rows": "data"},
+            title="导入收件目录",
+        )
+
+    def _review_description(self, face: Any, file_name: str, received_from: str) -> UiDescription:
+        review = face.review(file_name=file_name, received_from=received_from)
+        sections = [{"title": "能力", "lines": [str(review.get("identity") or file_name)]}]
+        permissions = review.get("permissions") or []
+        if permissions:
+            sections.append({
+                "title": "权限申请（逐项批准，01 §10）",
+                "lines": [
+                    f"{item.get('permission')}｜{item.get('state')}｜{item.get('description')}"
+                    for item in permissions
+                ],
+            })
+        else:
+            sections.append({"title": "权限申请", "lines": ["无声明（不经本机的文件 / 网络 / 命令出口）"]})
+        missing = review.get("missing") or []
+        sections.append({
+            "title": "依赖",
+            "lines": (
+                [f"缺失 {gap.get('skill_id')} —— {gap.get('how_to_get')}" for gap in missing]
+                or ["本地齐备，无缺失"]
+            ),
+        })
+        provenance = review.get("provenance") or {}
+        chain = " → ".join(provenance.get("origin_chain") or []) or "（无，未经转手）"
+        sections.append({
+            "title": "来源追溯",
+            "lines": [
+                f"分享者 {provenance.get('sharer')}｜导入时间 {provenance.get('imported_at')}"
+                f"｜校验和 {provenance.get('checksum')}｜出处链 {chain}"
+            ],
+        })
+        return self._gated_description(
+            "report_card",
+            slots={"sections": sections},
+            text_kinds={"sections": "data"},
+            title=f"导入校验 · {file_name}",
+        )
+
+    def _permissions_description(
+        self, face: Any, file_name: str, received_from: str = ""
+    ) -> UiDescription:
+        review = face.review(file_name=file_name, received_from=received_from)
+        items = review.get("permissions") or []
+        entries = [
+            {
+                "identifier": item.get("permission"),
+                "params": {"file_name": file_name, "permission": item.get("permission")},
+                "description": item.get("description"),
+                "current": item.get("state"),
+                "options": [],
+                "actions": ["approve", "reject"],
+            }
+            for item in items
+        ]
+        return self._gated_description(
+            "setting_panel",
+            slots={
+                "entries": entries,
+                "surface": "import",
+                "labels": {"approve": "批准", "reject": "拒绝"},
+            },
+            text_kinds={"entries": "data", "surface": "data", "labels": "generated"},
+            title=f"权限申请（逐项批准）· {file_name}",
+        )
+
+    def _index_envelope(self, face: Any) -> ResultEnvelope:
+        index = face.index()
+        if not index.get("available"):
+            return ResultEnvelope.unavailable(
+                str(index.get("reason") or "官方索引不可用"), last_updated_at=_now()
+            )
+        entries = index.get("entries") or []
+        return ResultEnvelope.ok(
+            self._gated_description(
+                "table",
+                slots={
+                    "columns": ["类别", "名称", "版本", "说明", "下载地址", "校验和"],
+                    "rows": [
+                        [
+                            item.get("kind"), item.get("name"), item.get("version"),
+                            item.get("description"), item.get("download_url"),
+                            item.get("checksum"),
+                        ]
+                        for item in entries
+                    ],
+                },
+                text_kinds={"columns": "generated", "rows": "data"},
+                title="官方 Skill 索引",
+            )
+        )
+
+    def _imports_envelope(self, face: Any) -> ResultEnvelope:
+        """导入留痕：**空即空态**（`table` 渲染件不显示描述标题，故空态不能用标题承载）。
+
+        空态文案沿用 L1 的中性文本（「你的 Skill 库目前只有官方 Pack…」，story-10 的空状态）。
+        """
+        ledger = face.imports_ledger()
+        records = ledger.get("records") or []
+        if not records:
+            return ResultEnvelope.empty(str(ledger.get("empty_text") or "尚无导入留痕"))
+        return ResultEnvelope.ok(self._imports_description(records))
+
+    def _imports_description(self, records: list[dict[str, Any]]) -> UiDescription:
+        return self._gated_description(
+            "table",
+            slots={
+                "columns": ["留痕", "种类", "装入标识", "分享者", "导入时间"],
+                "rows": [
+                    [
+                        item.get("import_id"), item.get("kind"), item.get("installed_id"),
+                        (item.get("origin") or {}).get("sharer"),
+                        (item.get("origin") or {}).get("imported_at"),
+                    ]
+                    for item in records
+                ],
+            },
+            text_kinds={"columns": "generated", "rows": "data"},
+            title="导入留痕",
+        )
+
+    def _violation_envelope(self, face: Any) -> ResultEnvelope:
+        info = face.violations()
+        if not info.get("available"):
+            return ResultEnvelope.unavailable(
+                str(info.get("reason") or "越界行为面未接线"), last_updated_at=_now()
+            )
+        records = info.get("records") or []
+        if not records:
+            return ResultEnvelope.empty("尚无越界行为记录")
+        newest = dict(records[0])
+        newest["disabled"] = newest.get("skill_id") in set(info.get("disabled") or ())
+        return ResultEnvelope.ok(
+            self._gated_description(
+                "violation_alert",
+                slots={
+                    "record": newest,
+                    "labels": {
+                        "warning": "该能力的行为超出其声明的范围，已被拦截。",
+                        "disable": "禁用该能力",
+                    },
+                },
+                text_kinds={"record": "data", "labels": "generated"},
+                title="越界行为警示",
+            )
+        )
+
+    def _violation_history_description(self, face: Any) -> UiDescription:
+        info = face.violations()
+        records = info.get("records") or []
+        disabled = set(info.get("disabled") or ())
+        return self._gated_description(
+            "table",
+            slots={
+                "columns": ["能力", "越界类别", "时刻", "关联推理链", "已禁用"],
+                "rows": [
+                    [
+                        item.get("skill_id"), item.get("violation"), item.get("occurred_at"),
+                        item.get("trace_id"),
+                        "是" if item.get("skill_id") in disabled else "否",
+                    ]
+                    for item in records
+                ],
+            },
+            text_kinds={"columns": "generated", "rows": "data"},
+            title="越界行为留痕",
+        )
+
+    def _gated_description(
+        self,
+        component_type: str,
+        *,
+        slots: dict[str, Any],
+        text_kinds: dict[str, str],
+        title: str | None = None,
+        as_of: datetime | None = None,
+    ) -> UiDescription:
+        """造一份描述并过**本层两道闸**：必填槽（注册表镜像）+ 渲染前中性化门（01 §6 执行点 2）。
+
+        不过闸即抛 :class:`ValueError`（调用方回 `validation_failed`，[01 §12]：不回可渲染的描述）。
+        """
+        description = checked_description(
+            description_id=new_description_id(),
+            component_type=component_type,
+            slots=slots,
+            text_kinds=text_kinds,
+            title=title,
+            as_of=as_of,
+        )
+        gaps = slot_gaps(description)
+        if gaps:
+            raise ValueError(
+                f"{component_type} 缺少必填槽：{'、'.join(gaps)}（01 §12 的必填槽表）"
+            )
+        verdict = self.neutrality_gate.check(description)
+        if not verdict.passed:
+            raise ValueError(verdict.reason)
+        return description
+
+    def _call_face(
+        self,
+        where: str,
+        face: Any,
+        label: str,
+        fn: Callable[[Any], Any],
+    ) -> dict[str, Any]:
+        """调一次面操作并包成信封载荷（**本方法不向上抛**，同 :meth:`api_chat` 的口径）。
+
+        - 面未注入 ⇒ `unavailable` + 点名（不 500、不伪造）；
+        - `ValueError` / `KeyError`（输入类，含契约构造失败）⇒ `validation_failed`；
+        - 返回 `ResultEnvelope` ⇒ 原样出（六态由该面给，不吞）；其余值 ⇒ `ok` 包起来；
+        - 其他异常 ⇒ `failed` + `log_ref`（[00 §6]，不静默）。
+        """
+        if face is None:
+            return envelope_payload(
+                ResultEnvelope.unavailable(
+                    f"未接入{label}，该端点不可用（装配归生产入口）", last_updated_at=_now()
+                )
+            )
+        try:
+            result = fn(face)
+        except (ValueError, KeyError) as exc:
+            _LOG.info("表现层端点 %s 拒绝请求（%s）：%s", where, type(exc).__name__, exc)
+            return envelope_payload(
+                ResultEnvelope.validation_failed(str(exc) or "请求不合契约")
+            )
+        except Exception as exc:  # noqa: BLE001 —— 内部失败：不吞，落日志 + 显式 failed
+            log_ref = f"ui/{where}-{uuid.uuid4().hex[:12]}"
+            _LOG.exception("表现层端点 %s 未预期失败（log_ref=%s）：%s", where, log_ref, exc)
+            return envelope_payload(
+                ResultEnvelope.failed("该端点未预期失败，详见服务端日志", log_ref=log_ref)
+            )
+        if isinstance(result, ResultEnvelope):
+            return envelope_payload(result)
+        return envelope_payload(ResultEnvelope.ok(result))
+
     def api_description(self, description: UiDescription) -> dict[str, Any]:
         """出站一份 UI 描述：先查该型必填槽，再过**中性化门**（[01 §6] 执行点 2）。
 
@@ -201,14 +1079,16 @@ def build_ui(
     token: str | None = None,
     web_root: Path | None = None,
     chat: Any = None,
+    reflection: Any = None,
+    eco: Any = None,
 ) -> UiApp:
     """按已绑定的 ``host`` / ``port`` 装配表现层。
 
     ``dev=True`` 而 dev 子包不可用时抛 :class:`DevSurfaceUnavailable`——发布构建里
     「带 dev 跑」是配置错误，必须响，不能装作正常。
 
-    ``chat``：对话门面（鸭子类型 ``turn(body) -> dict``），由组合根注入；缺省 ``None``
-    时 `/api/chat` fail-closed（[T-INT-002]：`ui` 不 import `app`，只经此端口消费）。
+    ``chat`` / ``reflection`` / ``eco``：三个**鸭子端口**，由生产入口注入；缺省 ``None``
+    时对应面 fail-closed（`ui` 不 import `st_agent.app`，只经端口消费）。
     """
     dev_package = _load_dev() if dev else None
     if dev and dev_package is None:
@@ -221,4 +1101,6 @@ def build_ui(
         web_root=web_root or WEB_ROOT,
         dev_package=dev_package,
         chat=chat,
+        reflection=reflection,
+        eco=eco,
     )

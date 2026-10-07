@@ -9,7 +9,7 @@
 // 后续接线（T-INT-003）。未批准的条目照常显示「待批准」——fail-closed 在 L1 沙箱，
 // 渲染层不预判结果、不代用户表态。
 
-import { appendUnknownSlots, el, readSlot } from './slots.js';
+import { appendUnknownSlots, el, readSlot } from '../../components/slots.js';
 
 export const KNOWN_SLOTS = ['key', 'source', 'items', 'labels'];
 

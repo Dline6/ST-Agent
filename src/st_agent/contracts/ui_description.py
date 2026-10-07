@@ -54,6 +54,15 @@ ComponentType = Literal[
     "config_draft_card",
     "conflict_adjudication_card",
     "permission_approval_card",
+    # 表现层入口（T-UI-004.2）：反思中心的反馈按钮组与提案卡——story-09 设计触点明列的
+    # 两件，此前无载体；2026-10-07 按 [铁律 8] 先登记 01 §12 再实现
+    "feedback_capture",
+    "proposal_card",
+    # 演进面（T-UI-004.3）：变更历史时间线（带回滚动作）与逐条设置面板（带应用动作）
+    "change_timeline",
+    "setting_panel",
+    # 生态面（T-UI-004.4）：越界行为警示（story-10 的「异常行为警示对话框」）
+    "violation_alert",
     # 由「已登记未实现」升为**本期实现**：01 §12 提前登记 `divergence_map` 的用途即此
     # ——补该形态属**实现**而非改契约（06 §5 分歧图；交付见 T-L4-004.2）
     "divergence_map",
@@ -76,6 +85,11 @@ IMPLEMENTED_COMPONENT_TYPES: tuple[str, ...] = (
     "config_draft_card",
     "conflict_adjudication_card",
     "permission_approval_card",
+    "feedback_capture",
+    "proposal_card",
+    "change_timeline",
+    "setting_panel",
+    "violation_alert",
     "divergence_map",
 )
 """**本期实现**的类型（渲染方有对应渲染件）；其余登记型一律走**显式降级占位**。"""

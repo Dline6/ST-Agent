@@ -8,7 +8,7 @@
 //
 // 非 ok 段**必须**显示原因（05 §2：不静默留空、不用其他数据顶替）。
 
-import { appendUnknownSlots, el, readSlot } from './slots.js';
+import { appendUnknownSlots, el, readSlot } from '../../components/slots.js';
 
 export const KNOWN_SLOTS = [
   'sections', 'labels', 'greeting', 'empty_hint', 'is_empty', 'targets',

@@ -37,6 +37,23 @@ REQUIRED_SLOTS: dict[str, tuple[str, ...]] = {
     # 逐条权限在 `items`（数据槽：声明原文 + 批准态 + 面板控件），中性措辞 / 对话文案在
     # `labels`（生成文案槽，按 `permission` 与 `items` 并联）——缺任一处出不了完整审批面。
     "permission_approval_card": ("items", "labels"),
+    # 反馈按钮组：`target`（数据槽：反馈对象）与 `actions`（数据槽：提供的动作键）；
+    # 中文标签在 `labels`（生成文案槽，按动作键与 `actions` 并联）——缺任一处出不了按钮组。
+    "feedback_capture": ("target", "actions", "labels"),
+    # 提案卡：`proposals`（数据槽：**一组**建议，每项含类型 / 配置项 / 现值 / 建议值 / 理由 /
+    # trace 依据 / Skill 草稿 / 待批准项 id / **该项可用的动作**）与 `actions` 标签面——
+    # 动作标签在 `labels`（生成文案槽，按动作键并联）。一组而非一条：周报第四段与待批准队列都是多条。
+    "proposal_card": ("proposals", "labels"),
+    # 变更历史时间线：`changes`（数据槽：逐条变更 + 回滚状态 + 可用动作）与动作标签 `labels`
+    # （生成文案槽，按动作键并联）。逐条时间线的生成文案在 L6 侧落盘时已过 §6，故整槽按 data。
+    "change_timeline": ("changes", "labels"),
+    # 逐条设置 / 处置面板：`entries`（数据槽：标识 / 当前值 / 候选值 / 可用动作）· `labels`
+    # （生成文案槽：动作与候选值的中文标签）· `surface`（数据槽：**面键**，渲染件据此在
+    # 固定表里解析路由——描述**不接受** URL / 方法）。**带动作**——只读呈现走 `config_draft_card`。
+    "setting_panel": ("entries", "labels", "surface"),
+    # 越界行为警示：`record`（数据槽：能力 / 越界类别 / 时刻 / trace 锚点）与 `labels`
+    # （生成文案槽：警示措辞与「禁用该能力」等动作标签）。整条警示由系统产出，逐条不合并。
+    "violation_alert": ("record", "labels"),
     # 06 §5 要求**两视图均实现**：矩阵视图取 `matrix`（视角 × 结论逐行）、证据网络图取
     # `network`（节点 + 引用边）——缺任一处都出不了分歧图，故两者同为必填。
     "divergence_map": ("matrix", "network"),

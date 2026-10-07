@@ -11,7 +11,7 @@
 // 立场词表由服务端下发（`stance_labels`，生成文案槽），本件**不自带词表**——前端不携
 // 词表，否则那批文案就绕过了回环边界的中性校验门（01 §12 / D-064）。
 
-import { appendUnknownSlots, el, readSlot } from './slots.js';
+import { appendUnknownSlots, el, readSlot } from '../../components/slots.js';
 
 export const KNOWN_SLOTS = [
   'topic', 'map_id', 'matrix', 'agreements', 'disagreements', 'blind_spots',

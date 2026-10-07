@@ -325,3 +325,26 @@ class TestWeekWindow:
         reports.set_day_of_week(0)
         assert not reports.due(NOW)
         assert reports.due(NOW - timedelta(days=6))                 # 周一 20:00
+
+
+class TestStoredWeeks:
+    """已落盘周键的列举读面（[`T-UI-004.2`] 只增；表现层据此列历史与取最近一期）。"""
+
+    def test_empty_before_any_report(self, tmp_path):
+        reports, _pool, _store = build(tmp_path)
+        assert reports.stored_weeks() == ()
+
+    def test_lists_generated_weeks_ascending(self, tmp_path):
+        reports, _pool, _store = build(tmp_path)
+        reports.build(WEEK, now=NOW)                       # 2026-W41
+        reports.build(PREV_WEEK, now=NOW - timedelta(days=7))
+        assert reports.stored_weeks() == (PREV_WEEK, WEEK)  # 键零填充 ⇒ 字典序即时间序
+
+    def test_non_week_files_do_not_impersonate_a_report(self, tmp_path):
+        reports, _pool, store = build(tmp_path)
+        reports.build(WEEK, now=NOW)
+        store.put("reflection", "weekly/notes.json", b"{}")
+        assert reports.stored_weeks() == (WEEK,)
+
+    def test_without_a_store_the_read_face_is_empty(self):
+        assert WeeklyReportBuilder().stored_weeks() == ()
