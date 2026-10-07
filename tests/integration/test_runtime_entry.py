@@ -53,6 +53,7 @@ from st_agent.l0.storage import (
     Store,
     read_mode,
 )
+from st_agent.l5 import DailyReportBuilder
 from st_agent.ui.shell.notify import send_notification
 
 REPO = Path(__file__).resolve().parents[2]
@@ -807,6 +808,10 @@ def test_production_entry_runs_the_ambient_duty_cycle(tmp_path, monkeypatch) -> 
 
     只把**原生通知端口**换成不弹窗的替身（`send_notification` 会真弹系统通知）——
     其余全真：真 M3 组合根、真调度、真日报生成与投递、真本机回环服务。
+
+    日报的**到点判定是墙上时钟比较**（缺省 08:00）：不预置的话，本用例在本地 08:00 前
+    或 CI 的 UTC 早间恒判「未到点」，随执行时刻时红时绿。故先把该条目置为 `00:00`——
+    装配仍全真，只是把一项**用户配置**预置成必然到点（[01 §7](../../docs/技术架构-v2/01-平台共享契约.md) 条目）。
     """
     import st_agent.__main__ as entry
 
@@ -815,6 +820,8 @@ def test_production_entry_runs_the_ambient_duty_cycle(tmp_path, monkeypatch) -> 
     root, workdir = tmp_path / "store", tmp_path / "cwd"
     workdir.mkdir()
     stream = io.StringIO()
+
+    DailyReportBuilder(store=Store.create(root, "m3-entry-throwaway")).set_time("00:00")
 
     code = run_backend(
         root=root, host="127.0.0.1", port=0, json_handshake=True,

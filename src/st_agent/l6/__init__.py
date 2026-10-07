@@ -7,6 +7,10 @@
 [08 §3–§4](../../../docs/技术架构-v2/08-L6-反思演进.md)：**训练对话协议**（概念性理解 · 确认门 ·
 记忆 `pattern` 写入 · 提案候选 · 回访留痕）、**主动提案**（模式识别 · Skill 草稿 · 频率上限 ·
 周报第四段候选生成）与 **A/B 实验**（五字段 · 留痕 · 保守判定 · 授权面预留）。
+第三批（[T-L6-003](../../../项目管理/tasks/T-L6-003-演进授权与变更流回滚与出厂重置.md)）交付
+[08 §5–§7](../../../docs/技术架构-v2/08-L6-反思演进.md)：**演进授权档位与风险分级清单**
+（三档 · 切换留痕 · 实验授权面的实体）、**变更流与单项回滚**（提案 → 审批门 → 生效 → 告知 ·
+变更历史 · 一键回滚）与**出厂重置**（三次确认 · 演进状态清空 · Memory 保留）。
 
 三个面各自独立可用，由 [`runtime.build_l6`](runtime.py) 接成一层；跨层组合根归关卡
 [T-INT-005](../../../项目管理/tasks/T-INT-005-M4集成关卡反思演进与生态闭环.md)。
@@ -18,11 +22,49 @@
 
 from __future__ import annotations
 
+from st_agent.l6.authorization import (
+    DEFAULT_RISK_GRADING,
+    DEFAULT_SCOPES,
+    DEFAULT_TIER,
+    GRADING_CONFIG_ID,
+    RISK_CLASSES,
+    TIER_CONFIG_ID,
+    TIERS,
+    EvolutionAuthorization,
+    EvolutionRiskRule,
+    PermitDecision,
+    RiskClass,
+    Tier,
+)
+from st_agent.l6.authorization_store import (
+    CHANGE_PREFIX as AUTHORIZATION_CHANGE_PREFIX,
+    CONFIG_PREFIX as AUTHORIZATION_CONFIG_PREFIX,
+    EvolutionStore,
+)
+from st_agent.l6.change import (
+    CHANGE_APPLIED,
+    CHANGE_ROLLED_BACK,
+    NO_AUTHORIZATION_REASON,
+    NO_REGISTRY_REASON,
+    ChangeProposal,
+    ChangeRun,
+    EvolutionChange,
+    EvolutionChangeFlow,
+    GateDecision,
+    PendingChange,
+)
+from st_agent.l6.change_store import (
+    PENDING_PREFIX,
+    RESET_PREFIX,
+    EvolutionChangeStore,
+)
+from st_agent.l6.change_store import CHANGE_PREFIX as EVOLUTION_CHANGE_PREFIX
 from st_agent.l6.experiment import (
     AUTHORIZER_ABSENT_REASON,
     DEFAULT_MIN_SAMPLE,
     LOW_RISK_SCOPES,
     NOT_PERMITTED_REASON,
+    STOP_REASON,
     Experiment,
     ExperimentConsole,
     ExperimentStart,
@@ -30,7 +72,10 @@ from st_agent.l6.experiment import (
 )
 from st_agent.l6.experiment_store import EXPERIMENT_PREFIX, ExperimentStore
 from st_agent.l6.errors import (
+    AuthorizationError,
+    ChangeFlowError,
     ExperimentError,
+    FactoryResetError,
     FeedbackPoolError,
     L6Error,
     ProposalError,
@@ -67,11 +112,20 @@ from st_agent.l6.proposal_store import (
     ProposalStore,
 )
 from st_agent.l6.registry_adapter import (
+    GRADING_WRITE_OWNER,
     TEMPLATE_WRITE_OWNER,
+    EvolutionFamily,
     ProposalFamily,
     WeeklyReportFamily,
+    evolution_family,
     proposal_family,
     weekly_report_family,
+)
+from st_agent.l6.reset import (
+    REPLAY_NOTE,
+    RESET_CONFIRMATIONS,
+    FactoryReset,
+    ResetOutcome,
 )
 from st_agent.l6.runtime import L6Stack, build_l6
 from st_agent.l6.training import (
@@ -123,9 +177,13 @@ from st_agent.l6.weekly_store import (
 )
 
 __all__ = [
+    "AUTHORIZATION_CHANGE_PREFIX",
+    "AUTHORIZATION_CONFIG_PREFIX",
     "AUTHORIZER_ABSENT_REASON",
     "CALLBACK_NOTICE",
+    "CHANGE_APPLIED",
     "CHANGE_PREFIX",
+    "CHANGE_ROLLED_BACK",
     "CONFIG_PREFIX",
     "DEFAULT_CHANNELS",
     "DEFAULT_DAY_OF_WEEK",
@@ -133,50 +191,82 @@ __all__ = [
     "DEFAULT_MIN_SAMPLE",
     "DEFAULT_RATE_LIMIT",
     "DEFAULT_REPEAT_THRESHOLD",
+    "DEFAULT_RISK_GRADING",
     "DEFAULT_RULES",
+    "DEFAULT_SCOPES",
+    "DEFAULT_TIER",
     "DEFAULT_TIME",
     "DAY_CONFIG_ID",
+    "EVOLUTION_CHANGE_PREFIX",
     "EXPERIMENT_PREFIX",
     "FEEDBACK_EVENT",
     "FEEDBACK_PREFIX",
+    "GRADING_CONFIG_ID",
+    "GRADING_WRITE_OWNER",
     "INSUFFICIENT_NOTE",
     "L6Stack",
     "LOW_RISK_SCOPES",
     "MEMORY_ABSENT_NOTE",
     "MIN_FEEDBACK_CONFIG_ID",
     "NO_ADVISOR_NOTE",
+    "NO_AUTHORIZATION_REASON",
+    "NO_REGISTRY_REASON",
     "NO_SUGGESTION_NOTE",
     "NO_TOUCH_NOTE",
     "NOT_HIT_NOTE",
     "NOT_PERMITTED_REASON",
     "OBSERVER_ABSENT_REASON",
+    "PENDING_PREFIX",
     "PROPOSAL_PREFIX",
     "RATE_LIMIT_CONFIG_ID",
+    "REPLAY_NOTE",
     "REPORT_PREFIX",
     "REPEAT_CONFIG_ID",
+    "RESET_CONFIRMATIONS",
+    "RESET_PREFIX",
+    "RISK_CLASSES",
     "SECTION_LABELS",
     "SOURCE",
+    "STOP_REASON",
     "TEMPLATE_CONFIG_ID",
     "TEMPLATE_WRITE_OWNER",
+    "TIERS",
+    "TIER_CONFIG_ID",
     "TIME_CONFIG_ID",
     "TRAINING_CONFIDENCE",
     "TRAINING_PREFIX",
     "TRAINING_PRIVACY",
     "UNDERSTANDER_ABSENT_REASON",
     "WEEK_SECTIONS",
+    "AuthorizationError",
     "CallbackNote",
+    "ChangeFlowError",
+    "ChangeProposal",
+    "ChangeRun",
     "DetectRun",
+    "EvolutionAuthorization",
+    "EvolutionChange",
+    "EvolutionChangeFlow",
+    "EvolutionChangeStore",
+    "EvolutionFamily",
+    "EvolutionRiskRule",
+    "EvolutionStore",
     "Experiment",
     "ExperimentConsole",
     "ExperimentError",
     "ExperimentStart",
     "ExperimentStore",
+    "FactoryReset",
+    "FactoryResetError",
     "FeedbackEntry",
     "FeedbackPool",
     "FeedbackPoolError",
     "FeedbackPoolStore",
+    "GateDecision",
     "L6Error",
     "PatternObservation",
+    "PendingChange",
+    "PermitDecision",
     "PoolCounts",
     "ProposalCandidate",
     "ProposalEngine",
@@ -189,10 +279,13 @@ __all__ = [
     "ReportSection",
     "ReportTemplate",
     "ReportTrace",
+    "ResetOutcome",
+    "RiskClass",
     "RuleNote",
     "SkillDraft",
     "SkillProposal",
     "SuggestionDraft",
+    "Tier",
     "TrainingDraft",
     "TrainingError",
     "TrainingOutcome",
@@ -207,6 +300,7 @@ __all__ = [
     "WeeklyReportStore",
     "build_l6",
     "due_on",
+    "evolution_family",
     "judge",
     "proposal_family",
     "week_key",

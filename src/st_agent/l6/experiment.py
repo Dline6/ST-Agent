@@ -42,6 +42,7 @@ __all__ = [
     "DEFAULT_MIN_SAMPLE",
     "LOW_RISK_SCOPES",
     "NOT_PERMITTED_REASON",
+    "STOP_REASON",
     "Experiment",
     "ExperimentConsole",
     "ExperimentStart",
@@ -62,7 +63,13 @@ NOT_PERMITTED_REASON = "授权面未放行该范围的实验（08 §5 授权档�
 DEFAULT_MIN_SAMPLE = 5
 """保守判定的样本下限（低于它一律 `inconclusive`——本地单用户小样本下不给强断言）。"""
 
-ExperimentStatus = Literal["running", "settled", "decided"]
+STOP_REASON = "出厂重置：停止在跑实验（08 §6）"
+"""出厂重置停止实验的**中性**理由文案（过 [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md)）。"""
+
+ExperimentStatus = Literal["running", "settled", "decided", "stopped"]
+"""实验状态；`stopped` 由**出厂重置**的「A/B 实验停止」（[08 §6](../../../docs/技术架构-v2/08-L6-反思演进.md)）写入——
+**只增一个状态取值**，既有三态与行为不变。"""
+
 ExperimentDecision = Literal["pending", "adopt", "revert", "inconclusive"]
 
 class Experiment(BaseModel):
@@ -87,6 +94,8 @@ class Experiment(BaseModel):
     started_at: datetime
     settled_at: datetime | None = None
     decided_at: datetime | None = None
+    stopped_at: datetime | None = None
+    """被**停止**的时刻（[08 §6](../../../docs/技术架构-v2/08-L6-反思演进.md) 的出厂重置；**留痕保留、不删**）。"""
     trace_ref: str = ""
     """溯源锚点（[01 §4](../../docs/技术架构-v2/01-平台共享契约.md)）。"""
 
@@ -236,6 +245,28 @@ class ExperimentConsole:
         self._require_neutral(reason, "实验判定理由")
         updated = current.model_copy(update={
             "decision": chosen, "reason": reason, "decided_at": moment, "status": "decided",
+        })
+        self._persist(updated)
+        return updated
+
+    # ───────────────────────── 停止（供出厂重置调用） ─────────────────────────
+
+    def abandon(self, experiment_id: str, *, reason: str = STOP_REASON) -> Experiment:
+        """**停止**一次在跑的实验（[08 §6](../../../docs/技术架构-v2/08-L6-反思演进.md) 的出厂重置用它）。
+
+        **留痕保留、不删**（同本模块「留痕即事实」口径）：状态转 `stopped` 并记停止时刻，
+        `running()` 不再含它；已结算 / 已判定 / 已停止的实验**不被重复停止**。
+
+        :raises ExperimentError: 实验不存在 · 该实验不在运行中
+        """
+        current = self._require(experiment_id)
+        if current.status != "running":
+            raise ExperimentError(
+                f"实验 {experiment_id!r} 不在运行中（{current.status}），无需停止"
+            )
+        self._require_neutral(reason, "实验停止理由")
+        updated = current.model_copy(update={
+            "status": "stopped", "reason": reason, "stopped_at": self._now(),
         })
         self._persist(updated)
         return updated
