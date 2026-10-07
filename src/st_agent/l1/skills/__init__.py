@@ -32,6 +32,11 @@ from st_agent.l1.skills.registry import (
     UpdateInfo,
     validate_param_values,
 )
+from st_agent.l1.skills.tool_catalog import (
+    ToolEntry,
+    project_catalog,
+    project_tool_entry,
+)
 
 __all__ = [
     "OFFICIAL_DIMENSIONS",
@@ -49,12 +54,15 @@ __all__ = [
     "SkillPermissionError",
     "SkillRegistry",
     "SkillValidationError",
+    "ToolEntry",
     "UpdateInfo",
     "base_of",
     "check_skill_base",
     "check_skill_id",
     "ensure_official_pack",
     "parse_skill_id",
+    "project_catalog",
+    "project_tool_entry",
     "skill_id_for",
     "validate_param_values",
 ]
