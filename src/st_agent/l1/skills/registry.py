@@ -19,6 +19,8 @@
   超范围即 ``SkillValidationError`` 不保存；主版本不变故不写待检查标记。
 - ``validate_call_params``：执行前调用传参校验（.2 流水线用；超范围 → 调用方
   包 ``validation_failed``，GWT-7 下半）。
+- ``tool_catalog``：工具目录读面（T-AGT-003）——已注册描述体 → 模型可见的
+  工具条目（同 base 折叠为一条，执行目标取最高版本；只读，见 ``tool_catalog.py``）。
 """
 
 from __future__ import annotations
@@ -39,11 +41,13 @@ from st_agent.l1.skills.errors import (
     SkillValidationError,
 )
 from st_agent.l1.skills.ids import base_of, check_skill_id, parse_skill_id, skill_id_for
+from st_agent.l1.skills.tool_catalog import ToolEntry, project_catalog
 
 __all__ = [
     "SKILL_PREFIX",
     "UPDATE_PREFIX",
     "SkillRegistry",
+    "ToolEntry",
     "UpdateInfo",
     "validate_param_values",
 ]
@@ -338,6 +342,20 @@ class SkillRegistry:
             base, ver = parse_skill_id(sid)
             out.append(((base, ver.major, ver.minor), self._load(sid)))
         return tuple(d for _, d in sorted(out, key=lambda t: t[0]))
+
+    def tool_catalog(self) -> tuple[ToolEntry, ...]:
+        """工具目录读面（T-AGT-003；[01 §2] 工具暴露面 + [03 §1] 读面落点）。
+
+        把已注册描述体**只读**投影成模型可见的工具条目——同 base 的多个版本
+        **折叠为一条**、执行目标取该 base 的最高版本（[01 §2] 的版本折叠口径）。
+        它是**本注册表的投影**而非第二份能力登记，故 L1 注册面与模型可见面恒等；
+        且**只投影、不执行**（执行仍经 ``SkillRunner`` 的完整流水线）。
+
+        描述体缺失 / 损坏 → ``SkillNotFoundError``（沿 :meth:`list_all` 的读取面
+        逸出，**不留半个条目**）；投影自身的不合规（``skill_id`` 非法 / 参数面两处
+        同名冲突 / ``input_schema`` 形态坏）→ ``SkillValidationError`` 携违规点。
+        """
+        return project_catalog(self.list_all())
 
     def pending_updates(self) -> tuple[UpdateInfo, ...]:
         """列出全部待检查标记（更新面板数据源，GWT-5）。"""
