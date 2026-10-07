@@ -123,10 +123,9 @@ def test_ui_is_client_only():
 
 APP_PATH = SRC / "app.py"
 
-#: 组合根只可向下装配这些层（M1 反向流触及 L0–L3，M2 关卡加 L4，M3 关卡加 L5）。
-#: **关卡接线才进允许集**——L6 层已开工（`src/st_agent/l6/`），但把它装进组合根是 M4 关卡
-#: [`T-INT-005`] 的交付，故此刻仍属越界（同 l5 在 T-INT-004 之前的位置；`eco` 同此）。
-APP_ALLOWED_IMPORTS = {"contracts", "l0", "l1", "l2", "l3", "l4", "l5"}
+#: 组合根只可向下装配这些层（M1 反向流触及 L0–L3，M2 关卡加 L4，M3 关卡加 L5，
+#: M4 关卡 [`T-INT-005`] 加 L6 与 `eco`——「关卡接线才进允许集」，M4 关卡即 L6 / ECO 的接线。
+APP_ALLOWED_IMPORTS = {"contracts", "l0", "l1", "l2", "l3", "l4", "l5", "l6", "eco"}
 
 ENTRY_PATH = SRC / "__main__.py"
 """生产运行入口（``python -m st_agent``；[`T-UI-002.1`]）——装配 `app` + `ui`，**不是层**。
@@ -149,8 +148,8 @@ def test_app_is_composition_root_only():
         target = _layer_of(module)
         assert target is not None and target in APP_ALLOWED_IMPORTS, (
             f"app.py:{lineno} import 了 {module}——组合根只可向下装配 "
-            f"{sorted(APP_ALLOWED_IMPORTS)}（M1/M2/M3 反向流面；"
-            "T-INT-002 A2 / T-INT-003 A1 / T-INT-004 A1）"
+            f"{sorted(APP_ALLOWED_IMPORTS)}（M1/M2/M3/M4 反向流面；"
+            "T-INT-002 A2 / T-INT-003 A1 / T-INT-004 A1 / T-INT-005 A1）"
         )
 
     consumers = []

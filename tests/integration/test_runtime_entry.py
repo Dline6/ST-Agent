@@ -731,8 +731,8 @@ class _TickingRuntime:
             raise RuntimeError("替身：某一次循环里的缺陷")
 
 
-def test_entry_defaults_to_the_production_M3_root() -> None:
-    """`run_backend` 的缺省装配口是生产 M3 组合根（不是照旧 M2）。"""
+def test_entry_defaults_to_the_production_M4_root() -> None:
+    """`run_backend` 的缺省装配口是生产 M4 组合根（不是照旧 M3）。"""
     default = inspect.signature(run_backend).parameters["build_runtime"].default
     assert default is build_ambient_runtime
 
@@ -748,7 +748,7 @@ def test_ambient_runtime_injects_the_native_notify_port(monkeypatch) -> None:
         seen["root"] = root
         return _runtime_stub()
 
-    monkeypatch.setattr(entry, "build_m3_runtime", fake_build)
+    monkeypatch.setattr(entry, "build_m4_runtime", fake_build)
     runtime = build_ambient_runtime("root", "pass", llm_env={})
 
     assert runtime is not None

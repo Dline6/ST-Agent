@@ -29,6 +29,7 @@ M2 关卡 [`T-INT-003`]。
 from __future__ import annotations
 
 import dataclasses
+import json
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -37,12 +38,14 @@ from typing import Any
 
 from st_agent.contracts.neutrality import (
     RULEPACK_KIND,
+    NeutralityGuard,
     default_rulepack,
     set_official_rulepack,
 )
 from st_agent.contracts.registry_types import SemVer
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.time_events import PlatformEvent
+from st_agent.eco import OfficialIndex, ShareExporter, ShareImporter
 from st_agent.l1.events import EventBus
 from st_agent.l1.pack import OfficialPack, ResourceEntry, load_official_pack
 from st_agent.l1.runtime import L1Runtime, open_runtime
@@ -51,9 +54,11 @@ from st_agent.l2.memory import (
     ONBOARDING_KIND,
     ConfidenceModel,
     ConflictQueue,
+    FragmentImporter,
     MemoryDeleter,
     MemoryGraph,
     MemoryReader,
+    MemoryShare,
     MemoryWriter,
     OnboardingProtocol,
     SliceQuery,
@@ -89,6 +94,7 @@ from st_agent.l4.ports import (
 )
 from st_agent.l4.roster import LensRoster
 from st_agent.l5.channels import (
+    ChannelPayload,
     DesktopChannel,
     EmailChannel,
     ImWebhookChannel,
@@ -101,16 +107,29 @@ from st_agent.l5.sources import (
     signal_event_for_analysis,
     signal_events_for_run,
 )
+from st_agent.l6 import (
+    L6Stack,
+    PatternObservation,
+    SkillDraft,
+    SuggestionDraft,
+    TrainingDraft,
+    build_l6,
+    week_key,
+)
 
 __all__ = [
     "DialogFacade",
+    "LlmPatternObserver",
+    "LlmTrainingUnderstander",
     "M1Runtime",
     "M2Runtime",
     "M3Runtime",
+    "M4Runtime",
     "TickResult",
     "build_m1_runtime",
     "build_m2_runtime",
     "build_m3_runtime",
+    "build_m4_runtime",
 ]
 
 _LLM_ENDPOINT_ID = "cloud-main"
@@ -152,6 +171,7 @@ class DialogFacade:
         bus: DispatchBus,
         adjudicator: ConflictAdjudicator,
         feedback: FeedbackCollector,
+        callbacks: Any = None,
         now: Any = _now,
     ) -> None:
         self._sessions = sessions
@@ -161,6 +181,7 @@ class DialogFacade:
         self._bus = bus
         self._adjudicator = adjudicator
         self._feedback = feedback
+        self._callbacks = callbacks
         self._now = now
         self._pending: dict[str, IntentDraft] = {}
 
@@ -287,6 +308,34 @@ class DialogFacade:
     # ───────────────────── 回环对话面的翻译（供 `ui` 的 `POST /api/chat` 消费） ─────────────────────
 
     def turn(self, body: Mapping[str, Any]) -> dict[str, Any]:
+        """一次 HTTP 对话请求（[`_turn`] 的产出 + 待回访项，若接有回访面）。
+
+        「下次对话主动提及」（[08 §3] 第 3 步）在**对话面**的落点：装配了训练回访面时，
+        每次往返都带上**待回访项**并逐条 `acknowledge`（提及即消费，不重复问）；未接回访面
+        时**不加该键**（M1/M2/M3 的返回逐字节不变）。渲染归表现层。
+        """
+        payload = self._turn(body)
+        callbacks = self._collect_callbacks()
+        if callbacks is not None:
+            payload["callbacks"] = callbacks
+        return payload
+
+    def _collect_callbacks(self) -> list[dict[str, Any]] | None:
+        """取**待回访项**并逐条置「已提及」；未接回访面 ⇒ ``None``（不加键，不假装）。"""
+        if self._callbacks is None:
+            return None
+        out: list[dict[str, Any]] = []
+        for note in tuple(self._callbacks.callbacks()):
+            out.append({
+                "training_id": note.training_id,
+                "text": note.text,
+                "correction": note.correction,
+                "restatement": note.restatement,
+            })
+            self._callbacks.acknowledge(note.training_id)
+        return out
+
+    def _turn(self, body: Mapping[str, Any]) -> dict[str, Any]:
         """把一次 HTTP 对话请求翻译成反向流的一段，回**契约对象字典**（无 `ui` 依赖）。
 
         `ui` 侧只需对返回里的 `ResultEnvelope` 走 `envelope_payload`（附六态渲染
@@ -500,6 +549,8 @@ def _build_l3(
     deliberations: Any = None,
     events: Any = None,
     feedback_sink: Any = None,
+    trainings: Any = None,
+    callbacks: Any = None,
 ) -> _L3Stack:
     """叠 L3（会话落 `chat_history`）并装载官方资源包（01 §13）。
 
@@ -511,6 +562,12 @@ def _build_l3(
     :param feedback_sink: 反馈采集面的事件接收端口（鸭子类型 `publish`）——给了则
         每条 `FeedbackRecorded` 真的送达总线（[01 §11](../../docs/技术架构-v2/01-平台共享契约.md)）；
         缺省 ``None`` ⇒ 采集照常但**不送达**并如实标注（既有行为，逐字节不变）。
+    :param trainings: 注入总线的 `train` 去向端口（鸭子面，`None` 即该去向 fail-closed
+        + 点名）；M4 由 :func:`build_m4_runtime` 传 L6 的 `TrainingProtocol`，本层
+        **不 import L6**（铁律 7）。
+    :param callbacks: 训练**回访面**（鸭子类型 `callbacks()` / `acknowledge(...)`）——给了则
+        对话往返带上待回访项（[08 §3](../../docs/技术架构-v2/08-L6-反思演进.md) 第 3 步）；
+        缺省 ``None`` ⇒ 返回**不加**该键（既有行为，逐字节不变）。
     """
     store = runtime.store
     sessions = SessionStore(store)
@@ -536,7 +593,7 @@ def _build_l3(
     feedback = FeedbackCollector(now=now, sink=feedback_sink)
     bus = DispatchBus(
         runner=runtime.runner, configs=configs, adjudications=adjudicator,
-        deliberations=deliberations,
+        deliberations=deliberations, trainings=trainings,
     )
 
     # ── 官方资源包（01 §13）：类型化容器按 kind 分发到各消费方 ─────────────────
@@ -560,7 +617,7 @@ def _build_l3(
 
     chat = DialogFacade(
         sessions=sessions, reader=l2.reader, writer=l2.writer, intent=intent,
-        bus=bus, adjudicator=adjudicator, feedback=feedback, now=now,
+        bus=bus, adjudicator=adjudicator, feedback=feedback, callbacks=callbacks, now=now,
     )
     return _L3Stack(
         sessions=sessions, commands=commands, intent=intent, configs=configs,
@@ -750,7 +807,7 @@ def build_m2_runtime(
 
 @dataclass(frozen=True)
 class TickResult:
-    """一次 ``tick`` 的产出（[00 §5](../../docs/技术架构-v2/00-架构总览.md) 步 4–7 的当轮切片）。"""
+    """一次 ``tick`` 的产出（[00 §5](../../docs/技术架构-v2/00-架构总览.md) 步 4–8 的当轮切片）。"""
 
     now: datetime
     runs: tuple[Any, ...] = ()
@@ -763,6 +820,9 @@ class TickResult:
     """本轮的日报（未到点 ⇒ ``None``；当天已投 ⇒ 已投的那份）。"""
     inquiries: tuple[Any, ...] = ()
     """本轮疲劳面新产生的询问（达阈值且未在等答复者）。"""
+    weekly_report: Any = None
+    """本轮的**每周反思报告**（M4 面；未到点 / 本周已投 ⇒ ``None``）——只增字段，
+    M1/M2/M3 的 ``tick`` 恒不带它。"""
 
 
 class _SignalEmittingAnalyze:
@@ -1030,3 +1090,579 @@ def build_m3_runtime(
         l5=l5, events=bus, monitor_rules=monitor_rules,
         emission_failures=failures, now=now,
     )
+
+
+# ────────────── M4：反思演进与生态面的装配（[00 §5] 步 7–8 · [09]） ──────────────
+
+
+_CHANGE_EVENTS = ("ChangeApplied", "ChangeRolledBack")
+"""演进变更的告知事件（[01 §11](../../docs/技术架构-v2/01-平台共享契约.md)；发布方＝L6 变更流，
+见 [08 §5](../../docs/技术架构-v2/08-L6-反思演进.md)）。"""
+
+_INTENT_JSON_HINT = "仅输出一行 JSON，不得输出 JSON 以外的任何字符。"
+
+
+def _strip_code_fence(raw: str) -> str:
+    """剥掉 LLM 回复里常见的 ``` 围栏（模型偶发；不剥会误判为解析失败）。"""
+    body = (raw or "").strip()
+    if body.startswith("```"):
+        body = body.strip("`")
+        body = body.split("\n", 1)[1] if "\n" in body else ""
+    return body.strip()
+
+
+# ── 训练对话「概念性理解」的真实 LLM 适配器（[08 §3]） ──────────────────────────
+
+_TRAINING_JSON_CONTRACT = (
+    '{"restatement": "对用户修正逻辑的结构化复述", "pattern": "提炼出的模式陈述", '
+    '"suggestion": {"config_id": "点分条目 id", "current": 现值或 null, '
+    '"suggested": 建议值, "reason": "中性陈述式理由"} 或 null}'
+)
+
+
+def training_understanding_prompt(correction: str, *, target: str = "") -> str:
+    """构造训练对话概念性理解的结构化提示词（实现细节，非契约）。"""
+    focus = f"（被修正的对象：{target}）" if target else ""
+    return (
+        "任务：把用户对系统结论的修正整理为结构化理解，供用户确认后写入记忆。\n"
+        f"仅输出一行 JSON，结构为：{_TRAINING_JSON_CONTRACT}\n"
+        "规则：restatement 与 pattern 用中性陈述，不得出现人称代词、情感措辞或对话体；"
+        "无法给出配置建议时 suggestion 置 null；"
+        f"{_INTENT_JSON_HINT}\n"
+        f"用户修正{focus}：{correction}"
+    )
+
+
+def _parse_training_draft(raw: str) -> TrainingDraft | None:
+    """把端点回的文本解析为 :class:`TrainingDraft`；任何不合形态 ⇒ ``None``（端口明示「理解不出」）。"""
+    try:
+        payload = json.loads(_strip_code_fence(raw))
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    restatement = str(payload.get("restatement") or "").strip()
+    pattern = str(payload.get("pattern") or "").strip()
+    if not restatement or not pattern:
+        return None
+    suggestion: SuggestionDraft | None = None
+    raw_suggestion = payload.get("suggestion")
+    if isinstance(raw_suggestion, dict) and raw_suggestion.get("config_id"):
+        try:
+            suggestion = SuggestionDraft(
+                config_id=str(raw_suggestion["config_id"]),
+                current=raw_suggestion.get("current"),
+                suggested=raw_suggestion.get("suggested"),
+                reason=str(raw_suggestion.get("reason") or ""),
+            )
+        except (ValueError, TypeError):
+            return None
+    try:
+        return TrainingDraft(restatement=restatement, pattern=pattern, suggestion=suggestion)
+    except (ValueError, TypeError):
+        return None
+
+
+class LlmTrainingUnderstander:
+    """训练对话「概念性理解」的真实 LLM 实现（鸭子端口 ``understand``；[08 §3]）。
+
+    住**组合根**而非 L6——L6 层的机器守卫断言本层不 import `l0.llm` / `l0.net`
+    （[`T-L6-002.1`] A1 / [08 §7] 红线），故适配器只能由同时可 import `l0.llm` 与 L6
+    鸭子面的组合根承载（先例＝ :class:`_SignalEmittingAnalyze` 住 `app.py`）。
+
+    端点不可用 / 回复不合形态 ⇒ 返回 ``None``，由 [`TrainingProtocol`] 走 `unavailable`
+    （**不硬猜**）；明文 prompt 不落盘（`LlmClient` 口径）。
+    """
+
+    def __init__(
+        self,
+        llm: Any,
+        endpoint_id: str,
+        *,
+        initiator: str = "l6-training",
+        purpose: str = "训练对话概念性理解",
+    ) -> None:
+        self._llm = llm
+        self._endpoint_id = endpoint_id
+        self._initiator = initiator
+        self._purpose = purpose
+
+    def understand(self, correction: str, *, target: str = "") -> TrainingDraft | None:
+        events = self._llm.invoke(
+            self._endpoint_id,
+            training_understanding_prompt(correction, target=target),
+            initiator=self._initiator, purpose=self._purpose,
+        )
+        chunks: list[str] = []
+        for event in events:
+            if event.kind == "chunk":
+                chunks.append(event.text)
+            elif event.kind == "error":
+                return None
+        return _parse_training_draft("".join(chunks))
+
+
+# ── 模式观察面的真实 LLM 适配器（[08 §4]） ─────────────────────────────────────
+
+_PATTERN_JSON_CONTRACT = (
+    '[{"key": "同类问题的稳定英文键", "count": 出现次数, "sample": "一条样本原话", '
+    '"reason": "中性陈述式理由", "draft": {"name": "Skill 名", "description": "说明", '
+    '"nodes": [{"node_id": "n1", "skill_id": "官方 skill id", "params": {}}], '
+    '"edges": [], "flow_name": "ascii_name"}}]'
+)
+
+
+def pattern_observation_prompt(samples: tuple[str, ...]) -> str:
+    """构造模式观察的结构化提示词（实现细节，非契约）。"""
+    joined = "\n".join(f"- {text}" for text in samples)
+    return (
+        "任务：把下列用户提问归并为若干「同类问题」，只有反复出现的类别才值得建专门 Skill。\n"
+        f"仅输出一行 JSON 数组，元素结构为：{_PATTERN_JSON_CONTRACT}\n"
+        "规则：key 用不含空格的小写英文；count 为该类在下列提问中的出现次数；"
+        "name 与 description 用中性命名，不得出现人称代词、情感措辞或对话体；"
+        "draft.nodes 至少一个节点；"
+        f"{_INTENT_JSON_HINT}\n"
+        f"用户提问：\n{joined}"
+    )
+
+
+def _parse_observations(raw: str, *, guard: NeutralityGuard) -> tuple[PatternObservation, ...]:
+    """把端点回的文本解析为观察序列；**文过一次 §6 门**的项才保留（不合形态的项丢弃、不静默放行）。"""
+    try:
+        payload = json.loads(_strip_code_fence(raw))
+    except (ValueError, TypeError):
+        return ()
+    if not isinstance(payload, list):
+        return ()
+    out: list[PatternObservation] = []
+    for item in payload:
+        if not isinstance(item, dict):
+            continue
+        try:
+            draft = _draft_of(item.get("draft"))
+        except (ValueError, TypeError):
+            continue
+        if draft is None:
+            continue
+        reason = str(item.get("reason") or "")
+        if not guard.check_name(draft.name, description=draft.description).passed:
+            continue
+        if reason and not guard.check_output(reason).passed:
+            continue
+        try:
+            observation = PatternObservation(
+                key=str(item.get("key") or "").strip(),
+                count=int(item.get("count") or 0),
+                sample=str(item.get("sample") or ""),
+                refs=(),
+                draft=draft,
+                reason=reason,
+            )
+        except (ValueError, TypeError):
+            continue
+        if not observation.key:
+            continue
+        out.append(observation)
+    return tuple(out)
+
+
+def _draft_of(raw: Any) -> SkillDraft | None:
+    """把 LLM 给出的草稿对象转成 :class:`SkillDraft`（无节点 / 无名称 ⇒ ``None``）。"""
+    if not isinstance(raw, dict):
+        return None
+    name = str(raw.get("name") or "").strip()
+    description = str(raw.get("description") or "").strip()
+    nodes = raw.get("nodes")
+    if not name or not description or not isinstance(nodes, list) or not nodes:
+        return None
+    return SkillDraft(
+        name=name,
+        description=description,
+        nodes=tuple(dict(node) for node in nodes if isinstance(node, dict)),
+        edges=tuple(dict(e) for e in (raw.get("edges") or ()) if isinstance(e, dict)),
+        groups=tuple(dict(g) for g in (raw.get("groups") or ()) if isinstance(g, dict)),
+        flow_name=str(raw.get("flow_name") or ""),
+    )
+
+
+class LlmPatternObserver:
+    """模式观察面的真实 LLM 实现（鸭子端口 ``observations``；[08 §4]）。
+
+    数据源＝L3 的对话史：本面**盘外**自持一个 `SessionStore` 读面（同一 `chat_history`
+    分区；[08 §4] 明写「L6 不自行扫描对话记录」⇒ 观察面应把取样与归并放在 L6 之外），
+    取最近的用户消息交 LLM 归并同类。L6 只消费其产出，不感知本适配器。
+
+    端点不可用 / 回复不合形态 ⇒ 返回**空序列**（观察面本就没有「有模式」的证据）。
+    """
+
+    def __init__(
+        self,
+        llm: Any,
+        endpoint_id: str,
+        *,
+        sessions: SessionStore,
+        limit: int = 40,
+        initiator: str = "l6-pattern-observer",
+        purpose: str = "对话史模式识别",
+        neutrality: NeutralityGuard | None = None,
+    ) -> None:
+        self._llm = llm
+        self._endpoint_id = endpoint_id
+        self._sessions = sessions
+        self._limit = limit
+        self._initiator = initiator
+        self._purpose = purpose
+        self._guard = NeutralityGuard() if neutrality is None else neutrality
+
+    def observations(self) -> tuple[PatternObservation, ...]:
+        samples = self._samples()
+        if not samples:
+            return ()
+        events = self._llm.invoke(
+            self._endpoint_id, pattern_observation_prompt(samples),
+            initiator=self._initiator, purpose=self._purpose,
+        )
+        chunks: list[str] = []
+        for event in events:
+            if event.kind == "chunk":
+                chunks.append(event.text)
+            elif event.kind == "error":
+                return ()
+        return _parse_observations("".join(chunks), guard=self._guard)
+
+    def _samples(self) -> tuple[str, ...]:
+        """最近的用户消息（跨会话按落盘顺序；超过上限取最后 `limit` 条）。"""
+        texts: list[str] = []
+        for session_id in self._sessions.sessions():
+            session = self._sessions.load(session_id)
+            for message in self._sessions.chain(session):
+                if message.role == "user":
+                    texts.append(message.text)
+        return tuple(texts[-self._limit:])
+
+
+# ── 演进变更的告知面（[08 §5]：每次变更经 L5 通道显式告知） ──────────────────────
+
+
+class _ChangeNotifier:
+    """订阅 `ChangeApplied` / `ChangeRolledBack`，把一次变更投成一条**中性告知**。
+
+    沿 [`ChannelPolicies`](../l5/channel_policy.py) 的**有序链**投出 `ChannelPayload`
+    （同周报 `deliver` 的口径，不另造 L5 面）；文案由本面产出并过 [01 §6] 执行点 2。
+    未接线 / 渠道链全不可用 / 文案未过门 ⇒ **如实记因**，不假装告知（[01 §11] 同款口径）。
+    """
+
+    def __init__(
+        self,
+        *,
+        dispatcher: Any,
+        policies: Any,
+        level: str = "important",
+        failures: list | None = None,
+        neutrality: NeutralityGuard | None = None,
+    ) -> None:
+        self._dispatcher = dispatcher
+        self._policies = policies
+        self._level = level
+        self._failures = failures if failures is not None else []
+        self._guard = NeutralityGuard() if neutrality is None else neutrality
+        self.notices: list[Any] = []
+        self.subscription: tuple[Any, ...] = ()
+
+    def attach(self, events: Any, *, subscriber_id: str = "m4:change-notifier") -> tuple[Any, ...]:
+        """把本面订阅到总线的两个变更事件上（[01 §11]）。"""
+        self.subscription = tuple(
+            events.subscribe(name, self._handle, subscriber_id=subscriber_id)
+            for name in _CHANGE_EVENTS
+        )
+        return self.subscription
+
+    def _handle(self, event: Any) -> None:
+        payload = dict(getattr(event, "payload", None) or {})
+        change_id = str(getattr(event, "change_id", None) or payload.get("change_id") or "")
+        config_id = str(payload.get("config_id") or "")
+        tier = str(payload.get("tier") or "")
+        rolled_back = str(getattr(event, "event", "")) == "ChangeRolledBack"
+        title = "演进变更已回滚" if rolled_back else "演进建议已生效"
+        body = (
+            f"配置条目 {config_id} 的取值由 {payload.get('old_value')!r} 改为 "
+            f"{payload.get('new_value')!r}（授权档：{tier}）。该改动已记入变更历史，可一键回滚。"
+        )
+        label = change_id or config_id or "（未知变更）"
+        if not self._neutral(title, body):
+            self._failures.append(f"变更 {label} 的告知文案未过 01 §6 中性化校验，未投出")
+            return
+        chain = tuple(self._policies.get(self._level).channels)
+        if not chain:
+            self._failures.append(
+                f"变更 {label} 的告知无可用渠道链（级别 {self._level}），未投出"
+            )
+            return
+        notice = ChannelPayload(
+            signal_id=change_id or f"change:{config_id}" or "change",
+            level=self._level, title=title, body=body,
+            trace_id=str(getattr(event, "trace_id", None) or change_id or f"change:{config_id}"),
+        )
+        try:
+            dispatch = self._dispatcher.deliver(list(chain), notice)
+        except Exception as exc:  # noqa: BLE001 —— 投出端缺陷：显式记因，不阻断其余订阅者
+            self._failures.append(f"变更 {label} 的告知投出失败：{exc}")
+            return
+        if getattr(dispatch, "delivered", None) is None:
+            self._failures.append(f"变更 {label} 的告知未投出（渠道链全不可用）")
+            return
+        self.notices.append(notice)
+
+    def _neutral(self, *texts: str) -> bool:
+        return all(self._guard.check_output(text).passed for text in texts)
+
+
+# ── ECO 面的装配（[09] 三类分享动作） ─────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class _EcoStack:
+    """ECO 三面（[09](../../docs/技术架构-v2/09-生态与分享.md) 跨层生态面）：导出 / 导入校验 / 官方索引。"""
+
+    exporter: ShareExporter
+    importer: ShareImporter
+    index: OfficialIndex
+
+
+def _build_eco(
+    runtime: L1Runtime,
+    l2: _L2Stack,
+    l4: _L4Stack,
+    *,
+    index_host: str = "",
+    index_fetch: Any = None,
+    now: Any = _now,
+) -> _EcoStack:
+    """叠 ECO 三面（[09 §2 / §3 / §4](../../docs/技术架构-v2/09-生态与分享.md)）。
+
+    取材面全部来自各层已交付门面（导出：L1 技能 / 工作流库 + L4 视角阵容 + L2 记忆片段面；
+    导入：同上 + L1 权限册）。官方索引经 L0 出网网关；`index_fetch` 缺省 ⇒ `browse()`
+    显式 `unavailable`（**不内置端点**，端点属用户侧）。
+    """
+    return _EcoStack(
+        exporter=ShareExporter(
+            skills=runtime.skills, workflows=runtime.workflows, lenses=l4.roster,
+            memory=MemoryShare(l2.graph), now=now,
+        ),
+        importer=ShareImporter(
+            store=runtime.store, skills=runtime.skills, workflows=runtime.workflows,
+            lenses=l4.roster, memory=FragmentImporter(l2.graph, l2.writer),
+            permissions=runtime.skill_permissions, now=now,
+        ),
+        index=OfficialIndex(gateway=runtime.gateway, host=index_host, fetch=index_fetch),
+    )
+
+
+def _build_l6(
+    runtime: L1Runtime,
+    l2: _L2Stack,
+    l5: L5Stack,
+    *,
+    events: Any = None,
+    training_understander: Any = None,
+    observer: Any = None,
+    now: Any = _now,
+) -> L6Stack:
+    """叠 L6 一层（[08 全层](../../docs/技术架构-v2/08-L6-反思演进.md)）——全部经注入接线。
+
+    周报的投出面 / 四段取材面接 L5 与 L2；训练理解端口与观察面由**组合根**注入（缺省由
+    :func:`build_m4_runtime` 装真 LLM 适配器）；A-B 授权面与变更流经 01 §7 门面缺省自建
+    （`build_l6` 口径）；`train` 去向与回访面在 :func:`_build_l3` 注入 L3。
+    """
+    return build_l6(
+        runtime.store, registry=runtime.config_registry, events=events,
+        dispatcher=l5.dispatcher, orchestrator=l5.delivery,
+        frequency=l5.frequency, fatigue=l5.fatigue, reader=l2.reader,
+        understander=training_understander, memory_writer=l2.writer,
+        observer=observer, now=now,
+    )
+
+
+@dataclass(frozen=True)
+class M4Runtime:
+    """一次 M4 装配的全部句柄（M3 全套 + L6 面 + ECO 面 + 变更告知面）。
+
+    L6 / ECO 与总线的接线**并列**在 :attr:`m3` 之外（同 M3 对 M2 的做法）：M3 是 M3 关卡的
+    冻结交付物，改造它会让 M3 的用例与本对象互相牵连；而「L0–L5 之上的 L6 反思演进 + ECO
+    生态面经同一条总线接起来」正是本关卡要证明的装配事实（[`T-INT-005`]）。
+
+    :meth:`tick` 在 M3 的职责循环之上叠**每周反思**（[00 §5] 步 8）：到点且本周尚未投出时，
+    先做一次模式识别，再投出周报——两者共用**同一周节奏**。
+    """
+
+    m3: M3Runtime
+    l6: L6Stack
+    eco: _EcoStack
+    notifier: Any = None
+    l6_failures: list = field(default_factory=list)
+    """L6 侧推进的显式失败记录（如模式识别未完成；**可查**，不吞）。"""
+
+    # ── 与 M1/M2/M3 同形的便捷取用 ──────────────────────────────────────────
+
+    @property
+    def m1(self) -> M1Runtime:
+        return self.m3.m1
+
+    @property
+    def m2(self) -> M2Runtime:
+        return self.m3.m2
+
+    @property
+    def l5(self) -> L5Stack:
+        return self.m3.l5
+
+    @property
+    def events(self) -> EventBus:
+        return self.m3.events
+
+    @property
+    def store(self):
+        return self.m3.store
+
+    @property
+    def chat(self) -> DialogFacade:
+        return self.m3.chat
+
+    def training_callbacks(self) -> tuple[Any, ...]:
+        """待回访项读面（[08 §3] 第 3 步；表现层入口归后续 `T-UI-*` 任务）。"""
+        return tuple(self.l6.training.callbacks())
+
+    # ── 职责循环（[00 §5] 步 4–8） ─────────────────────────────────────────
+
+    def tick(self, now: datetime | None = None) -> TickResult:
+        """推进一轮：M3 的主动服务 **+** 每周反思（到点则投出）。"""
+        moment = self.m3.now() if now is None else now
+        base = self.m3.tick(moment)
+        return dataclasses.replace(base, weekly_report=self._weekly(moment))
+
+    def _weekly(self, moment: datetime) -> Any:
+        """到点则模式识别 + 投出周报；「一周一次」的判据取**盘上留痕**（重启安全）。"""
+        reports = self.l6.reports
+        if reports is None or not reports.due(moment):
+            return None
+        week = week_key(moment.date())
+        stored = reports.stored(week)
+        if stored is not None and stored.delivered_channel:
+            return None
+        self._detect_proposals(moment)
+        return reports.publish(week, now=moment)
+
+    def _detect_proposals(self, moment: datetime) -> None:
+        try:
+            self.l6.proposals.detect(now=moment)
+        except Exception as exc:  # noqa: BLE001 —— 记因不吞；一次识别失败不该拖垮当轮报告
+            self.l6_failures.append(f"模式识别未完成（{type(exc).__name__}）：{exc}")
+
+
+def build_m4_runtime(
+    root: Path | str,
+    passphrase: str,
+    *,
+    create: bool = False,
+    market_query: Any = None,
+    sender: Any = None,
+    transport: Any = None,
+    llm_env: Mapping[str, str] | None = None,
+    dotenv_path: Path | str | None = None,
+    understander: Any = None,
+    synthesizer: Any = None,
+    reviewer: Any = None,
+    catalog: Any = None,
+    executor: Any = None,
+    channels: Mapping[str, Any] | None = None,
+    notify: Any = None,
+    synthesize: Any = None,
+    cloud_transport: Any = None,
+    email_host: str = "",
+    webhook_host: str = "",
+    credentials: Mapping[str, str] | None = None,
+    monitor_rules: tuple = DEFAULT_MONITOR_RULES,
+    training_understander: Any = None,
+    observer: Any = None,
+    index_host: str = "",
+    index_fetch: Any = None,
+    notice_level: str = "important",
+    now: Any = _now,
+    **l1_kwargs: Any,
+) -> M4Runtime:
+    """装配 M4 全栈（＝ M3 的 L0–L5 + L6 反思演进 + ECO 生态面；[`T-INT-005`] 的**生产组合根**）。
+
+    与 :func:`build_m3_runtime` 复用同一批私有栈构造器，差别在三处接线（都在组合根、
+    不改任何层）：
+
+    1. **叠 L6 一层**（:func:`_build_l6`）并把它接上同一条总线——反馈经 `FeedbackRecorded`
+       落反思池，A-B 实验的授权面缺省接本层演进授权档位面，变更流经 01 §7 门面落值并发布
+       `ChangeApplied` / `ChangeRolledBack`；
+    2. **把 `train` 去向与回访面注入 L3**——`TrainingProtocol` 作总线的 `trainings` 端口、
+       同时作对话门面的回访面（[08 §3] 第 3 步）；L3 只认鸭子面，**不 import L6**（[铁律 7]）；
+    3. **叠 ECO 三面**（:func:`_build_eco`）与**变更告知面**（:class:`_ChangeNotifier`）——
+       后者订阅两个变更事件、经 L5 渠道链显式告知（[08 §5]）。
+
+    :param training_understander / observer: 训练理解端口与模式观察面的覆写口；缺省装真
+        LLM 适配器（:class:`LlmTrainingUnderstander` / :class:`LlmPatternObserver`）。
+        **离线关卡**传确定性替身，使 CI 不随本机 `.env` 有无而变（同 M1 A4 口径）。
+    :param index_host / index_fetch: 官方索引端点的接线（缺任一项 ⇒ `browse()` 显式
+        `unavailable`，**不内置端点**）。
+    其余关键字透传 :func:`build_m3_runtime` 的同名项（渠道 / 原生端口 / 云端参数 / 时钟）。
+    """
+    bus = EventBus()
+    failures: list[str] = []
+    runtime = open_runtime(
+        root, passphrase, create=create, market_query=market_query,
+        sender=sender, transport=transport, llm_env=llm_env,
+        dotenv_path=dotenv_path, **l1_kwargs,
+    )
+    _bind_market(market_query, runtime.store)
+    l2 = _build_l2(runtime, now=now, events=bus)
+    l4 = _build_l4(
+        runtime, l2, now=now, market_query=market_query,
+        synthesizer=synthesizer, reviewer=reviewer, catalog=catalog, executor=executor,
+    )
+    l5 = _build_l5(
+        runtime, l2, now=now, events=bus, channels=channels, notify=notify,
+        synthesize=synthesize, cloud_transport=cloud_transport,
+        email_host=email_host, webhook_host=webhook_host, credentials=credentials,
+    )
+    if training_understander is None:
+        training_understander = LlmTrainingUnderstander(runtime.llm, _LLM_ENDPOINT_ID)
+    if observer is None:
+        observer = LlmPatternObserver(
+            runtime.llm, _LLM_ENDPOINT_ID, sessions=SessionStore(runtime.store),
+        )
+    l6 = _build_l6(
+        runtime, l2, l5, events=bus,
+        training_understander=training_understander, observer=observer, now=now,
+    )
+    # L3 最后叠——它的 `train` 去向与回访面要注入 L6 的面（层间只认鸭子面，铁律 7）。
+    l3 = _build_l3(
+        runtime, l2, now=now, understander=understander,
+        deliberations=_SignalEmittingAnalyze(
+            analyze=l4.analyze,
+            publish=lambda event: _publish_signal(bus, event, failures),
+            failures=failures,
+        ),
+        events=bus, feedback_sink=bus,
+        trainings=l6.training, callbacks=l6.training,
+    )
+    eco = _build_eco(
+        runtime, l2, l4, index_host=index_host, index_fetch=index_fetch, now=now,
+    )
+    notifier = _ChangeNotifier(
+        dispatcher=l5.dispatcher, policies=l5.policies, level=notice_level, failures=failures,
+    )
+    notifier.attach(bus)
+    m3 = M3Runtime(
+        m2=M2Runtime(
+            m1=M1Runtime(runtime=runtime, **_as_kwargs(l2), **_as_kwargs(l3)),
+            roster=l4.roster, deliberation=l4.deliberation, examiner=l4.examiner,
+            viewer=l4.viewer, analyze=l4.analyze,
+        ),
+        l5=l5, events=bus, monitor_rules=monitor_rules,
+        emission_failures=failures, now=now,
+    )
+    return M4Runtime(m3=m3, l6=l6, eco=eco, notifier=notifier)

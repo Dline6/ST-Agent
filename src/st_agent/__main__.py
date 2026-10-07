@@ -1,8 +1,9 @@
 """生产运行入口 ``python -m st_agent``——**后端常驻主体**（[00 §1.1]；[D-076]）。
 
-职责链：解析平台默认存储根 → [`build_m3_runtime`](../st_agent/app.py) 装配 L0–L5 →
-`ui.serve(chat=…)` 起本机回环面 → **起常驻驱动循环**（按 [`M3Runtime.tick`] 的节奏推进
-主动服务：调度 → 信号 → 升级链 → 日报 → 疲劳巡查）→ 向 **stdout 输出单行机器可读握手**
+职责链：解析平台默认存储根 → [`build_m4_runtime`](../st_agent/app.py) 装配 L0–L6 + 生态面 →
+`ui.serve(chat=…)` 起本机回环面 → **起常驻驱动循环**（按 [`M4Runtime.tick`] 的节奏推进
+主动服务与每周反思：调度 → 信号 → 升级链 → 日报 → 疲劳巡查 → 反思周报）→ 向 **stdout
+输出单行机器可读握手**
 （``event=ready`` / ``host`` / ``port`` / ``token`` / ``pid`` / ``root`` / ``version``）。
 它是桌面壳 [`T-UI-002.2`] 消费的唯一接口：先 ``event=ready``，失败为 ``event=error``
 （携机器可读 ``code``）。UI 仍只经回环面取数——本入口**不提供**任何壳专有通道。
@@ -52,7 +53,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from st_agent import __version__
-from st_agent.app import build_m3_runtime
+from st_agent.app import build_m4_runtime
 from st_agent.l0.market import MarketDb
 from st_agent.l0.storage import (
     StorageCorruptionError,
@@ -276,13 +277,16 @@ def flush_audit(runtime: Any) -> None:
 
 
 def build_ambient_runtime(root: Path | str, passphrase: str, **kwargs: Any) -> Any:
-    """生产组合根（M3）+ **原生通知端口**（表现层实现）。
+    """生产组合根（M4）+ **原生通知端口**（表现层实现）。
 
     入口是**唯一**可同时 import ``app`` 与 ``ui`` 的模块（[`T-UI-002.1`]），故原生能力的
     接线在此完成——``app`` 自己不 import 表现层（层序表里没有 ``ui``，[D-060] ⑤），
     而平台命令构造保持**单一份实现**（[D-082] ③ 否决「组合根自持第二份」）。
+
+    M4 起装的是 [`build_m4_runtime`]（L0–L5 + L6 反思演进 + ECO 生态面；[`T-INT-005`]）——
+    常驻循环由此也推进**每周反思**（到点投出周报），见 [`M4Runtime.tick`]。
     """
-    return build_m3_runtime(root, passphrase, notify=send_notification, **kwargs)
+    return build_m4_runtime(root, passphrase, notify=send_notification, **kwargs)
 
 
 def _local_now() -> datetime:
