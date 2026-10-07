@@ -312,7 +312,7 @@ class TestLlmUnderstander:
             "understood": {"window_days": 7}, "open_questions": [], "directions": [],
         })
 
-        def transport(endpoint, prompt, key, timeout_ms):
+        def transport(endpoint, prompt, key, timeout_ms, tools=None):
             assert "intent" in prompt  # 提示词里的契约说明
             return [payload]
 

@@ -3,10 +3,14 @@
 职责：
 - 调用前能力协商（GWT-2）：需求不满足 → 单个 ``error`` 事件
   （``validation_failed``），不触碰传输层
+- 工具调用通道（02 §4）：``tools`` 入参经规整后随请求下发；出参的工具调用以
+  ``tool_call`` 事件呈现（**增量不得当正文文本**）。``tools`` 非空即自动附
+  ``needs_function_calling`` 需求——端点未声明支持时**显式拒绝**（缺省不得
+  假定为真）
 - 云端端点 Key 唯一经 ``CredentialVault.use()`` 取用（GWT-4），只在内存
   短暂持有，调用结束即释放；prompt/response 明文永不落盘、不进用量
-- 统一流式协议（GWT-3）：``chunk* → done`` 或单个 ``error``；中断/取消/
-  超时显式上报为 ``error`` 事件
+- 统一流式协议（GWT-3）：``chunk* → (tool_call*) → done`` 或单个 ``error``；
+  中断/取消/超时显式上报为 ``error`` 事件
 - 用量本地统计（GWT-4）：每次调用记一条 ``LlmUsageRecord``（仅计数）
   入 ``execution_log`` 分区；失败调用记 ``failed`` 并给出原因
 - 失败一律走 ``ResultEnvelope``（GWT-5）：端点宕机 → ``unavailable``；
@@ -17,7 +21,7 @@
 经统一网关）；本模块默认无传输实现（调用即 ``unavailable``），测试与
 本地端点经 ``transport`` 参数注入。传输签名::
 
-    transport(endpoint, prompt, key, timeout_ms) -> Iterable[str]
+    transport(endpoint, prompt, key, timeout_ms, tools) -> Iterable[str | ToolCall]
 
 传输异常映射：``TransportUnavailableError`` → ``unavailable``；
 ``TransportTimeoutError`` / ``TransportError`` → ``failed``。
@@ -31,7 +35,7 @@ import json
 import os
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from datetime import datetime
 from typing import Any
 
@@ -44,12 +48,15 @@ from st_agent.l0.llm.models import (
     LlmEndpoint,
     LlmUsageRecord,
     StreamEvent,
+    ToolCall,
+    ToolSpec,
     check_endpoint_id,
     estimate_tokens,
 )
 
 __all__ = [
     "LLM_USAGE_PREFIX",
+    "Transport",
     "LlmClient",
     "TransportCancelledError",
     "TransportError",
@@ -60,8 +67,12 @@ __all__ = [
 LLM_USAGE_PREFIX = "llm-usage/"
 """``execution_log`` 分区内 LLM 用量记录的目录前缀。"""
 
-#: 传输 callable 协议：(endpoint, prompt, key, timeout_ms) -> 文本块可迭代
-Transport = Callable[[LlmEndpoint, str, str | None, int], Iterable[str]]
+#: 传输 callable 协议：(endpoint, prompt, key, timeout_ms, tools) -> 流式项可迭代
+#: 流式项为文本增量（``str``）或**拼完**的工具调用（``ToolCall``）两态。
+Transport = Callable[
+    [LlmEndpoint, str, str | None, int, Sequence[ToolSpec] | None],
+    Iterable[str | ToolCall],
+]
 
 
 class TransportError(Exception):
@@ -83,6 +94,15 @@ class TransportCancelledError(TransportError):
 def _now() -> datetime:
     """用户本地时区当前时刻（01 §8：时间统一用用户本地时区存储与展示）。"""
     return datetime.now().astimezone()
+
+
+def _completion_text(text_parts: Sequence[str], calls: Sequence[ToolCall]) -> str:
+    """本次调用的**输出**口径（用量计数用）。
+
+    文本增量 ∪ 工具调用的规范序列化——工具调用的名称与参数是端点真切的输出，
+    漏计会让「本地用量可见」失真。
+    """
+    return "".join(text_parts) + "".join(call.model_dump_json() for call in calls)
 
 
 class LlmClient:
@@ -112,13 +132,18 @@ class LlmClient:
         requirement: CapabilityRequirement | dict | None = None,
         timeout_ms: int | None = None,
         cancel: threading.Event | None = None,
+        tools: Sequence[ToolSpec | Mapping[str, Any]] | None = None,
     ) -> Iterator[StreamEvent]:
         """发起一次 LLM 调用，返回统一流式事件迭代器。
 
-        正常：``chunk* → done``（``done`` 携带用量）；失败：单个 ``error``
-        事件（携带 ``ResultEnvelope``）。用量无论成败必记一条（失败为
-        ``failed``）。prompt 为空、需求不满足、prompt 超上下文 → 直接
-        ``validation_failed``，不触碰传输层。
+        正常：``chunk* → (tool_call*) → done``（``done`` 携带用量）；失败：单个
+        ``error`` 事件（携带 ``ResultEnvelope``）。用量无论成败必记一条（失败为
+        ``failed``）。prompt 为空、需求不满足、prompt 超上下文、工具条目非法 →
+        直接 ``validation_failed``，不触碰传输层。
+
+        :param tools: 工具条目序列（02 §4）——工具名 / 描述 / 参数 schema。非空即
+            **自动附** ``needs_function_calling=True``：端点未声明支持工具调用时
+            **显式拒绝**，不静默发包（缺省不得假定为真）。空序列 ≡ 不带。
         """
         check_endpoint_id(endpoint_id)
         endpoint = self._registry.get(endpoint_id)
@@ -137,7 +162,18 @@ class LlmClient:
                 prompt_tokens=estimate_tokens(prompt), duration_ms=0,
             )
             return
+        try:
+            tool_specs = self._coerce_tools(tools)
+        except LlmValidationError as exc:
+            yield self._error_event(
+                endpoint, ResultEnvelope.validation_failed(f"工具条目非法：{exc}"),
+                initiator=initiator, purpose=purpose,
+                prompt_tokens=estimate_tokens(prompt), duration_ms=0,
+            )
+            return
         req = self._coerce_requirement(requirement)
+        if tool_specs:
+            req = req.model_copy(update={"needs_function_calling": True})
         ok, reason = self._registry.negotiate(endpoint_id, req)
         if not ok:
             yield self._error_event(
@@ -189,7 +225,7 @@ class LlmClient:
 
         try:
             yield from self._stream(
-                endpoint, prompt, key, timeout, cancel,
+                endpoint, prompt, key, timeout, cancel, tool_specs or None,
                 initiator=initiator, purpose=purpose, prompt_tokens=prompt_tokens,
             )
         finally:
@@ -233,6 +269,7 @@ class LlmClient:
         key: str | None,
         timeout_ms: int,
         cancel: threading.Event | None,
+        tools: Sequence[ToolSpec] | None,
         *,
         initiator: str,
         purpose: str,
@@ -259,24 +296,30 @@ class LlmClient:
                 prompt_tokens, 0, elapsed_ms(),
             )
             return
-        chunks: list[str] = []
+        text_parts: list[str] = []
+        calls: list[ToolCall] = []
+        spent = lambda: estimate_tokens(_completion_text(text_parts, calls))
         try:
-            stream = self._transport(endpoint, prompt, key, timeout_ms)
-            for piece in stream:
+            stream = self._transport(endpoint, prompt, key, timeout_ms, tools)
+            for item in stream:
                 if cancel is not None and cancel.is_set():
                     yield self._fail(
                         endpoint, "调用中被取消", initiator, purpose,
-                        prompt_tokens, estimate_tokens("".join(chunks)), elapsed_ms(),
+                        prompt_tokens, spent(), elapsed_ms(),
                     )
                     return
                 if elapsed_ms() > timeout_ms:
                     yield self._fail(
                         endpoint, f"调用超时（>{timeout_ms}ms）", initiator, purpose,
-                        prompt_tokens, estimate_tokens("".join(chunks)), elapsed_ms(),
+                        prompt_tokens, spent(), elapsed_ms(),
                     )
                     return
-                chunks.append(piece)
-                yield StreamEvent(kind="chunk", text=piece)
+                if isinstance(item, str):
+                    text_parts.append(item)
+                    yield StreamEvent(kind="chunk", text=item)
+                else:
+                    calls.append(item)
+                    yield StreamEvent(kind="tool_call", tool_call=item)
         except TransportUnavailableError as exc:
             now = _now()
             yield self._error_event(
@@ -289,13 +332,12 @@ class LlmClient:
         except (TransportTimeoutError, TransportCancelledError, TransportError) as exc:
             yield self._fail(
                 endpoint, str(exc) or "传输失败", initiator, purpose,
-                prompt_tokens, estimate_tokens("".join(chunks)), elapsed_ms(),
+                prompt_tokens, spent(), elapsed_ms(),
             )
             return
-        completion_tokens = estimate_tokens("".join(chunks))
         usage, _ = self._write_usage(
             endpoint.endpoint_id, initiator=initiator, purpose=purpose,
-            prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+            prompt_tokens=prompt_tokens, completion_tokens=spent(),
             duration_ms=elapsed_ms(), status="ok",
         )
         yield StreamEvent(kind="done", usage=usage)
@@ -395,3 +437,42 @@ class LlmClient:
             except ValidationError as exc:
                 raise LlmValidationError(f"能力需求非法：{exc}") from exc
         return requirement
+
+    @staticmethod
+    def _coerce_tools(
+        tools: Sequence[ToolSpec | Mapping[str, Any]] | None,
+    ) -> tuple[ToolSpec, ...]:
+        """规整工具条目入参为 :class:`ToolSpec` 元组（非法 → ``LlmValidationError``）。
+
+        接受模型或等价映射（同 ``_coerce_requirement`` 的宽进口径）；``None`` 与
+        **空序列一律归空**——「不带 tools」与「带空列表」等价，故单轮纯文本路径的
+        请求体逐字节不变（02 §4）。形态非法（空名 / 结构坏）在**发包之前**即拒。
+        """
+        if tools is None:
+            return ()
+        if isinstance(tools, (str, bytes, Mapping)):
+            raise LlmValidationError(
+                f"tools 须为工具条目序列，得到 {type(tools).__name__}"
+            )
+        try:
+            entries = list(tools)
+        except TypeError as exc:
+            raise LlmValidationError(
+                f"tools 须为可迭代的工具条目序列，得到 {type(tools).__name__}"
+            ) from exc
+        specs: list[ToolSpec] = []
+        for index, entry in enumerate(entries):
+            if isinstance(entry, ToolSpec):
+                specs.append(entry)
+                continue
+            if isinstance(entry, Mapping):
+                try:
+                    specs.append(ToolSpec(**entry))
+                except ValidationError as exc:
+                    raise LlmValidationError(f"第 {index} 个工具条目非法：{exc}") from exc
+                continue
+            raise LlmValidationError(
+                f"第 {index} 个工具条目须为 ToolSpec 或等价映射，"
+                f"得到 {type(entry).__name__}"
+            )
+        return tuple(specs)

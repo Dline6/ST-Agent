@@ -149,7 +149,7 @@ class TestGwt2EndToEnd:
 
     def test_explicit_transport_wins_over_bootstrap(self, store: Store):
         """显式 ``transport`` 优先：引导装载完全不启动（不播种记录）。"""
-        def transport(endpoint, prompt, key, timeout_ms):
+        def transport(endpoint, prompt, key, timeout_ms, tools=None):
             yield "stub"
 
         rt = _build(store, transport=transport, llm_post=Post("ok"))

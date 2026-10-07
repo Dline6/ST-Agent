@@ -62,7 +62,7 @@ def registry(store: Store) -> EndpointRegistry:
 def local_client(store: Store, registry: EndpointRegistry, vault: CredentialVault) -> LlmClient:
     registry.register("local-main", kind="local", provider="local-llama",
                       capability=LOCAL_CAP, priority=10, purpose="日常")
-    def transport(endpoint, prompt, key, timeout_ms):
+    def transport(endpoint, prompt, key, timeout_ms, tools=None):
         assert key is None  # 本地端点无 Key
         yield "你好，"
         yield "这是本地推理。"
@@ -76,7 +76,7 @@ def cloud_client(store: Store, registry: EndpointRegistry, vault: CredentialVaul
                       capability=CLOUD_CAP, priority=5, purpose="日常",
                       credential_id="openai-main")
     seen: dict = {}
-    def transport(endpoint, prompt, key, timeout_ms):
+    def transport(endpoint, prompt, key, timeout_ms, tools=None):
         seen["key"] = key
         seen["prompt"] = prompt
         yield "云端"
@@ -214,7 +214,7 @@ class TestGwt3Streaming:
     def test_cancel_mid_stream(self, store, registry, vault):
         registry.register("e1", kind="local", provider="p", capability=LOCAL_CAP)
         flag = threading.Event()
-        def transport(endpoint, prompt, key, timeout_ms):
+        def transport(endpoint, prompt, key, timeout_ms, tools=None):
             yield "第一块"
             flag.set()  # 首块后取消
             yield "第二块（不应出现）"
@@ -227,7 +227,7 @@ class TestGwt3Streaming:
 
     def test_timeout_reported(self, store, registry, vault):
         registry.register("e1", kind="local", provider="p", capability=LOCAL_CAP)
-        def slow(endpoint, prompt, key, timeout_ms):
+        def slow(endpoint, prompt, key, timeout_ms, tools=None):
             raise TransportTimeoutError("传输层超时（>100ms）")
         client = LlmClient(store, registry, vault, transport=slow)
         events = drain(client.invoke("e1", "hi", initiator="t", purpose="p", timeout_ms=100))
@@ -315,7 +315,7 @@ class TestGwt4ZeroRelayAndUsage:
 class TestGwt5FailureSemantics:
     def test_endpoint_down_is_unavailable(self, store, registry, vault):
         registry.register("e1", kind="local", provider="p", capability=LOCAL_CAP)
-        def down(endpoint, prompt, key, timeout_ms):
+        def down(endpoint, prompt, key, timeout_ms, tools=None):
             raise TransportUnavailableError("端点连接被拒绝")
         events = drain(LlmClient(store, registry, vault, transport=down).invoke(
             "e1", "hi", initiator="t", purpose="p"))
@@ -324,7 +324,7 @@ class TestGwt5FailureSemantics:
 
     def test_failed_carries_log_ref(self, store, registry, vault):
         registry.register("e1", kind="local", provider="p", capability=LOCAL_CAP)
-        def slow(endpoint, prompt, key, timeout_ms):
+        def slow(endpoint, prompt, key, timeout_ms, tools=None):
             raise TransportTimeoutError("超时")
         events = drain(LlmClient(store, registry, vault, transport=slow).invoke(
             "e1", "hi", initiator="t", purpose="p"))
