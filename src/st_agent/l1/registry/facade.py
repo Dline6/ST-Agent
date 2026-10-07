@@ -20,13 +20,17 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Mapping
 from typing import Any
+
+from pydantic import ValidationError
 
 from st_agent.contracts.registry_types import ChangeRecord, ConfigEntry, ConfigScope
 from st_agent.l1.registry.errors import RegistryFamilyConflict, RegistryValidationError
 from st_agent.l1.registry.family import ConfigFamily, ParamFamily
 from st_agent.l1.registry.naming import (
+    CHANGE_PARTITION,
     WITHIN_SCOPE_FAMILIES,
     param_config_id,
     target_parts,
@@ -160,3 +164,29 @@ class ConfigRegistryFacade:
         if family is None:
             raise RegistryValidationError(f"{config_id!r} 不属任何已接入的族（门面未注册该族）")
         return family.apply(config_id, value, trace_id=trace_id)
+
+    # ───────────────────────── 跨族变更读面 ─────────────────────────
+
+    def changes(self) -> tuple[ChangeRecord, ...]:
+        """**跨族**列举变更留痕（01 §7「每次变更产生 `change_id`，可回滚」的读面）。
+
+        [08 §6](../../../docs/技术架构-v2/08-L6-反思演进.md) 的「变更历史时间线」按此取数——
+        消费方**不依赖**各族各自的落盘前缀（那是存储布局，[01 §7](../../../docs/技术架构-v2/01-平台共享契约.md)
+        「存储布局不构成契约」）。覆盖范围＝本门面**已接入族**（含由组合根注入的 L2 / L5 / L6 各族）
+        在 `execution_log` 分区里的变更留痕目录（目录名以 `-change` 结尾，文件名形如
+        `<change_id>.json`，如 `weekly-report-change/` / `mcp-hub-change/` / `skill-config-change/`）。
+
+        :return: 按（生效时刻, `change_id`）升序的变更记录；无 → **空集**（不报错）
+        :raises RegistryValidationError: 某条留痕形态损坏（**不静默跳过**）
+        """
+        out: list[ChangeRecord] = []
+        for name in self._store.list_files(CHANGE_PARTITION):
+            directory, _, filename = name.rpartition("/")
+            if not directory.endswith("-change") or not filename.endswith(".json"):
+                continue
+            raw = self._store.get(CHANGE_PARTITION, name)
+            try:
+                out.append(ChangeRecord(**json.loads(raw.decode("utf-8"))))
+            except (ValueError, UnicodeDecodeError, ValidationError) as exc:
+                raise RegistryValidationError(f"变更留痕损坏（{name}）：{exc}") from exc
+        return tuple(sorted(out, key=lambda c: (c.applied_at, c.change_id)))

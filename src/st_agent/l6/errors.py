@@ -16,6 +16,12 @@
   阈值 / 频率上限条目越界 · 观察面返回非法结构 · 提案落盘损坏 · 实验范围不在低风险清单内。
 - :class:`ExperimentError`——实验的启用 / 结算 / 判定面（[08 §4](../../../docs/技术架构-v2/08-L6-反思演进.md)）：
   范围不合法 · 实验不存在 · 落盘形态损坏。
+- :class:`AuthorizationError`——演进授权档位与风险分级清单（[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md)）：
+  档位取值非法 · 风险分级规则形态非法 / 前缀重复 / 清单为空 · 条目落盘损坏。
+- :class:`ChangeFlowError`——变更流与回滚（[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md) / [§6](../../../docs/技术架构-v2/08-L6-反思演进.md)）：
+  提案形态非法 · 待批准项不存在 · 未接判据 / 未接门面即要求生效 · 变更落盘损坏。
+- :class:`FactoryResetError`——出厂重置（[08 §6](../../../docs/技术架构-v2/08-L6-反思演进.md)）：
+  确认次数不足 · 重置留痕损坏 · 未接回放面。
 
 **文案失败**（未过 [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md) 中性化校验）复用**各自面**的错误类型
 （周报文案 → :class:`WeeklyReportError`，训练对话文案 → :class:`TrainingError`，以此类推）——
@@ -25,7 +31,10 @@
 from __future__ import annotations
 
 __all__ = [
+    "AuthorizationError",
+    "ChangeFlowError",
     "ExperimentError",
+    "FactoryResetError",
     "FeedbackPoolError",
     "L6Error",
     "ProposalError",
@@ -56,3 +65,15 @@ class ProposalError(L6Error):
 
 class ExperimentError(L6Error):
     """A/B 实验：范围不在低风险清单内 / 实验不存在 / 落盘形态损坏（含文案未过 01 §6）。"""
+
+
+class AuthorizationError(L6Error):
+    """演进授权：档位非法 / 风险分级规则非法 / 条目落盘损坏。"""
+
+
+class ChangeFlowError(L6Error):
+    """变更流：提案形态非法 / 待批准项不存在 / 未接判据或门面即要求生效 / 变更落盘损坏。"""
+
+
+class FactoryResetError(L6Error):
+    """出厂重置：确认次数不足 / 重置留痕损坏 / 未接回放面。"""

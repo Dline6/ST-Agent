@@ -10,7 +10,10 @@
   （`FeedbackRecorded` ⇒ 落池）——反馈经总线**一跳到底**，调用方不必手递；
 - 周报的**投出面**（L5 渠道面）与四段取材面（L5 读面 / L2 记忆面 / 建议面）按注入接线；
 - 训练对话的**理解端口**与**记忆写入面**按注入接线（缺省即 fail-closed / 显式未写入）；
-- 主动提案的**观察面**与 A/B 实验的**授权面**按注入接线（缺省即不产提案 / 不启用）。
+- 主动提案的**观察面**与 A/B 实验的**授权面**按注入接线（缺省即不产提案 / 不启用）；
+- **演进授权档位**（[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md)）由本层自建并向门面登记 `evolution.*` 族，
+  **变更流**（[§5](../../../docs/技术架构-v2/08-L6-反思演进.md) / [§6](../../../docs/技术架构-v2/08-L6-反思演进.md)）与**出厂重置**（[§6](../../../docs/技术架构-v2/08-L6-反思演进.md)）
+  被接成一层——变更流经注入的 01 §7 门面落值、经注入的事件总线告知。
 
 **边界**：本模块只装配 **L6 一层**。M4 的**跨层组合根** `build_m4_runtime`
 （把 L6 与 L0–L5、UI 面接起来、加常驻到点驱动）归关卡
@@ -30,10 +33,17 @@ import dataclasses
 from dataclasses import dataclass
 from typing import Any
 
+from st_agent.l6.authorization import EvolutionAuthorization
+from st_agent.l6.change import EvolutionChangeFlow
 from st_agent.l6.experiment import DEFAULT_MIN_SAMPLE, ExperimentConsole
 from st_agent.l6.pool import FEEDBACK_EVENT, FeedbackPool
 from st_agent.l6.proposal import ProposalEngine
-from st_agent.l6.registry_adapter import proposal_family, weekly_report_family
+from st_agent.l6.registry_adapter import (
+    evolution_family,
+    proposal_family,
+    weekly_report_family,
+)
+from st_agent.l6.reset import FactoryReset
 from st_agent.l6.training import TrainingProtocol
 from st_agent.l6.weekly import WeeklyReportBuilder
 
@@ -59,7 +69,16 @@ class L6Stack:
     即周报第四段的 ``advisor``（**两处同源**，故它**直接**充当该端口），:meth:`ProposalEngine.detect` 做模式识别。"""
     experiments: ExperimentConsole
     """A/B 实验面（[08 §4](../../../docs/技术架构-v2/08-L6-反思演进.md)）；启用门经**注入的授权面**，
-    缺省不注入即**不启用**（授权档位本体归 [T-L6-003](../../../项目管理/tasks/T-L6-003-演进授权与变更流回滚与出厂重置.md)）。"""
+    缺省即用本层的 **演进授权档位面**（[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md)，
+    `authorizer` 显式传入时以后者为准）。"""
+    authorization: EvolutionAuthorization | None = None
+    """演进授权档位与风险分级清单面（[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md)）；
+    :func:`build_l6` 恒自建一面（除非以覆写口另行注入替身）。"""
+    change_flow: Any = None
+    """变更流面（[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md) / [§6](../../../docs/技术架构-v2/08-L6-反思演进.md)）——
+    所有演进动作的**唯一通道**；未接 01 §7 门面时其生效面被拒（不假装落值）。"""
+    factory_reset: Any = None
+    """出厂重置面（[08 §6](../../../docs/技术架构-v2/08-L6-反思演进.md)）。"""
     events: Any = None
     """事件面（缺省 ``None`` ⇒ **未订阅**，池子仅可经显式 :meth:`FeedbackPool.consume` 写入）。"""
     registry: Any = None
@@ -91,6 +110,9 @@ def build_l6(
     training: TrainingProtocol | None = None,
     proposals: ProposalEngine | None = None,
     experiments: ExperimentConsole | None = None,
+    authorization: EvolutionAuthorization | None = None,
+    change_flow: EvolutionChangeFlow | None = None,
+    factory_reset: FactoryReset | None = None,
 ) -> L6Stack:
     """装配 L6 面（池子 + 周报 + 训练对话 + 主动提案 + A/B 实验 + 01 §7 族 + 事件订阅）。
 
@@ -115,11 +137,13 @@ def build_l6(
         缺省 ``None`` ⇒ :meth:`ProposalEngine.detect` **不产提案**（fail-closed + 原因）
     :param rules: 提案的规则表（缺省用 [`DEFAULT_RULES`](proposal.py)；声明式数据）
     :param authorizer: **A/B 实验的授权面**鸭子端口（``permits(scope) -> bool``）；
-        缺省 ``None`` ⇒ 实验**不启用**（`enabled=False` ＋原因、不落盘）——[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md)
-        的授权档位本体归 [T-L6-003](../../../项目管理/tasks/T-L6-003-演进授权与变更流回滚与出厂重置.md)
+        缺省 ``None`` ⇒ **以本层的演进授权档位面充当**（[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md) 的档位本体，
+        即 :paramref:`authorization` 那一面）——档位缺省 `collaborative`，故缺省装配下实验仍**不自动启用**
+    :param authorization: 演进授权档位与风险分级清单面的覆写口（缺省自建；见 [08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md)）
     :param min_sample: A/B 实验的保守判定样本下限（缺省 5）
     :param now: 取时函数（测试注入固定时钟；缺省本机当前时刻）
-    :param pool / reports / training / proposals / experiments: 覆写口（**测试**注入确定性件；缺省自建）
+    :param pool / reports / training / proposals / experiments / authorization /
+        change_flow / factory_reset: 覆写口（**测试**注入确定性件；缺省自建）
     """
     resolved_pool = pool if pool is not None else FeedbackPool(store=store, now=now)
     resolved_proposals = proposals if proposals is not None else ProposalEngine(
@@ -135,17 +159,34 @@ def build_l6(
         store=store, understander=understander, memory_writer=memory_writer,
         pool=resolved_pool, now=now,
     )
+    resolved_authorization = (
+        authorization if authorization is not None
+        else EvolutionAuthorization(store=store, registry=registry, now=now)
+    )
     resolved_experiments = experiments if experiments is not None else ExperimentConsole(
-        store=store, authorizer=authorizer, min_sample=min_sample, now=now,
+        store=store,
+        authorizer=authorizer if authorizer is not None else resolved_authorization,
+        min_sample=min_sample, now=now,
+    )
+    resolved_flow = change_flow if change_flow is not None else EvolutionChangeFlow(
+        store=store, registry=registry, authorization=resolved_authorization,
+        events=events, now=now,
+    )
+    resolved_reset = factory_reset if factory_reset is not None else FactoryReset(
+        change_flow=resolved_flow, authorization=resolved_authorization,
+        experiments=resolved_experiments, store=store, now=now,
     )
     stack = L6Stack(
         pool=resolved_pool, reports=resolved_reports, training=resolved_training,
         proposals=resolved_proposals, experiments=resolved_experiments,
+        authorization=resolved_authorization, change_flow=resolved_flow,
+        factory_reset=resolved_reset,
         events=events, registry=registry,
     )
     if registry is not None:
         registry.register_family(weekly_report_family(resolved_reports))
         registry.register_family(proposal_family(resolved_proposals))
+        registry.register_family(evolution_family(resolved_authorization))
     if events is None:                           # 只有真接了总线才订阅（缺省不假装已接线）
         return stack
     subscription = events.subscribe(
