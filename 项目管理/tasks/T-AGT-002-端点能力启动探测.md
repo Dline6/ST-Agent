@@ -8,9 +8,9 @@ arch_link: "[02 §4](../../docs/技术架构-v2/02-L0-本地优先基座.md)"
 priority: P0
 milestone: M5
 depends_on: [T-AGT-001]
-status: todo
-decisions: [D-090, D-091]
-verify:
+status: done
+decisions: [D-090, D-091, D-094]
+verify: 范围套件（contracts ∪ layering ∪ tools ∪ integration ∪ l0 ∪ l1）**2000 passed（547.70s）**；**live 子集 2 passed**（本批强制项——动了 `l0/llm/client.py` 与 `l1/runtime.py` 的 LLM 装配段；真实端点真回工具调用 ⇒ 探测置 `true`）；新增 8 例（含**静默忽略 `tools`** 反例 = GWT-2）；`verify_docs --strict` 检查 1–9 全 0 · 见 [执行日志](../执行日志.md) `[T-AGT-002]`
 ---
 
 # T-AGT-002 · 端点能力启动探测（工具调用支持，判据取真回调用）
@@ -38,18 +38,20 @@ verify:
 ## 接口面
 
 - **输入**：
-  - [`T-AGT-001`](T-AGT-001-LLM工具调用通道.md) 交付的 `tools` 入参 + `supports_function_calling` 能力项。
-  - [`l1/runtime.py`](../../src/st_agent/l1/runtime.py) 的引导装载段：`LlmBootstrap` / `_bootstrap_llm_transport` / `_seed_llm_records`（**注意：`_seed_llm_records` 是「已存在即整组跳过」，探测不得住其内**）。
-  - [`LlmEndpointRegistry`](../../src/st_agent/l0/llm/registry.py) 的端点记录读面（取全体已登记端点、写回能力档）。
-  - 网关 [`EgressGateway`](../../src/st_agent/l0/net/gateway.py)（出网唯一出口 + 审计口径，[02 §6](../../docs/技术架构-v2/02-L0-本地优先基座.md)）。
+  - [`T-AGT-001`](T-AGT-001-LLM工具调用通道.md)（done）交付的 `tools` 入参（`LlmClient.invoke(..., tools=)` 与 transport 的第五参）与能力项 `EndpointCapability.supports_function_calling`（[`l0/llm/models.py`](../../src/st_agent/l0/llm/models.py)，缺省 `False`）。
+  - [`l1/runtime.py`](../../src/st_agent/l1/runtime.py) 的引导装载段：`LlmBootstrap` / `_bootstrap_llm_transport`（产出的 transport = §6 的同一出网面）/ `_seed_llm_records`（**「已存在即整组跳过」，探测不得住其内**）。
+  - [`LlmEndpointRegistry`](../../src/st_agent/l0/llm/registry.py) 的读面 `list_endpoints()` 与写面 `replace(endpoint_id, capability=…)`（能力档位住 `config` 分区端点记录）。
+  - 凭据取值口 [`CredentialVault.use`](../../src/st_agent/l0/secrets/vault.py)（云端端点探针取 Key 的唯一出口）。
+  - 出网唯一出口 [`EgressGateway`](../../src/st_agent/l0/net/gateway.py) 的 `llm_transport`（探针经它发出的即自然留审计，GWT-5）。
 - **输出**：
-  - 探测步骤（住 [`l1/runtime.py`](../../src/st_agent/l1/runtime.py) 启动装配段，**播种之后**）。
-  - 写回后的端点能力档位——供循环侧门控取用。
-  - 测试：`tests/l1` 的探测用例（含**静默忽略端点**这一反例，GWT-2 的机器钉法）。
+  - [`LlmClient.probe_tool_support(...)`](../../src/st_agent/l0/llm/client.py)：发一次**必然要求工具调用**的探针，返回端点是否真回了工具调用（`bool`）。**有意不经能力协商**——本方法正是确立 `supports_function_calling` 的手段，若被它所确立的门挡住则永远测不出；其余（凭据取用 / 流式 / 用量 / 审计）全走既有 `_stream` 路径（故 A3 的用量可见成立）。
+  - [`_probe_endpoint_capabilities(...)`](../../src/st_agent/l1/runtime.py)：**独立补丁步骤**，住 `build_l1_runtime` 的**引导装载分支**（`transport is None and llm_config is not None`）**播种之后**；逐端点探测并 `replace` 写回能力档。显式传入 `transport` 的路径（测试 / 自定义）**不探测**（A5）。
+  - 写回后的端点能力档位——供循环侧 [`T-AGT-004.2`](T-AGT-004.2-循环驱动、协议端口与上界.md) 的门控取用。
+  - 测试：`tests/l1/test_runtime_llm_probe.py`（GWT-1..6，含**静默忽略端点**这一反例 = GWT-2 的机器钉法）。
 
 ## 可关闭的遗留
 
-- 无（开工 ④ 对齐时逐册读各遗留册未闭区复核）
+- 无（2026-10-07 开工 ④ 逐册读 [L0](../../项目管理/遗留问题/L0-遗留问题.md)/[L1](../../项目管理/遗留问题/L1-遗留问题.md)/[L2](../../项目管理/遗留问题/L2-遗留问题.md)/[L3](../../项目管理/遗留问题/L3-遗留问题.md)/[L5](../../项目管理/遗留问题/L5-遗留问题.md)/[L6](../../项目管理/遗留问题/L6-遗留问题.md) 未闭区复核：无「归属＝本任务」或「解封条件＝本任务 `done`」的条目；L0 册 `F` 段归 `T-L0-012/013/014`，与本任务无关）
 
 ## 假设与前提
 
@@ -62,6 +64,12 @@ verify:
 - **A3 · 启动探测的成本可接受**——前提：一次极小探针 / 端点 / 启动；用量经 [`T-L0-*` 的用量报告](../../src/st_agent/l0/llm/client.py) 可见（本地统计）。
   **若错的影响**：频繁重启会累积可观的端点调用；须改为「按（端点 + base_url + model）缓存探测结果、配置变更才重探」。
   **验证方式**：GWT-3 已要求可重入；若 ④ 对齐判定成本不可接受，缓存即本条的返工面。
+- **A4 · 探针取一个较短的内建超时，不沿用端点缺省（60s）**——前提：「不阻塞启动」是硬约束（[铁律 1](../../项目管理/工程宪法.md)），而端点记录 `default_timeout_ms` 缺省 `60_000`；不可达端点沿用它会**把启动挂起 60s**。
+  **若错的影响**：启动被慢/不可达端点拖住；返工面 = 超时取值与是否并发探测。
+  **验证方式**：GWT-4 以**不可达端点**钉「启动照常完成」，并断言该端点记为未知（非 `true`）。
+- **A5 · 探测只在引导装载分支跑（`transport is None and llm_config is not None`）**——前提：只有这一支产出了 §6 要求的「同一 transport」，且它同时满足「播种之后」（`_seed_llm_records` 就在该支内）。
+  **若错的影响**：显式传入 `transport` 的路径（测试 / 自定义）不探测 ⇒ 该路径能力恒为未知、循环侧 fail-closed（少一层能力而非出错）；**且**无 transport 时不探测，可避免把既有的 `true` 误降为 `false`。返工面 = 触发条件放宽到「有端点即探测」。
+  **验证方式**：GWT-1/2/3 以「`llm_config` + `llm_post` 替身」触发（走真实 §6 路径）；既有 `test_explicit_transport_wins_over_bootstrap` 断言显式 transport 不播种、亦不探测。
 
 ## 涉及契约
 

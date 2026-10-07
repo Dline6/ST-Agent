@@ -38,6 +38,7 @@ from st_agent.l0.llm.http_transport import (
     openai_compat_sender_factory,
     provider_hosts_of,
 )
+from st_agent.l0.llm.models import ToolSpec
 from st_agent.l0.llm.registry import EndpointRegistry
 from st_agent.l0.net.gateway import EgressGateway
 from st_agent.l0.secrets.errors import CredentialNotFoundError
@@ -100,7 +101,34 @@ LLM_CAPABILITY = {"max_context_tokens": 128_000, "supports_structured_output": T
 
 ``.env`` 三键不含上下文规模，故取一个**不设限的宽松档**（宁可在提供方侧被拒，
 也不在本地把一个合法 prompt 误判超限）。真实档位待设置页任务按端点配置。
+
+**刻意不含** ``supports_function_calling``——该维度**缺省为假**（02 §4「缺省不得
+假定为真」），真实档位由启动探测落定（:func:`_probe_endpoint_capabilities`）。
 """
+
+PROBE_TIMEOUT_MS = 10_000
+"""启动探测的内建超时（毫秒）。
+
+**不沿用端点缺省** ``default_timeout_ms``（缺省 60s）——「不阻塞启动」是硬约束
+（工程宪法铁律 1），不可达端点沿用它会**把启动挂起一分钟**。探测失败即能力未知
+（循环侧 fail-closed），故宁可早收。
+"""
+
+PROBE_TOOL = ToolSpec(
+    name="st_capability_probe",
+    description="端点能力探针：调用它以表明端点支持原生工具调用。",
+    parameters={"type": "object", "properties": {}},
+)
+"""探针工具条目（最小形态：无参空对象）。"""
+
+PROBE_PROMPT = "请调用 st_capability_probe 工具（参数留空）作答，不要输出其他内容。"
+"""探针提示（最小形态：必然要求调用工具）。"""
+
+PROBE_INITIATOR = "capability-probe"
+"""探针的用量 / 审计归属（发起方）。"""
+
+PROBE_PURPOSE = "端点工具调用能力启动探测（02 §4）"
+"""探针的用量 / 审计目的说明。"""
 
 
 class VaultEnvResolver:
@@ -309,12 +337,17 @@ def build_l1_runtime(
 
     # 引导装载（T-L1-011）：显式 transport 优先；否则按 llm_config 幂等播种并装配真实发送器
     llm_transport = transport
-    if llm_transport is None and llm_config is not None:
+    bootstrapped = llm_transport is None and llm_config is not None
+    if bootstrapped:
         llm_transport = _bootstrap_llm_transport(
             llm_config, endpoints=endpoints, vault=vault,
             provider_hosts=provider_hosts, gateway=gateway, post=llm_post,
         )
     llm = LlmClient(store, endpoints, vault, llm_transport)
+    # 能力诚实性（T-AGT-002）：探测是**播种之后**的独立补丁步骤，与幂等播种解耦
+    # （`_seed_llm_records` 已存在即整组跳过，塞进去会让第二次启动起结果永远写不进去）。
+    if bootstrapped:
+        _probe_endpoint_capabilities(endpoints=endpoints, llm=llm)
 
     freshness = (
         MarketFreshnessOracle(freshness_source) if freshness_source is not None else None
@@ -595,3 +628,45 @@ def _seed_llm_records(
         vault.add(LLM_CREDENTIAL_ID, "llm_api_key", api_key)
     if provider_hosts.resolve(LLM_PROVIDER) is None:
         provider_hosts.register(LLM_PROVIDER, route.host)
+
+
+def _probe_endpoint_capabilities(
+    *,
+    endpoints: EndpointRegistry,
+    llm: LlmClient,
+) -> None:
+    """启动期探测各端点的工具调用能力，并写回能力档（02 §4 能力诚实性；``T-AGT-002``）。
+
+    三处口径：
+
+    - **独立补丁步骤**——住在**播种之后**，**不得**塞进 :func:`_seed_llm_records`
+      （后者「端点已存在即整组跳过」；塞进去会让第二次启动起结果永远写不进去且
+      不报错，即调研报告的「陷阱一」）。本函数每次装配都跑，故可重入。
+    - **不阻塞启动**——单个端点失败只记「未知」（非 ``true``；循环侧 fail-closed
+      消费），**其余端点照常**；探测整体不抛（[铁律 1] 本地优先）。
+    - **写回端点记录**——直接改端点记录的 ``capability``（不落 [01 §7] 登记条目：
+      用户**不该**手填「我的端点支不支持工具调用」）。
+
+    只在**引导装载分支**被调用（``transport is None and llm_config is not None``）：
+    只有这一支产出了 §6 要求的「同一 transport」，显式注入 ``transport`` 的测试 /
+    自定义路径不探测（也不至于在没有 transport 时把既有的 ``true`` 误降为 ``false``）。
+    """
+    for endpoint in endpoints.list_endpoints():
+        try:
+            supported = llm.probe_tool_support(
+                endpoint.endpoint_id,
+                tool=PROBE_TOOL,
+                prompt=PROBE_PROMPT,
+                initiator=PROBE_INITIATOR,
+                purpose=PROBE_PURPOSE,
+                timeout_ms=PROBE_TIMEOUT_MS,
+            )
+        # 探测**绝不阻塞启动**：任何失败都记未知，不当成错误向上抛（GWT-4）
+        except Exception:
+            supported = False
+        endpoints.replace(
+            endpoint.endpoint_id,
+            capability=endpoint.capability.model_copy(
+                update={"supports_function_calling": supported}
+            ),
+        )
