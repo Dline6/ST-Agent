@@ -146,8 +146,14 @@ class EndpointRegistry:
     ) -> tuple[bool, str]:
         """能力协商：调用需求能否被该端点满足。
 
-        返回 ``(满足与否, 原因)``：满足 → ``(True, "")``；上下文不足或缺结构化
-        输出 → ``(False, 人可读降级原因)``。调用方据此降级，不得静默调用高档。
+        返回 ``(满足与否, 原因)``：满足 → ``(True, "")``；上下文不足 / 缺结构化
+        输出 / 缺工具调用 → ``(False, 人可读降级原因)``。调用方据此降级，不得静默
+        调用高档。
+
+        工具调用一维按 [02 §4](../../../docs/技术架构-v2/02-L0-本地优先基座.md)
+        的**能力诚实性**口径判：端点未声明即**拒**（缺省不得假定为真）——把
+        ``tools`` 发给不认识它的端点，会让上层拿到「静默无视」的结果，比不门控
+        更糟。
         """
         endpoint = self._load(endpoint_id)
         if isinstance(requirement, dict):
@@ -164,6 +170,11 @@ class EndpointRegistry:
         if requirement.needs_structured_output and not cap.supports_structured_output:
             return (False, (
                 f"端点 {endpoint_id!r} 不支持结构化输出；请关闭该需求或切换端点"
+            ))
+        if requirement.needs_function_calling and not cap.supports_function_calling:
+            return (False, (
+                f"端点 {endpoint_id!r} 未声明支持工具调用（`supports_function_calling` "
+                "缺省为 false）；请切换端点或改用单轮纯文本路径"
             ))
         return (True, "")
 

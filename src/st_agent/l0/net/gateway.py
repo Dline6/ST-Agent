@@ -33,9 +33,12 @@ import json
 import os
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
+
+if TYPE_CHECKING:  # 仅类型面：运行时不得 import（llm 子包经 http_transport 反向依赖本模块）
+    from st_agent.l0.llm.models import ToolSpec
 
 from pydantic import ValidationError
 
@@ -66,6 +69,8 @@ __all__ = [
     "EgressGateway",
     "Sender",
     "SenderResult",
+    "StreamItem",
+    "WireMeasured",
 ]
 
 NET_LOG_PREFIX = "net/"
@@ -98,8 +103,26 @@ NET_AUDIT_DISABLED_REF = "net-audit:disabled"
 
 #: 发包实现协议：(kind, target_host, timeout_ms) -> (bytes_out, bytes_in, chunks?)
 #: chunks 供流式形态消费；一次性形态忽略。抛 ``Egress*`` 异常上报失败。
-SenderResult = tuple[int, int, Iterable[str]]
+SenderResult = tuple[int, int, Iterable["StreamItem"]]
 Sender = Callable[[NetworkRequestKind, str, int], SenderResult]
+
+
+@runtime_checkable
+class WireMeasured(Protocol):
+    """**非文本**流式项的字节口径（鸭子端口）。
+
+    流式形态的项**恒为** ``str``（文本增量）或一个自报线上字节的对象——工具调用
+    （``l0.llm.ToolCall``）即后者。网关只见字节数（02 §6），故非文本项必须能自报
+    ``to_wire_bytes()``；不认得的项一律拒绝，**不静默按 0 计**（那会让审计少报）。
+    """
+
+    def to_wire_bytes(self) -> bytes:
+        """该项在返回流中占的字节（审计口径）。"""
+        ...
+
+
+#: 流式项：文本增量或自报字节的项（见 :class:`WireMeasured`）。
+StreamItem = str | WireMeasured
 
 _NEEDS_REF = ("failed", "cancelled")
 """需要 ``log_ref`` 指向真实记录的终态（其余分支不消费该返回值）。"""
@@ -127,6 +150,22 @@ def _checked_capability(**fields: Any) -> CapabilityRecord:
 def _micros(stamp: datetime) -> int:
     """时戳 → 微秒整数（段名用它编码时间有序性，供 ``query`` 跳段）。"""
     return int(round(stamp.timestamp() * 1_000_000))
+
+
+def _wire_bytes(item: StreamItem) -> int:
+    """流式项的字节口径（流式审计的 ``bytes_in`` 计它）。
+
+    文本项按 UTF-8 长度；其余项须自报 ``to_wire_bytes()``——**不认得的项一律
+    拒绝**，不静默按 0 计：少报进入本机的数据正是出网审计要防的失真。
+    """
+    if isinstance(item, str):
+        return len(item.encode("utf-8"))
+    if isinstance(item, WireMeasured):
+        return len(item.to_wire_bytes())
+    raise NetValidationError(
+        f"未知流式项类型 {type(item).__name__}"
+        "（须为 str，或能自报 to_wire_bytes() 的项）"
+    )
 
 
 def segment_bounds(name: str) -> tuple[int, int] | None:
@@ -343,8 +382,8 @@ class EgressGateway:
         timeout_ms: int = 60_000,
         cancel: threading.Event | None = None,
         sender: Sender | None = None,
-    ) -> Iterator[str]:
-        """经网关执行流式出网，产出文本块；失败抛 ``Egress*`` 异常。
+    ) -> Iterator[StreamItem]:
+        """经网关执行流式出网，产出流式项；失败抛 ``Egress*`` 异常。
 
         审计事件无论成败先行落盘（成功 ``ok`` / 离线 ``unavailable`` /
         超时 ``failed`` / 取消 ``cancelled``）。发起前校验失败抛
@@ -385,7 +424,7 @@ class EgressGateway:
                               bytes_out, bytes_in, "failed",
                               f"调用超时（>{timeout_ms}ms）")
                     raise EgressTimeoutError(f"调用超时（>{timeout_ms}ms）")
-                bytes_in += len(piece.encode("utf-8"))
+                bytes_in += _wire_bytes(piece)
                 yield piece
         except EgressError:
             raise
@@ -570,27 +609,36 @@ class EgressGateway:
         self,
         provider_hosts: dict[str, str] | None = None,
         *,
-        sender_factory: Callable[[Any, str, str | None, int], Sender] | None = None,
+        sender_factory: (
+            Callable[[Any, str, str | None, int, "Sequence[ToolSpec] | None"], Sender]
+            | None
+        ) = None,
     ):
         """生成 ``LlmClient`` 可用的 ``transport`` callable（兑现 T-L0-003 遗留）。
 
-        签名 ``(endpoint, prompt, key, timeout_ms) -> Iterable[str]``：按端点
-        ``provider`` 查 ``provider_hosts`` 得目标主机，经 ``stream`` 发出；
-        prompt 的字节数记 ``bytes_out``（内容本身不进网关、不进审计）。
+        签名 ``(endpoint, prompt, key, timeout_ms, tools) -> Iterable[str | ToolCall]``：
+        按端点 ``provider`` 查 ``provider_hosts`` 得目标主机，经 ``stream`` 发出；
+        prompt 的字节数记 ``bytes_out``（内容本身不进网关、不进审计），``tools``
+        只透传给按次 sender 闭包（工具条目仍是载荷，网关只见字节数）。
         ``Egress*`` 异常翻译为 ``LlmClient`` 可接的 ``Transport*`` 异常
         （T-L0-003 ``transport`` 签名只认该体系）。
         未登记的 provider → ``TransportUnavailableError``（上层映射为信封）。
 
         :param sender_factory: 真实发送器的**按次构造器**（02 §6 按次 sender）——
-            ``(endpoint, prompt, key, timeout_ms) -> Sender``。缺省 ``None`` 时
-            沿用网关构造时的 sender（其签名不含 prompt / key，故只适合替身与
+            ``(endpoint, prompt, key, timeout_ms, tools) -> Sender``。缺省 ``None``
+            时沿用网关构造时的 sender（其签名不含 prompt / key，故只适合替身与
             离线路径）；真实端点须经此注入，否则prompt 发不出去（只有字节数
             被记录）。工厂返回的 Sender 抛 ``Egress*`` 时按同款映射透出。
         """
         hosts = dict(provider_hosts or {})
 
-        def _transport(endpoint, prompt: str, key: str | None,
-                       timeout_ms: int) -> Iterable[str]:
+        def _transport(
+            endpoint,
+            prompt: str,
+            key: str | None,
+            timeout_ms: int,
+            tools: "Sequence[ToolSpec] | None" = None,
+        ) -> Iterable[StreamItem]:
             from st_agent.l0.llm.client import (
                 TransportCancelledError,
                 TransportError,
@@ -604,9 +652,9 @@ class EgressGateway:
                 )
             purpose = f"LLM 调用（端点 {endpoint.endpoint_id}，提供方 {endpoint.provider}）"
             try:
-                # 载荷（prompt / key）只进按次 sender 闭包，网关只见字节数
+                # 载荷（prompt / key / tools）只进按次 sender 闭包，网关只见字节数
                 per_call: Sender | None = (
-                    sender_factory(endpoint, prompt, key, timeout_ms)
+                    sender_factory(endpoint, prompt, key, timeout_ms, tools)
                     if sender_factory is not None else None
                 )
                 yield from self.stream(
