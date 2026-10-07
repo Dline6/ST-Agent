@@ -229,6 +229,21 @@ def test_ui_layer_sits_between_l3_and_l4():
     assert rl.LAYER_ORDER["INT"] == len(rl.LAYERS) - 1
 
 
+def test_agt_layer_sits_after_ui():
+    """AGT 层（跨层受控自主运行时）置于 UI 之后、L4 之前（决策日志 D-090）；INT 仍居末。"""
+    assert rl.ID_RE.match("T-AGT-001")
+    assert rl.layer_of("T-AGT-001.2") == "AGT"
+    assert "AGT" in rl.LAYER_ORDER
+    assert rl.LAYER_ORDER["UI"] < rl.LAYER_ORDER["AGT"] < rl.LAYER_ORDER["L4"]
+    assert rl.LAYER_ORDER["INT"] == len(rl.LAYERS) - 1
+
+
+def test_m5_milestone_registered():
+    """M5（受控自主）已登记在 MILESTONES 末位（决策日志 D-090）——账本里程碑视图据它成行。"""
+    assert [m[0] for m in rl.MILESTONES] == ["M0", "M1", "M2", "M3", "M4", "M5"]
+    assert rl.MILESTONES[-1][1] == "受控自主"
+
+
 # ───────────────────────── archive：移动后改正相对链接 ─────────────────────────
 # 2026-09-27 加固：archive 只做 shutil.move，而任务文件里全是相对链接（`../../docs/`、
 # 邻居任务、`../工作流.md`）——搬深两层即 815 条断链。故 archive 同批改正链接。
