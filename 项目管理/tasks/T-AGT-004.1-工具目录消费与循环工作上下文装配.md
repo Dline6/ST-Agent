@@ -8,9 +8,9 @@ arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P0
 milestone: M5
 depends_on: [T-AGT-003]
-status: todo
+status: done
 decisions: [D-090, D-091]
-verify:
+verify: 新用例 19 例（GWT-1..6 + 规模口径与超限标注 + 非法入参 + 与 L1 投影面的交接形态）· 范围 1003 passed（217.34s）· 全量 3740 passed / 0 failed / 14 deselected（964.37s；基线 3654 核账 +86 逐项归因无残差）· verify_docs --strict 检查 1–9 全过 0 断链 · 未触发联网面（自愿补跑 live 2 passed 作旁证）· 见执行日志 [T-AGT-004]
 ---
 
 # T-AGT-004.1 · 工具目录消费与循环工作上下文装配
@@ -40,12 +40,13 @@ verify:
   - [`T-L1-001.4`](done/M0/T-L1-001.4-输出复用新鲜度查询.md) 的输出登记与 [`SkillRunner`](../../src/st_agent/l1/runner/runner.py) 落 `execution_log` 的**记录路径口径**（`skill-run/<skill_run_id>.json`）——指针的落地形态。
   - 契约口径：[05 §10 循环工作上下文](../../docs/技术架构-v2/05-L3-对话主入口.md) · [01 §2](../../docs/技术架构-v2/01-平台共享契约.md)（暴露字段属实现口径）。
 - **输出**：
-  - `src/st_agent/l3/runtime/**` 的**工具目录装配件**与**工作上下文装配件**（均为纯函数）。
-  - 供 [`.2`](T-AGT-004.2-循环驱动、协议端口与上界.md) 消费的上下文形态。
+  - 新增 [`src/st_agent/l3/runtime/context.py`](../../src/st_agent/l3/runtime/context.py)：`WorkContext`（`task` / `tools` / `steps` / `budget_chars` / `size_chars` / `over_budget`；`tool_specs()`＝模型可见工具面、`render_prompt(include_tools=…)`＝模型可见任务与动作面）、`WorkStep`（工具名 / 执行目标 / 参数 / `skill_run_id` / `log_ref` / 信封 / `truncated`）、`TruncatedResult`、纯函数 `assemble_work_context()` / `new_work_step()` / `log_ref_of()`。
+  - 经 [`st_agent.l3.runtime`](../../src/st_agent/l3/runtime/__init__.py) 导出；供 [`.2`](T-AGT-004.2-循环驱动、协议端口与上界.md) 每轮重装的上下文形态即 `WorkContext`。
+  - 测试：`tests/l3/test_agent_context.py`（GWT-1..6 + 规模口径 + 非法入参 + 与 L1 投影面的交接形态）。
 
 ## 可关闭的遗留
 
-- 无（开工 ④ 对齐时逐册读各遗留册未闭区复核）
+- 无（2026-10-07 开工逐册读未闭区复核：[L0 册](../遗留问题/L0-遗留问题.md) 余 `C3` / `C5` 皆**人决**、[L1](../遗留问题/L1-遗留问题.md) `A`–`E` 五段全闭、[L2](../遗留问题/L2-遗留问题.md) / [L3](../遗留问题/L3-遗留问题.md) / [L5](../遗留问题/L5-遗留问题.md) 册各 **0 未闭**、[L6 册](../遗留问题/L6-遗留问题.md) 余 `B1`（主动提案落地点，与人决相关、非同面）——**无归属本任务的条目**；全册 grep `T-AGT` / 工具目录 / 循环 **零命中**）
 
 ## 假设与前提
 
@@ -54,7 +55,7 @@ verify:
   **验证方式**：GWT-5 以「动作与结果按序」钉住本叶的形态来源；`assemble_context` 的既有用例**不改**（它仍是会话面的）。
 - **A2 · 截断阈值与指针形态取「既有记录路径」**——前提：`SkillRunner` 已把每次执行落 `execution_log`，故指针天然存在（[D-090](../决策日志.md) ⑧「`SkillRunner` 已落 `execution_log`，指针天然存在」）。
   **若错的影响**：若须新建外置存储，返工面 = 指针形态与一条新的存储约定。
-  **验证方式**：GWT-3 以「指针指向真实存在的记录」钉住。
+  **验证方式**：GWT-3 以「指针指向真实存在的记录」钉住 —— **分工已定**（2026-10-07 ④ 对齐）：本叶是**纯函数**、不碰 `Store`，故本叶断言指针**由该步真实的 `skill_run_id` 派生**且形态取自 L1 的单一真相源（`RUN_PREFIX`）；「记录真的可读」由 [`.2`](T-AGT-004.2-循环驱动、协议端口与上界.md) 的驱动用例（**真** `SkillRunner` + 真 `Store`）端到端钉住。
 - **A3 · 本叶暂不含「记忆注入」**——前提：[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md) 的循环工作上下文定义为「任务 + 工具目录 + 已执行动作与结果」，未含记忆切片；记忆注入在既有链路里走 L4 的编排面（[`l4/deliberation.py`](../../src/st_agent/l4/deliberation.py) 的 `_read_memory`）。
   **若错的影响**：若 ④ 对齐判定循环也须注入记忆，返工面 = 本叶的装配件加一段（**且须回答「L3 直接读 L2 还是经端口」**）。
   **验证方式**：本叶按 [05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md) 原文实现；若须扩范围，须回 [D-090](../决策日志.md) 复议。

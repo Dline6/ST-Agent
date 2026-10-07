@@ -3,6 +3,7 @@
 | 描述件 | 组件类型 | 输入（上游已交付的视图数据） |
 | --- | --- | --- |
 | :func:`describe_trace` | ``trace_timeline`` | [`contracts.trace.Trace`](../../contracts/trace.py)（[05 §7](../../../../docs/技术架构-v2/05-L3-对话主入口.md)） |
+| :func:`describe_agent_run` | ``table`` | **自主查证循环的产出**（[`l3.runtime.loop.LoopOutcome`](../runtime/loop.py)，[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）——**鸭子类型**：本层只按属性取值 |
 | :func:`describe_context_card` | ``context_card`` | [`l3.home.card.ContextCard`](../home/card.py)（[05 §2](../../../../docs/技术架构-v2/05-L3-对话主入口.md)） |
 | :func:`describe_draft` | ``config_draft_card`` | [`l3.config.draft.ConfigDraft`](../config/draft.py) / [`l3.config.handling.PanelView`](../config/handling.py)（[05 §5](../../../../docs/技术架构-v2/05-L3-对话主入口.md)） |
 | :func:`describe_adjudication` | ``conflict_adjudication_card`` | [`l3.conflict.adjudication.ConflictAdjudication`](../conflict/adjudication.py)（[05 §9](../../../../docs/技术架构-v2/05-L3-对话主入口.md)） |
@@ -45,6 +46,9 @@ from st_agent.l3.conflict.adjudication import (
 from st_agent.l3.home.card import ContextCard
 
 __all__ = [
+    "AGENT_RUN_COLUMNS",
+    "AGENT_RUN_TITLE",
+    "AGENT_TERMINATION_LABELS",
     "DIVERGENCE_ABSENT_REASON",
     "DIVERGENCE_EMPTY_REASON",
     "DIVERGENCE_TITLE",
@@ -55,6 +59,7 @@ __all__ = [
     "TRACE_ABSENT_REASON",
     "TRACE_EMPTY_REASON",
     "describe_adjudication",
+    "describe_agent_run",
     "describe_approval",
     "describe_context_card",
     "describe_divergence_map",
@@ -195,6 +200,129 @@ def _step_slot(step: TraceStep) -> dict[str, Any]:
         "timestamp": step.timestamp.isoformat(),
         "degraded": step.degraded,
         "note": step.note,
+    }
+
+
+# ───────────────────────── agent_run（05 §10） ─────────────────────────
+
+
+AGENT_RUN_TITLE = "自主查证循环证据"
+"""循环证据包的表名（生成文案，过 §6）。"""
+
+AGENT_TERMINATION_LABELS: dict[str, str] = {
+    "finished": "模型给出结束",
+    "step_limit": "达到步数上界",
+    "llm_call_limit": "达到 LLM 调用次数上界",
+    "gate_absent": "未注入授权闸门（按 fail-closed 未执行）",
+    "needs_confirmation": "下一步待用户确认",
+    "denied": "下一步未获自主执行授权",
+    "endpoint_unavailable": "端点未声明支持工具调用",
+    "llm_failed": "LLM 调用失败",
+    "unknown_tool": "模型请求的工具不在目录内",
+    "catalog_empty": "工具目录为空",
+}
+"""终止原因的展示标签（生成文案，过 §6）。
+
+覆盖性由 ``tests/l3/test_agent_report.py`` 对着循环侧的 ``TERMINATION_REASONS`` 钉死——
+**不在此 import 循环模块**：``l3.runtime`` 反向要用本模块（产出装描述件），互相 import 会成环，
+故镜像面放在测试里把关（同 crate 内「枚举副本 + 测试钉住」的既有做法）。
+"""
+
+AGENT_RUN_COLUMNS: tuple[dict[str, str], ...] = (
+    {"key": "index", "label": "步骤"},
+    {"key": "tool_name", "label": "工具"},
+    {"key": "skill_id", "label": "执行目标"},
+    {"key": "status", "label": "结果状态"},
+    {"key": "truncated", "label": "结果已截断"},
+    {"key": "log_ref", "label": "留痕指针"},
+)
+"""证据表的列（``table`` 渲染件按 ``[{key, label}]`` 取值——渲染面是形态的权威）。"""
+
+
+def describe_agent_run(
+    view: Any, *, agent_run_id: str | None = None, now: datetime | None = None,
+) -> ResultEnvelope:
+    """自主查证循环的产出 → ``table`` 描述（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+
+    **鸭子类型**（同 :func:`describe_divergence_map` 消费 L4 视图的先例）：只按属性取值，
+    不 import ``st_agent.l3.runtime``——产出装配反向消费本模块，互相 import 会成环。
+
+    四段分栏（[D-053](../../../../项目管理/决策日志.md) / [D-064](../../../../项目管理/决策日志.md)
+    的切分）：
+
+    - **客观面**（``data``）：任务原话、``agent_run_id``、各步的工具 / 执行目标 / 执行留痕 /
+      结果状态 / 是否截断 / 留痕指针、被拦下未执行的那一步、上界与调用次数。载荷与标识属数据，
+      整串复检会误伤，故标 ``data``。
+    - **说明面**（``generated``）：终止原因的**标签**与**说明**、闸门给出的原因、每步的中性说明、
+      模型在结束轮给出的文本、表头列名。这些是系统与模型的措辞，须被回环边界的校验门看到
+      （[01 §12](../../../../docs/技术架构-v2/01-平台共享契约.md) 的 ``generated`` 槽）。
+
+    终止原因不在标签表内即 ``validation_failed``——**描述件不臆造标签**（同本模块
+    「降级不静默」的取向）。
+    """
+    termination = getattr(view, "termination", None)
+    label = AGENT_TERMINATION_LABELS.get(termination) if isinstance(termination, str) else None
+    if label is None:
+        return ResultEnvelope.validation_failed(
+            f"未知的循环终止原因 {termination!r}（描述件不臆造标签，05 §10）"
+        )
+    steps = tuple(getattr(view, "steps", ()) or ())
+    pending = getattr(view, "pending", None)
+    return _envelope(
+        component_type="table",
+        title=AGENT_RUN_TITLE,
+        slots={
+            "task": getattr(view, "task", ""),
+            "agent_run_id": agent_run_id,
+            "termination": label,
+            "termination_reason": getattr(view, "reason", "") or "",
+            "at_bound": bool(getattr(view, "at_bound", False)),
+            "gate_reason": getattr(view, "gate_reason", "") or "",
+            "columns": [dict(column) for column in AGENT_RUN_COLUMNS],
+            "rows": [_agent_step_row(index, step) for index, step in enumerate(steps, 1)],
+            "step_notes": [
+                {"index": index, "note": step.envelope.reason or ""}
+                for index, step in enumerate(steps, 1)
+                if step.envelope.reason
+            ],
+            "pending": (
+                {"tool_name": pending.name, "arguments": dict(pending.arguments)}
+                if pending is not None else None
+            ),
+            "answer": getattr(view, "answer", "") or "",
+            "llm_calls": int(getattr(view, "llm_calls", 0)),
+            "max_steps": int(getattr(view, "max_steps", 0)),
+            "max_llm_calls": int(getattr(view, "max_llm_calls", 0)),
+        },
+        text_kinds={
+            "task": "data",
+            "agent_run_id": "data",
+            "termination": "generated",
+            "termination_reason": "generated",
+            "at_bound": "data",
+            "gate_reason": "generated",
+            "columns": "generated",
+            "rows": "data",
+            "step_notes": "generated",
+            "pending": "data",
+            "answer": "generated",
+            "llm_calls": "data",
+            "max_steps": "data",
+            "max_llm_calls": "data",
+        },
+        as_of=now,
+    )
+
+
+def _agent_step_row(index: int, step: Any) -> dict[str, Any]:
+    """一步 → 表行（客观字段；结果**照实**标状态，不把失败呈现为成功）。"""
+    return {
+        "index": index,
+        "tool_name": step.tool_name,
+        "skill_id": step.skill_id,
+        "status": step.envelope.status,
+        "truncated": bool(step.truncated),
+        "log_ref": step.log_ref,
     }
 
 

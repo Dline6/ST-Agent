@@ -8,9 +8,9 @@ arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P0
 milestone: M5
 depends_on: [T-AGT-004.2]
-status: todo
+status: done
 decisions: [D-090, D-091]
-verify:
+verify: 新用例 36 例（GWT-1..7 + 终止原因穷尽映射 + 标签表覆盖一致 + 中性字段扫描）· 范围 1003 passed（217.34s）· 全量 3740 passed / 0 failed / 14 deselected（964.37s；基线 3654 核账 +86 逐项归因无残差）· verify_docs --strict 检查 1–9 全过 0 断链 · 未触发联网面（自愿补跑 live 2 passed 作旁证）· 见执行日志 [T-AGT-004]
 ---
 
 # T-AGT-004.3 · 产出接入、留痕与失败语义
@@ -43,12 +43,16 @@ verify:
   - [`T-AGT-002`](T-AGT-002-端点能力启动探测.md) 写回的端点能力档（判「不支持」用）。
   - 契约口径：[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md) · [01 §1](../../docs/技术架构-v2/01-平台共享契约.md)（`agent_run_id`）· [01 §5](../../docs/技术架构-v2/01-平台共享契约.md) · [01 §6](../../docs/技术架构-v2/01-平台共享契约.md)。
 - **输出**：
-  - `src/st_agent/l3/runtime/**` 的**产出装配**（信封 + 描述件）、**留痕落盘**、**失败与降级分支**。
-  - 供 [`T-AGT-004`](T-AGT-004-循环运行时.md) 收口与 [`T-INT-006`](T-INT-006-M5集成关卡受控自主闭环.md) 端到端消费的**产出面**。
+  - 新增 [`src/st_agent/l3/runtime/report.py`](../../src/st_agent/l3/runtime/report.py)：`conclude_agent_run()`（铸标识 → 落留痕 → 装产出的**收口入口**）、`record_agent_run()` / `load_agent_run()`（留痕写面与**审计读面**）、`build_agent_output()`（终止原因 → 信封的**穷尽映射**）、`AgentRunRecord` / `AgentRunStepRef` / `AgentRunReport`、`new_agent_run_id()` / `agent_log_ref_of()`。
+  - 留痕落点：`execution_log` 分区 `agent-run/<agent_run_id>.json`（**不新开分区**；步数 / 终止原因 / 生效上界 / 每步客观引用齐备）。
+  - 新增描述件 [`describe_agent_run`](../../src/st_agent/l3/render/describe.py)（`table` 型，**既有渲染路径**；槽位与 `text_kinds` 按 D-053/D-064 分栏）——产出装配**只**经它，不另造第二条路径。
+  - 契约面补登：[`AgentRunId`](../../src/st_agent/contracts/identifiers.py)（01 §1 早已登记 `agent_run_id`，本批补齐代码侧 ID 类与 `ID_REGISTRY` 镜像，15 → 16 类）。
+  - 供 [`T-AGT-004`](T-AGT-004-循环运行时.md) 收口与 [`T-INT-006`](T-INT-006-M5集成关卡受控自主闭环.md) 端到端消费的**产出面**：`conclude_agent_run(store, loop_outcome) -> AgentRunReport`。
+  - 测试：`tests/l3/test_agent_report.py`（GWT-1..7 + 终止原因穷尽映射 + 标签表覆盖一致 + 中性字段扫描）。
 
 ## 可关闭的遗留
 
-- 无（开工 ④ 对齐时逐册读各遗留册未闭区复核）
+- 无（2026-10-07 开工逐册读未闭区复核，同 [`.1`](T-AGT-004.1-工具目录消费与循环工作上下文装配.md) 所记：全册 `T-AGT` / 循环 / 留痕**零命中**，无归属本任务的条目；本批**新登记** [L3 册 `A3`](../遗留问题/L3-遗留问题.md) 为**别面**欠账（端用户级上界可调，待人决），不属本任务范围）
 
 ## 假设与前提
 
@@ -60,7 +64,7 @@ verify:
   **验证方式**：GWT-3 以字段齐备钉住。
 - **A3 · 降级告知复用既有文案口径**——前提：[05 §4](../../docs/技术架构-v2/05-L3-对话主入口.md) 的 `LLM_DEGRADED_NOTICE` 已是「显式降级告知」的既有实现，本叶**沿用同口径**而不另撰。
   **若错的影响**：两套降级文案会让用户难以分辨「是同一个原因」。
-  **验证方式**：GWT-6 以「显式告知」钉住；文案是否复用同一条在 ④ 对齐时定。
+  **验证方式**：GWT-6 以「显式告知」钉住；文案是否复用同一条在 ④ 对齐时定 —— **已定**：沿用**同口径**（中性、显式、给出可操作去向）但**不复用同一条字面**——`LLM_DEGRADED_NOTICE` 讲的是「端点暂不可用、可改本地推理」，本条讲「端点可用但不声明工具调用」，原因不同，套用同句会让用户按错误的处置去重试；故新增 `AGENT_UNAVAILABLE_NOTICE`。
 
 ## 涉及契约
 

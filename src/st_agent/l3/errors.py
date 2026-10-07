@@ -9,10 +9,15 @@
 （草稿生成文案未过 [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md) 执行点 2，
 或草稿形状不合 [05 §5](../../../docs/技术架构-v2/05-L3-对话主入口.md) 的契约）；
 ``ConflictValidationError`` 收冲突裁决被拒（裁决卡的生成文案未过
-[01 §6](../../../docs/技术架构-v2/01-平台共享契约.md) 执行点 2，或方向判定端口异常）。
+[01 §6](../../../docs/技术架构-v2/01-平台共享契约.md) 执行点 2，或方向判定端口异常）；
+``AgentRuntimeValidationError`` 收自主查证循环的被拒入参（上界取值非法 / 工作上下文
+预算非法 / 工具条目或步骤形态坏）；``AgentRunNotFoundError`` 收留痕寻址失败
+（按 ``agent_run_id`` 取不到循环记录）。
 """
 
 __all__ = [
+    "AgentRunNotFoundError",
+    "AgentRuntimeValidationError",
     "CommandValidationError",
     "ConfigValidationError",
     "ConflictValidationError",
@@ -88,4 +93,18 @@ class ConflictValidationError(L3Error, ValueError):
     def __init__(self, message: str, *, findings: tuple[str, ...] = ()) -> None:
         super().__init__(message)
         self.findings = findings
+
+
+class AgentRuntimeValidationError(L3Error, ValueError):
+    """自主查证循环的入参被拒（[05 §10](../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+
+    循环侧的**构造期**校验：上界取值非法（非正 / 非整数）、工作上下文预算非法、
+    工具条目或步骤形态坏。运行期的失败**不走本异常**——它们一律走
+    [01 §5](../../../docs/技术架构-v2/01-平台共享契约.md) 的 ``ResultEnvelope``
+    （失败显式化，同 ``SkillRunner`` 的口径：不抛裸失败）。
+    """
+
+
+class AgentRunNotFoundError(L3Error, KeyError):
+    """按 ``agent_run_id`` 取不到循环留痕（寻址失败）。"""
 

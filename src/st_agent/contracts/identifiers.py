@@ -1,7 +1,7 @@
 """01-平台共享契约 §1 标识（ID）体系。
 
 契约要点（§1）：
-- 15 类 ID，全局唯一、生成后不可变、可本地持久化
+- 16 类 ID，全局唯一、生成后不可变、可本地持久化
 - ``stock_id`` 首个落地形态 = 本地市场数据库 ``security`` 主档主键
   （BaoStock ``sh.``/``sz.`` 格式，数据库设计 01-核心实体层）——由 L0 数据缓存
   按交易所代码映射产生，**不由本地随机生成**
@@ -11,7 +11,7 @@
 - ``trial_id`` 为一次工作流试跑的留存与对比单位（2026-09-26 由 ``T-L1-003.3``
   触发登记进 §1）：形态与其余本机生成的 ID 同构；试跑共用一条推理链，
   但其标识**独立于** ``trace_id``（两者是不同实体）
-- 其余 9 类由本机产生（``generate()``：``<prefix>_<uuid4 前 20 位>``），
+- 其余 10 类由本机产生（``generate()``：``<prefix>_<uuid4 前 20 位>``），
   无中心分配方，与本地优先原则一致
 - 其中 ``announcement_id`` / ``dataset_snapshot_id`` / ``signal_id`` / ``delivery_id``
   的形态是**确定性摘要**（``<prefix>_<sha256 前 20 位十六进制>``，业务键稳定 → ID 稳定）
@@ -47,6 +47,7 @@ __all__ = [
     "ID_ALIASES",
     "ID_KINDS",
     "ID_REGISTRY",
+    "AgentRunId",
     "AnnouncementId",
     "ChangeId",
     "DatasetSnapshotId",
@@ -87,7 +88,7 @@ def digest_id(prefix: str, *parts: Any) -> str:
 
 
 class PlatformId(BaseModel):
-    """14 类契约 ID 的公共基类（值对象）。
+    """16 类契约 ID 的公共基类（值对象）。
 
     - frozen：生成后不可变（§1）
     - ``id_kind``：契约 ID 名判别字段，防止跨层串用
@@ -136,7 +137,7 @@ _STOCK_PATTERN = re.compile(r"^(sh|sz|bj)\.\d{6}$")
 def _make_id_type(kind: str, prefix: str, *, exchange: bool = False,
                   pattern: re.Pattern[str] | None = None,
                   generated_by: str = "") -> type[PlatformId]:
-    """动态构造一类契约 ID 值对象（14 类结构同构，仅 kind/prefix/pattern 不同）。
+    """动态构造一类契约 ID 值对象（16 类结构同构，仅 kind/prefix/pattern 不同）。
 
     :param exchange: ``stock_id`` 特例（交易所代码形态，非本机生成）
     :param pattern: 显式形态（默认 ``<prefix>_<uuid4 前 20 位>``）；``flow_id``
@@ -218,6 +219,12 @@ DescriptionId = _make_id_type("description_id", "desc")
 """一份 UI 描述（§12 Generative UI）——本机生成、不外发（2026-09-29 由 ``T-UI-001.3``
 触发登记进 §1）；渲染面据其追溯，「钉」到工作区后的寻址单位。"""
 
+AgentRunId = _make_id_type("agent_run_id", "agr")
+"""一次自主查证循环的执行（05 §10）——循环的**留痕与审计单位**（步数 / 终止原因 /
+上界），一次派发一条、与本次派发**共用 ``trace_id``**；由 L3 循环本机生成。
+形态 ``agr_<20 位十六进制>`` 与其余本机产生的 ID 同构：循环执行**无业务键**可供
+确定性摘要（可对同一任务重跑任意多次），故取随机形态（同 ``trial_id`` 的口径）。"""
+
 # 契约 §1 表的机器可读副本：id → (指代对象, 产生方)。§1 增删类型时同步此表。
 ID_REGISTRY: dict[str, tuple[str, str]] = {
     "stock_id": ("证券标的", "L0 数据缓存"),
@@ -235,12 +242,13 @@ ID_REGISTRY: dict[str, tuple[str, str]] = {
     "flow_id": ("一条工作流定义（含版本语义）", "L1"),
     "trial_id": ("一次工作流试跑", "L1"),
     "description_id": ("一份 UI 描述", "L3"),
+    "agent_run_id": ("一次自主查证循环的执行", "L3"),
 }
 ID_KINDS: tuple[str, ...] = tuple(ID_REGISTRY)
 ID_ALIASES: dict[str, type[PlatformId]] = {
     t.id_kind: t  # type: ignore[attr-defined]
     for t in (StockId, AnnouncementId, DatasetSnapshotId, SkillId, SkillRunId,
               MemoryNodeId, TraceId, SignalId, DeliveryId, FeedbackId, ChangeId,
-              LensId, FlowId, TrialId, DescriptionId)
+              LensId, FlowId, TrialId, DescriptionId, AgentRunId)
 }
 """契约名 → ID 类型登记表（§1 全表，供上层按名取类型）。"""
