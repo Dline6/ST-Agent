@@ -7,7 +7,7 @@
 // 方向未判定时 `stance_label` 携带显式标注（05 §9 的落地口径：**不静默留空、不拿无关
 // 内容充数**）；两方内容是数据展示，本件原样呈现、不做任何复检或改写。
 
-import { appendUnknownSlots, el, readSlot } from './slots.js';
+import { appendUnknownSlots, el, readSlot } from '../../components/slots.js';
 
 export const KNOWN_SLOTS = [
   'sides', 'side_labels', 'question', 'actions', 'directions',

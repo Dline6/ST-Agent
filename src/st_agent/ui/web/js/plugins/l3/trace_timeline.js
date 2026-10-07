@@ -7,7 +7,7 @@
 // `steps` 在描述里整槽标为**生成文案**（01 §4 的 note 契约定为中性措辞），故本件不需要
 // 也不做任何分栏判断——分栏是描述件的职责。
 
-import { appendUnknownSlots, collapsible, definitionList, el, readSlot } from './slots.js';
+import { appendUnknownSlots, collapsible, definitionList, el, readSlot } from '../../components/slots.js';
 
 export const KNOWN_SLOTS = ['steps', 'conclusion_ref', 'closed'];
 

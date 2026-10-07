@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable
 from datetime import datetime
 from typing import Any
@@ -37,8 +38,16 @@ __all__ = [
     "REPORT_PREFIX",
     "TEMPLATE_CONFIG_ID",
     "TIME_CONFIG_ID",
+    "WEEK_KEY_RE",
     "WeeklyReportStore",
 ]
+
+WEEK_KEY_RE = re.compile(r"^(\d{4})-W(\d{2})$")
+"""周键形态（``<ISO 年>-W<ISO 周>``）——落盘键与窗口标识的**单一**出处。
+
+住本模块而非 :mod:`st_agent.l6.weekly`：落盘侧的列举读面（:meth:`WeeklyReportStore.weeks`）
+也要用它筛键，而 `weekly` 已依赖 `weekly_store`（反向 import 会成环）。
+"""
 
 CONFIG_PREFIX = "weekly-report."
 """本层条目的 ``config_id`` 前缀（[01 §7](../../../docs/技术架构-v2/01-平台共享契约.md) 点分语义）。"""
@@ -103,6 +112,21 @@ class WeeklyReportStore:
     def path_for(week: str) -> str:
         """报告的分区内相对路径（由周键确定性派生）。"""
         return f"{REPORT_PREFIX}{week}.json"
+
+    def weeks(self) -> tuple[str, ...]:
+        """已落盘的**合法**周键（升序）——表现层列历史报告 / 取最近一期的取材面。
+
+        形态不合的杂项文件**不冒充**一期报告（`reflection/weekly/` 下只该有周报，
+        但读面不把「叫得像」当成「是」）；单份内容损坏仍由 :meth:`get` 读取时显式抛。
+        """
+        out: list[str] = []
+        for name in self._store.list_files("reflection"):
+            if not (name.startswith(REPORT_PREFIX) and name.endswith(".json")):
+                continue
+            key = name[len(REPORT_PREFIX):-len(".json")]
+            if WEEK_KEY_RE.match(key):
+                out.append(key)
+        return tuple(sorted(out))
 
     # ───────────────────────── 条目（01 §7） ─────────────────────────
 

@@ -1,18 +1,62 @@
-// 骨架的启动路径：读令牌 → 取一条健康信封 → 按六态渲染。
+// 表现层页面壳：读令牌 → 建导航 → 按 `location.pathname` 渲染当前页。
 //
-// 本叶（T-UI-001.2）只证明「管道通、六态对、鉴权硬」；真实数据的接线留给需要它的叶
-// 与 M1 集成关卡。dev 面若被开启，服务端会另外注入 dev 面板脚本（发布构建里没有它）。
+// **令牌只在 fragment、路由只在 path**：令牌经 `#t=` 下发（`api.js` 从 `location.hash`
+// 读出、只在内存），故导航链接必须把当前 fragment 拼回 `href`，否则跳页即丢令牌。
+//
+// 页面本体归各叶：登记的每条页面项可带一个 `render(page, mount)`（在 `pages.js` 里静态
+// import 自己的模块）。**未填 `render` 的页面走可用性探针占位**——它只证明「路由通、
+// 端口在不在」，不冒充业务内容；`.1` 交付的四处入口在各自叶子落地前即处于此态。
 
 import { getJson, readToken } from './api.js';
+import { PAGES, pageFor } from './pages.js';
 import { renderEnvelope } from './render.js';
 
 const root = document.getElementById('root');
+const nav = document.getElementById('nav');
+
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
 
 function showFailure(message) {
-  const node = document.createElement('p');
-  node.className = 'state state--error';
-  node.textContent = message;
-  root.replaceChildren(node);
+  root.replaceChildren(el('p', 'state state--error', message));
+}
+
+/** 跳页链接：把当前 fragment（令牌）拼回 `href`——路由走路径、令牌走 fragment。 */
+function pageHref(path) {
+  return path + window.location.hash;
+}
+
+function buildNav(active) {
+  if (!nav) return;
+  const list = el('ul', 'nav__list');
+  for (const page of PAGES) {
+    const link = el('a', 'nav__link', page.title);
+    link.href = pageHref(page.path);
+    if (page.path === active.path) link.setAttribute('aria-current', 'page');
+    const item = el('li', 'nav__item');
+    item.append(link);
+    list.append(item);
+  }
+  nav.replaceChildren(list);
+}
+
+async function renderPage(page) {
+  if (typeof page.render === 'function') {
+    await page.render(page, root);
+    return;
+  }
+  // 未实现页面：只回一条**可用性探针**信封（`unavailable` 时点名装配归属）。
+  const probe = el('section', 'page-probe');
+  probe.append(el('h2', 'page-probe__title', page.title));
+  probe.append(el('p', 'meta', '该页面的内容尚未实现，下列为后端面可用性探针。'));
+  const mount = el('div', 'page-probe__body');
+  probe.append(mount);
+  root.replaceChildren(probe);
+  renderEnvelope(await getJson(page.statusPath), mount);
 }
 
 async function boot() {
@@ -20,8 +64,14 @@ async function boot() {
     showFailure('地址缺少启动令牌：请使用服务启动时打印的地址打开本界面。');
     return;
   }
+  const page = pageFor(window.location.pathname);
+  if (!page) {
+    showFailure(`无此页面：${window.location.pathname}`);
+    return;
+  }
+  buildNav(page);
   try {
-    renderEnvelope(await getJson('/api/health'), root);
+    await renderPage(page);
   } catch (error) {
     showFailure(`无法连接本机服务：${error.message}`);
   }

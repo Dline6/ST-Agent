@@ -589,7 +589,20 @@ def run_backend(
                     json_handshake=json_handshake)
         return _EXIT_STARTUP_FAILED
     try:
-        running = serve_ui(host=host, port=port, dev=dev, chat=runtime.chat)
+        running = serve_ui(
+            host=host,
+            port=port,
+            dev=dev,
+            chat=runtime.chat,
+            # L6 / ECO 面经**鸭子端口**注入（[`T-UI-004.1`] / [`.2`]）：表现层不 import `app`，
+            # 也不 import 各层类型，只经这两个口消费。注入的是组合根造好的**适配面**
+            # （`M4Runtime.reflection`），而非裸的 L6Stack——输入的归一与失败分类都留在
+            # 组合根，表现层只按 `ValueError` / 其他异常两类回 `validation_failed` / `failed`。
+            # 组合根未带该面（如 M1/M2 根）时传 `None` ⇒ 相关端点回 `unavailable` + 点名，
+            # 而不是启动失败。
+            reflection=getattr(runtime, "reflection", None),
+            eco=getattr(runtime, "ecosystem", None),
+        )
     except Exception as exc:                     # noqa: BLE001 —— 入口须给出机器可读失败行
         traceback.print_exc()
         _emit_error(stream, f"{type(exc).__name__}: {exc}", code="serve_failed",

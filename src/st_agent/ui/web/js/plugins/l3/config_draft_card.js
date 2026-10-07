@@ -10,7 +10,7 @@
 //
 // **只渲染、不落值**：配置生效归登记面端口（05 §5），本件不产生任何写入。
 
-import { appendUnknownSlots, el, readSlot } from './slots.js';
+import { appendUnknownSlots, el, readSlot } from '../../components/slots.js';
 
 export const KNOWN_SLOTS = [
   'target', 'mode', 'summary', 'values', 'defaults', 'panels', 'questions',

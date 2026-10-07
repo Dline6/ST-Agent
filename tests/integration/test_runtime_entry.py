@@ -557,7 +557,7 @@ def test_read_stdin_passphrase_only_strips_line_endings(monkeypatch: pytest.Monk
 
 
 def _runtime_stub() -> Any:
-    """只带 `chat` 的运行时替身（`run_backend` 只从运行时取这一个属性）。"""
+    """只带 `chat` 的运行时替身（协商 / 循环用例不触 `serve_ui`，故不必带 L6 / ECO 面）。"""
     return types.SimpleNamespace(chat=object())
 
 
