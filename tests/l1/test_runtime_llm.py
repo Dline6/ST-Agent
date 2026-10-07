@@ -139,10 +139,10 @@ class TestGwt2EndToEnd:
 
         assert [e.kind for e in events] == ["chunk", "chunk", "done"]
         assert "".join(e.text for e in events) == "你好，世界"
-        (call,) = post.calls
+        call = post.calls[-1]              # 装配期已先有一条能力探针（T-AGT-002）
         assert call["url"] == f"{BASE_URL}/chat/completions"
         assert call["headers"]["Authorization"] == f"Bearer {KEY}"
-        (audit,) = rt.gateway.query(kind="llm_call")
+        audit = rt.gateway.query(kind="llm_call")[-1]   # 同上，探针记录在前
         assert audit.status == "ok"
         assert audit.target_host == "api.example.com"
         assert audit.bytes_out == len(PROMPT.encode("utf-8"))
@@ -174,12 +174,13 @@ class TestGwt3SkillPathStaysSandboxed:
         session = rt.sandbox.session(descriptor, descriptor.permissions,
                                      trace_id="trace-llm-guard")
         guarded = session.guard_llm(rt.llm)
+        before = len(post.calls)           # 装配期已先有一条能力探针（T-AGT-002）
 
         events = list(guarded.invoke(LLM_ENDPOINT_ID, "hi", initiator="t", purpose="t"))
 
         assert [e.kind for e in events] == ["error"]
         assert events[0].error_envelope.status == "validation_failed"
-        assert post.calls == []            # 底层发送器未被触碰
+        assert len(post.calls) == before     # 沙箱拦截在网关之前，本次调用未新增出网
 
     def test_in_scope_endpoint_passes_the_guard(self, store: Store):
         post = Post("放行")
@@ -192,11 +193,12 @@ class TestGwt3SkillPathStaysSandboxed:
         session = rt.sandbox.session(descriptor, descriptor.permissions,
                                      trace_id="trace-llm-allow")
         guarded = session.guard_llm(rt.llm)
+        before = len(post.calls)           # 装配期已先有一条能力探针（T-AGT-002）
 
         events = list(guarded.invoke(LLM_ENDPOINT_ID, "hi", initiator="t", purpose="t"))
 
         assert events[-1].kind == "done"
-        assert len(post.calls) == 1
+        assert len(post.calls) == before + 1   # 只多出本次放行的调用
 
 
 # ───────────────────────── GWT-4 缺配置即 fail-closed ─────────────────────────

@@ -7,6 +7,9 @@
   ``tool_call`` 事件呈现（**增量不得当正文文本**）。``tools`` 非空即自动附
   ``needs_function_calling`` 需求——端点未声明支持时**显式拒绝**（缺省不得
   假定为真）
+- 能力探测（02 §4；``T-AGT-002``）：``probe_tool_support`` 发一次必然要求工具
+  调用的探针，以「**真回了调用**」为判据——**有意不经能力协商**（它正是确立该
+  能力位的手段，被它挡了就永远测不出）
 - 云端端点 Key 唯一经 ``CredentialVault.use()`` 取用（GWT-4），只在内存
   短暂持有，调用结束即释放；prompt/response 明文永不落盘、不进用量
 - 统一流式协议（GWT-3）：``chunk* → (tool_call*) → done`` 或单个 ``error``；
@@ -231,6 +234,66 @@ class LlmClient:
         finally:
             key = None  # 内存引用即时释放（GWT-4 零留存）
             del key
+
+    # ─────────────────── 能力探测（02 §4 能力诚实性；T-AGT-002） ───────────
+
+    def probe_tool_support(
+        self,
+        endpoint_id: str,
+        *,
+        tool: ToolSpec | Mapping[str, Any],
+        prompt: str,
+        initiator: str,
+        purpose: str,
+        timeout_ms: int | None = None,
+        cancel: threading.Event | None = None,
+    ) -> bool:
+        """发一次**必然要求工具调用**的探针，返回端点是否真回了工具调用。
+
+        **有意不经能力协商**——本方法正是确立 ``supports_function_calling`` 的
+        手段，若被它所确立的门挡住则永远测不出。其余面全走既有路径：凭据经
+        ``CredentialVault.use``、出网经同一 ``transport``（故自然留 §6 审计）、
+        用量记 ``LlmUsageRecord``。
+
+        判据取「**真回了工具调用**」而非「没报错」——部分 OpenAI 兼容端点对
+        未知字段 ``tools`` **静默忽略**，只看请求成功会得**假阳性**。
+
+        任一步不顺（无传输 / 凭据缺失 / 不可达 / 超时 / 提供方报错 / 端点静默
+        忽略 ``tools`` 只回文本）**一律返回 ``False``**——结果即「未知」，由
+        循环侧 fail-closed 消费，**不回落为 ``true``**（T-AGT-002 GWT-6）。
+        """
+        endpoint = self._registry.get(endpoint_id)
+        try:
+            specs = self._coerce_tools([tool])
+        except LlmValidationError:
+            return False
+        if not prompt or not initiator or not purpose:
+            return False
+        timeout = timeout_ms if timeout_ms is not None else endpoint.default_timeout_ms
+        if timeout <= 0:
+            return False
+        key: str | None = None
+        if endpoint.kind == "cloud":
+            assert endpoint.credential_id is not None
+            try:
+                key = self._vault.use(
+                    endpoint.credential_id, initiator=initiator, purpose=purpose
+                )
+            except KeyError:
+                return False
+        found = False
+        try:
+            for event in self._stream(
+                endpoint, prompt, key, timeout, cancel, specs,
+                initiator=initiator, purpose=purpose,
+                prompt_tokens=estimate_tokens(prompt),
+            ):
+                if event.kind == "tool_call":
+                    found = True
+        finally:
+            key = None
+            del key
+        return found
 
     # ───────────────────────── 用量查询（GWT-4） ─────────────────────────
 

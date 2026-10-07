@@ -133,8 +133,15 @@ def test_open_runtime_bootstraps_from_dotenv(tmp_path: Path) -> None:
     assert text.strip(), "回复为空"
     print(f"\n组合根端点回复：{text[:200]}")
 
-    (audit,) = rt.gateway.query(kind="llm_call")
+    audits = rt.gateway.query(kind="llm_call")
+    # 启动期能力探针（T-AGT-002）+ 本次调用各留一条；两条的发起方同为该端点
+    assert len(audits) >= 2, "启动探针与本次调用应各留一条 llm_call 审计"
+    audit = audits[-1]
     assert audit.status == "ok" and audit.initiator == "llm-endpoint:cloud-main"
+
+    # T-AGT-002：启动探测已在**真实端点**上落定工具调用能力（真回了调用才为 true）
+    assert rt.endpoints.get("cloud-main").capability.supports_function_calling is True, \
+        "真实端点未探到工具调用支持——检查端点是否支持原生 function calling"
 
     blob = "\n".join(
         p.read_bytes().decode("utf-8", errors="replace")

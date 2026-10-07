@@ -168,7 +168,9 @@ class TestGwt4SessionUnlock:
         Store.create(root, PASS)
         calls = self._counter(monkeypatch)
 
-        rt = open_runtime(root, PASS, market_query=_FAKE_MARKET)
+        # llm_env={}：本用例只测解锁，显式关闭引导装载——否则会随本机 `.env`
+        # 播种端点并触发启动期能力探针（T-AGT-002），使单测发真实出网
+        rt = open_runtime(root, PASS, market_query=_FAKE_MARKET, llm_env={})
 
         # 主密钥 + secrets 独立派生（02 §2.2），各一次
         assert len(calls) == 2
@@ -187,8 +189,8 @@ class TestGwt4SessionUnlock:
         Store.create(root, PASS)
         calls = self._counter(monkeypatch)
 
-        open_runtime(root, PASS, market_query=_FAKE_MARKET)
-        open_runtime(root, PASS, market_query=_FAKE_MARKET)
+        open_runtime(root, PASS, market_query=_FAKE_MARKET, llm_env={})
+        open_runtime(root, PASS, market_query=_FAKE_MARKET, llm_env={})
 
         assert len(calls) == 4
 
