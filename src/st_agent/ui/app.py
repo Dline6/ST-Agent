@@ -84,6 +84,16 @@ def _required(body: Mapping[str, Any], key: str) -> Any:
     return value
 
 
+def _studio_envelope(payload: dict[str, Any], label: str) -> Any:
+    """Studio 面的返回 → 信封：`available: false` ⇒ `unavailable` + 点名；否则 `ok`。"""
+    if not payload.get("available"):
+        return ResultEnvelope.unavailable(
+            payload.get("reason") or f"未接入{label}面（装配归组合根）",
+            last_updated_at=_now(),
+        )
+    return ResultEnvelope.ok(payload)
+
+
 def _compact(value: Any) -> Any:
     """表格单元格的取值：容器压成一行 JSON、其余原样（**不臆造摘要**）。"""
     if value is None or isinstance(value, (str, int, float, bool)):
@@ -331,6 +341,33 @@ class UiApp:
             ),
         )
 
+    def api_reflection_studio_handoff(self, body: dict[str, Any]) -> dict[str, Any]:
+        """主动提案的 Skill 草稿**交 Studio**（落画布）——[08 §4]「衔接 story-06」。
+
+        经组合根把 L6 的 `SkillDraft` 翻成 L1 的 `WorkflowDraft` 并转交 Studio 接收面；
+        表现层**不 import** 各层类型。子面未接线 → `unavailable` + 点名；输入类失败 →
+        `validation_failed`。
+        """
+        return self._call_face(
+            "reflection-studio-handoff", self.reflection, "L6 反思演进面",
+            lambda face: _studio_envelope(
+                face.studio_handoff(str(_required(body, "proposal_id"))), "Studio",
+            ),
+        )
+
+    def api_reflection_studio_decide(self, body: dict[str, Any]) -> dict[str, Any]:
+        """处置一条**已交 Studio** 的提案：接受（落 v1.0）/ 否决——两个动作都委托 L1。"""
+        return self._call_face(
+            "reflection-studio-decide", self.reflection, "L6 反思演进面",
+            lambda face: _studio_envelope(
+                face.studio_decide(
+                    proposal_id=str(_required(body, "proposal_id")),
+                    action=str(_required(body, "action")),
+                ),
+                "Studio",
+            ),
+        )
+
     def api_reflection_experiments(self) -> dict[str, Any]:
         """A/B 实验日志（`table`）——五字段 + 状态与决策；判定**保守**，不产 p 值（[08 §4]）。"""
         return self._call_face(
@@ -502,16 +539,16 @@ class UiApp:
                     "nodes": len(draft.get("nodes") or []),
                     "queued": not proposal.get("released_week"),
                 },
-                "actions": [],
-                "note": "该提案的落地路径是 Studio 的草稿接收面：本卡只呈现提案与草稿，"
-                        "创建流程在 Studio 发起",
+                "actions": ["studio"],
+                "note": "交 Studio 落画布后可接受 / 否决；画布微调待 Studio 页面（08 §4）",
             })
         return ResultEnvelope.ok(
             self._gated_description(
                 "proposal_card",
                 slots={
                     "proposals": items,
-                    "labels": {"accept": "接受", "reject": "否决", "defer": "延后"},
+                    "labels": {"accept": "接受", "reject": "否决", "defer": "延后",
+                               "studio": "交 Studio"},
                 },
                 text_kinds={"proposals": "data", "labels": "generated"},
                 title="建议与提案",

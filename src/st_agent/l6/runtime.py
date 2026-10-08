@@ -46,6 +46,7 @@ from st_agent.l6.registry_adapter import (
 )
 from st_agent.l6.reset import FactoryReset
 from st_agent.l6.runtime_authorization import RuntimeAuthorization
+from st_agent.l6.studio_adapter import StudioHandoff
 from st_agent.l6.training import TrainingProtocol
 from st_agent.l6.weekly import WeeklyReportBuilder
 
@@ -87,6 +88,10 @@ class L6Stack:
     所有演进动作的**唯一通道**；未接 01 §7 门面时其生效面被拒（不假装落值）。"""
     factory_reset: Any = None
     """出厂重置面（[08 §6](../../../docs/技术架构-v2/08-L6-反思演进.md)）。"""
+    studio: StudioHandoff | None = None
+    """主动提案落 **Studio 草稿接收面**（[08 §4](../../../docs/技术架构-v2/08-L6-反思演进.md)
+    「衔接 story-06」）；`DraftIntake` 由组合根注入（缺省 `None` ⇒ 交 Studio 时 fail-closed
+    并点名，**不假装已交**）。"""
     events: Any = None
     """事件面（缺省 ``None`` ⇒ **未订阅**，池子仅可经显式 :meth:`FeedbackPool.consume` 写入）。"""
     registry: Any = None
@@ -122,6 +127,7 @@ def build_l6(
     agent_authorization: RuntimeAuthorization | None = None,
     change_flow: EvolutionChangeFlow | None = None,
     factory_reset: FactoryReset | None = None,
+    intake: Any = None,
 ) -> L6Stack:
     """装配 L6 面（池子 + 周报 + 训练对话 + 主动提案 + A/B 实验 + 01 §7 族 + 事件订阅）。
 
@@ -154,6 +160,9 @@ def build_l6(
         **不复用** :paramref:`authorization` 的档位条目（两条独立条目，[D-090](../../项目管理/决策日志.md) ①）
     :param min_sample: A/B 实验的保守判定样本下限（缺省 5）
     :param now: 取时函数（测试注入固定时钟；缺省本机当前时刻）
+    :param intake: L1 的 Studio 草稿接收面 [`DraftIntake`](../l1/studio/draft.py)
+        （**经组合根装配后注入**，已持 `store` + `SkillRegistry`）；缺省 ``None`` ⇒
+        :class:`~st_agent.l6.studio_adapter.StudioHandoff` 交 Studio 时 **fail-closed** 并点名
     :param pool / reports / training / proposals / experiments / authorization /
         change_flow / factory_reset: 覆写口（**测试**注入确定性件；缺省自建）
     """
@@ -194,6 +203,7 @@ def build_l6(
         change_flow=resolved_flow, authorization=resolved_authorization,
         experiments=resolved_experiments, store=store, now=now,
     )
+    resolved_studio = StudioHandoff(intake=intake, proposals=resolved_proposals)
     stack = L6Stack(
         pool=resolved_pool, reports=resolved_reports, training=resolved_training,
         proposals=resolved_proposals, experiments=resolved_experiments,
@@ -201,6 +211,7 @@ def build_l6(
         agent_authorization=resolved_agent_authorization,
         change_flow=resolved_flow,
         factory_reset=resolved_reset,
+        studio=resolved_studio,
         events=events, registry=registry,
     )
     if registry is not None:

@@ -22,6 +22,8 @@
   提案形态非法 · 待批准项不存在 · 未接判据 / 未接门面即要求生效 · 变更落盘损坏。
 - :class:`FactoryResetError`——出厂重置（[08 §6](../../../docs/技术架构-v2/08-L6-反思演进.md)）：
   确认次数不足 · 重置留痕损坏 · 未接回放面。
+- :class:`StudioHandoffError`——主动提案落 Studio 草稿接收面（[08 §4](../../../docs/技术架构-v2/08-L6-反思演进.md)
+  的「衔接 story-06」）：提案不存在 · 未接接收面 · 该提案尚未交 Studio（无会话可处置）。
 
 **文案失败**（未过 [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md) 中性化校验）复用**各自面**的错误类型
 （周报文案 → :class:`WeeklyReportError`，训练对话文案 → :class:`TrainingError`，以此类推）——
@@ -38,6 +40,7 @@ __all__ = [
     "FeedbackPoolError",
     "L6Error",
     "ProposalError",
+    "StudioHandoffError",
     "TrainingError",
     "WeeklyReportError",
 ]
@@ -77,3 +80,7 @@ class ChangeFlowError(L6Error):
 
 class FactoryResetError(L6Error):
     """出厂重置：确认次数不足 / 重置留痕损坏 / 未接回放面。"""
+
+
+class StudioHandoffError(L6Error):
+    """主动提案落 Studio：提案不存在 / 未接草稿接收面 / 该提案尚未交 Studio（无会话可处置）。"""

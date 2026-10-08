@@ -61,6 +61,12 @@ from st_agent.l1.pack import OfficialPack, ResourceEntry, load_official_pack
 from st_agent.l1.runtime import L1Runtime, open_runtime
 from st_agent.l1.skills.ids import parse_skill_id
 from st_agent.l1.skills.pack import ensure_official_pack
+from st_agent.l1.studio import (
+    DraftAcceptError,
+    DraftIntake,
+    DraftSessionError,
+    DraftShapeError,
+)
 from st_agent.l2.memory import (
     ONBOARDING_KIND,
     ConfidenceModel,
@@ -137,6 +143,7 @@ from st_agent.l6 import (
     PatternObservation,
     PendingChange,
     SkillDraft,
+    StudioHandoffError,
     SuggestionDraft,
     TrainingDraft,
     build_l6,
@@ -1465,6 +1472,9 @@ class _ChangeNotifier:
 _DECISION_ACTIONS = ("accept", "reject", "defer")
 """提案处置的三动作（[08 §5]：接受 / 否决 / 延后——**排队而非丢弃**）。"""
 
+_STUDIO_ACTIONS = ("accept", "reject")
+"""已交 Studio 提案的两动作（[`T-L6-004.2`]）——**微调**需画布页，不在其列。"""
+
 _NO_FACTORY_RESET_REASON = "未接入出厂重置面，无法清空演进状态（装配归组合根）"
 """出厂重置子面缺席时的点名原因（同 [08 §5] 的「未接判据即 fail-closed」口径）。"""
 
@@ -1560,6 +1570,58 @@ class ReflectionFacade:
     def proposals(self) -> list[dict[str, Any]]:
         """已检出的主动提案（含 Skill 草稿）。"""
         return [item.model_dump(mode="json") for item in self._l6.proposals.all()]
+
+    # ── 主动提案落 Studio（[`T-L6-004.2`] / [08 §4]「衔接 story-06」） ──────
+    def studio_handoff(self, proposal_id: str) -> dict[str, Any]:
+        """把一条主动提案的 Skill 草稿交 **Studio 草稿接收面**（落画布）。
+
+        组合根在此把 L6 的 ``SkillDraft`` 翻译为 L1 的 ``WorkflowDraft`` 并转交
+        [`DraftIntake.receive`](../l1/studio/draft.py)——表现层**不 import** 任何层类型。
+
+        子面未接线（`L6Stack.studio is None`）→ ``{"available": False, "reason": …}``
+        （与「面在但无提案」分开）；输入类失败（提案不存在 / 草稿形状非法 / 未接接收面）
+        **就地转 ``ValueError``**，表现层据此回 `validation_failed`。
+        """
+        studio = self._l6.studio
+        if studio is None or not studio.available:
+            return {"available": False, "reason": "未接入 Studio 草稿接收面（08 §4）"}
+        if not isinstance(proposal_id, str) or not proposal_id:
+            raise ValueError("提案标识（proposal_id）必填——无法寻址的提案一律拒收")
+        try:
+            view = studio.handoff(proposal_id)
+        except StudioHandoffError as exc:
+            raise ValueError(str(exc)) from exc
+        except (DraftShapeError, DraftAcceptError) as exc:
+            raise ValueError(str(exc)) from exc
+        return {**view.model_dump(mode="json"), "available": True}
+
+    def studio_decide(self, *, proposal_id: str, action: str) -> dict[str, Any]:
+        """处置一条**已交 Studio** 的提案：接受（落 v1.0 创建 Skill）/ 否决。
+
+        两个动作都**委托** L1 `DraftIntake`（本面不复制其判定、不另造落盘）。**微调**
+        返回画布编辑句柄、需 Studio 画布页（本仓尚无），故此处不接受该动作。
+        """
+        studio = self._l6.studio
+        if studio is None or not studio.available:
+            return {"available": False, "reason": "未接入 Studio 草稿接收面（08 §4）"}
+        if action not in _STUDIO_ACTIONS:
+            raise ValueError(
+                f"处置动作须为 {'/'.join(_STUDIO_ACTIONS)}（画布微调需 Studio 画布页，08 §4）"
+            )
+        if not isinstance(proposal_id, str) or not proposal_id:
+            raise ValueError("提案标识（proposal_id）必填——无法寻址的提案一律拒收")
+        try:
+            if action == "accept":
+                accepted = studio.accept(proposal_id)
+                return {"available": True, "action": action, "applied": True,
+                        "flow_id": accepted.flow_id, "change_id": accepted.change_id}
+            rejected = studio.reject(proposal_id)
+            return {"available": True, "action": action, "rejected": rejected.rejected,
+                    "reason": rejected.reason}
+        except StudioHandoffError as exc:
+            raise ValueError(str(exc)) from exc
+        except (DraftSessionError, DraftAcceptError) as exc:
+            raise ValueError(str(exc)) from exc
 
     def pending(self) -> list[dict[str, Any]]:
         """待批准 / 已延后的提案（**留痕即事实**，处置过的也在）。"""
@@ -2027,13 +2089,19 @@ def _build_l6(
     周报的投出面 / 四段取材面接 L5 与 L2；训练理解端口与观察面由**组合根**注入（缺省由
     :func:`build_m4_runtime` 装真 LLM 适配器）；A-B 授权面与变更流经 01 §7 门面缺省自建
     （`build_l6` 口径）；`train` 去向与回访面在 :func:`_build_l3` 注入 L3。
+
+    **Studio 草稿接收面**（[`T-L6-004.2`] / [08 §4](../../docs/技术架构-v2/08-L6-反思演进.md)
+    「衔接 story-06」）：组合根在此**首装配** [`DraftIntake`](../l1/studio/draft.py)
+    （它此前从无装配点）——经 `build_l6(intake=…)` 建成 :class:`~st_agent.l6.studio_adapter.StudioHandoff`
+    挂 `L6Stack.studio`，供主动提案与（L3 对话通道的）工作流草稿两处共用。
     """
+    intake = DraftIntake(runtime.store, runtime.skills)
     return build_l6(
         runtime.store, registry=runtime.config_registry, events=events,
         dispatcher=l5.dispatcher, orchestrator=l5.delivery,
         frequency=l5.frequency, fatigue=l5.fatigue, reader=l2.reader,
         understander=training_understander, memory_writer=l2.writer,
-        observer=observer, now=now,
+        observer=observer, now=now, intake=intake,
     )
 
 
