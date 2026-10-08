@@ -58,11 +58,20 @@ class EvolutionStore:
 
     :param store: ``Store`` 句柄
     :param now: 取时函数（测试注入固定时钟；缺省本机当前时刻）
+    :param change_prefix: 变更留痕的目录前缀（**缺省** :data:`CHANGE_PREFIX`＝演进族的
+        `evolution-change/`）。运行期授权档位（[`runtime_authorization`](runtime_authorization.py)）
+        借用同一读写面而落**自己的**目录——[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md)
+        明写变更流只管演进动作，故运行期档位不该混进 [08 §6](../../../docs/技术架构-v2/08-L6-反思演进.md)
+        出厂重置的「授权档复位」回放面。
     """
 
-    def __init__(self, store: Any, *, now: Callable[[], datetime] | None = None) -> None:
+    def __init__(
+        self, store: Any, *, now: Callable[[], datetime] | None = None,
+        change_prefix: str = CHANGE_PREFIX,
+    ) -> None:
         self._store = store
         self._now = _system_now if now is None else now
+        self._change_prefix = change_prefix
 
     # ───────────────────────── 条目（01 §7） ─────────────────────────
 
@@ -88,7 +97,7 @@ class EvolutionStore:
         """全部变更留痕（按 ``change_id`` 升序）。"""
         out: list[ChangeRecord] = []
         for name in self._store.list_files(CHANGE_PARTITION):
-            if not (name.startswith(CHANGE_PREFIX) and name.endswith(".json")):
+            if not (name.startswith(self._change_prefix) and name.endswith(".json")):
                 continue
             raw = self._store.get(CHANGE_PARTITION, name)
             try:
@@ -116,7 +125,7 @@ class EvolutionStore:
             trace_ref=trace_ref,
         )
         self._store.put(
-            CHANGE_PARTITION, f"{CHANGE_PREFIX}{change.change_id}.json",
+            CHANGE_PARTITION, f"{self._change_prefix}{change.change_id}.json",
             change.model_dump_json().encode("utf-8"),
         )
         return change

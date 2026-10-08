@@ -39,11 +39,13 @@ from st_agent.l6.experiment import DEFAULT_MIN_SAMPLE, ExperimentConsole
 from st_agent.l6.pool import FEEDBACK_EVENT, FeedbackPool
 from st_agent.l6.proposal import ProposalEngine
 from st_agent.l6.registry_adapter import (
+    agent_family,
     evolution_family,
     proposal_family,
     weekly_report_family,
 )
 from st_agent.l6.reset import FactoryReset
+from st_agent.l6.runtime_authorization import RuntimeAuthorization
 from st_agent.l6.training import TrainingProtocol
 from st_agent.l6.weekly import WeeklyReportBuilder
 
@@ -74,6 +76,12 @@ class L6Stack:
     authorization: EvolutionAuthorization | None = None
     """演进授权档位与风险分级清单面（[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md)）；
     :func:`build_l6` 恒自建一面（除非以覆写口另行注入替身）。"""
+    agent_authorization: RuntimeAuthorization | None = None
+    """**运行期**授权档位与判据面（[08 §5 共享口径](../../../docs/技术架构-v2/08-L6-反思演进.md) /
+    [`T-AGT-005.1`](../../项目管理/tasks/T-AGT-005.1-运行期授权档位与共享清单.md)）；档位是独立条目
+    `agent.authorization`，清单面取自 :paramref:`authorization`（**同一份** `evolution.risk-grading`）。
+    供跨层组合根把它接成循环的授权端口（[`T-AGT-005.2`](../../项目管理/tasks/T-AGT-005.2-逐步闸门与终止交还.md)
+    的 `ActionGate`；接线归里程碑集成关卡 [`T-INT-006`](../../项目管理/tasks/T-INT-006-M5集成关卡受控自主闭环.md)）。"""
     change_flow: Any = None
     """变更流面（[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md) / [§6](../../../docs/技术架构-v2/08-L6-反思演进.md)）——
     所有演进动作的**唯一通道**；未接 01 §7 门面时其生效面被拒（不假装落值）。"""
@@ -111,6 +119,7 @@ def build_l6(
     proposals: ProposalEngine | None = None,
     experiments: ExperimentConsole | None = None,
     authorization: EvolutionAuthorization | None = None,
+    agent_authorization: RuntimeAuthorization | None = None,
     change_flow: EvolutionChangeFlow | None = None,
     factory_reset: FactoryReset | None = None,
 ) -> L6Stack:
@@ -140,6 +149,9 @@ def build_l6(
         缺省 ``None`` ⇒ **以本层的演进授权档位面充当**（[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md) 的档位本体，
         即 :paramref:`authorization` 那一面）——档位缺省 `collaborative`，故缺省装配下实验仍**不自动启用**
     :param authorization: 演进授权档位与风险分级清单面的覆写口（缺省自建；见 [08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md)）
+    :param agent_authorization: **运行期**授权档位与判据面的覆写口（缺省自建，**清单面取自**
+        :paramref:`authorization`——两档共享同一张 `evolution.risk-grading`）；
+        **不复用** :paramref:`authorization` 的档位条目（两条独立条目，[D-090](../../项目管理/决策日志.md) ①）
     :param min_sample: A/B 实验的保守判定样本下限（缺省 5）
     :param now: 取时函数（测试注入固定时钟；缺省本机当前时刻）
     :param pool / reports / training / proposals / experiments / authorization /
@@ -163,6 +175,12 @@ def build_l6(
         authorization if authorization is not None
         else EvolutionAuthorization(store=store, registry=registry, now=now)
     )
+    resolved_agent_authorization = (
+        agent_authorization if agent_authorization is not None
+        else RuntimeAuthorization(
+            store=store, registry=registry, grading=resolved_authorization, now=now,
+        )
+    )
     resolved_experiments = experiments if experiments is not None else ExperimentConsole(
         store=store,
         authorizer=authorizer if authorizer is not None else resolved_authorization,
@@ -179,7 +197,9 @@ def build_l6(
     stack = L6Stack(
         pool=resolved_pool, reports=resolved_reports, training=resolved_training,
         proposals=resolved_proposals, experiments=resolved_experiments,
-        authorization=resolved_authorization, change_flow=resolved_flow,
+        authorization=resolved_authorization,
+        agent_authorization=resolved_agent_authorization,
+        change_flow=resolved_flow,
         factory_reset=resolved_reset,
         events=events, registry=registry,
     )
@@ -187,6 +207,7 @@ def build_l6(
         registry.register_family(weekly_report_family(resolved_reports))
         registry.register_family(proposal_family(resolved_proposals))
         registry.register_family(evolution_family(resolved_authorization))
+        registry.register_family(agent_family(resolved_agent_authorization))
     if events is None:                           # 只有真接了总线才订阅（缺省不假装已接线）
         return stack
     subscription = events.subscribe(

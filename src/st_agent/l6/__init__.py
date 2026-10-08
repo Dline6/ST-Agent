@@ -11,6 +11,10 @@
 [08 §5–§7](../../../docs/技术架构-v2/08-L6-反思演进.md)：**演进授权档位与风险分级清单**
 （三档 · 切换留痕 · 实验授权面的实体）、**变更流与单项回滚**（提案 → 审批门 → 生效 → 告知 ·
 变更历史 · 一键回滚）与**出厂重置**（三次确认 · 演进状态清空 · Memory 保留）。
+M5 批（[T-AGT-005.1](../../../项目管理/tasks/T-AGT-005.1-运行期授权档位与共享清单.md)）在
+[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md) 的共享口径下补**运行期授权档位**
+（`agent.authorization`，独立条目）与判据面——**清单仍只此一份**（`evolution.risk-grading`），
+运行期侧只是消费方。
 
 三个面各自独立可用，由 [`runtime.build_l6`](runtime.py) 接成一层；跨层组合根归关卡
 [T-INT-005](../../../项目管理/tasks/T-INT-005-M4集成关卡反思演进与生态闭环.md)。
@@ -114,9 +118,11 @@ from st_agent.l6.proposal_store import (
 from st_agent.l6.registry_adapter import (
     GRADING_WRITE_OWNER,
     TEMPLATE_WRITE_OWNER,
+    AgentFamily,
     EvolutionFamily,
     ProposalFamily,
     WeeklyReportFamily,
+    agent_family,
     evolution_family,
     proposal_family,
     weekly_report_family,
@@ -128,6 +134,19 @@ from st_agent.l6.reset import (
     ResetOutcome,
 )
 from st_agent.l6.runtime import L6Stack, build_l6
+from st_agent.l6.runtime_authorization import (
+    ACTION_VERDICTS,
+    AGENT_CHANGE_PREFIX,
+    AGENT_CONFIG_PREFIX,
+    AGENT_TIER_CONFIG_ID,
+    MEMORY_WRITE_ACTION,
+    NET_EGRESS_ACTION,
+    SKILL_ACTION_PREFIX,
+    ActionDecision,
+    ActionVerdict,
+    RuntimeAuthorization,
+    skill_action_id,
+)
 from st_agent.l6.training import (
     CALLBACK_NOTICE,
     MEMORY_ABSENT_NOTE,
@@ -177,6 +196,10 @@ from st_agent.l6.weekly_store import (
 )
 
 __all__ = [
+    "ACTION_VERDICTS",
+    "AGENT_CHANGE_PREFIX",
+    "AGENT_CONFIG_PREFIX",
+    "AGENT_TIER_CONFIG_ID",
     "AUTHORIZATION_CHANGE_PREFIX",
     "AUTHORIZATION_CONFIG_PREFIX",
     "AUTHORIZER_ABSENT_REASON",
@@ -207,7 +230,9 @@ __all__ = [
     "L6Stack",
     "LOW_RISK_SCOPES",
     "MEMORY_ABSENT_NOTE",
+    "MEMORY_WRITE_ACTION",
     "MIN_FEEDBACK_CONFIG_ID",
+    "NET_EGRESS_ACTION",
     "NO_ADVISOR_NOTE",
     "NO_AUTHORIZATION_REASON",
     "NO_REGISTRY_REASON",
@@ -226,6 +251,7 @@ __all__ = [
     "RESET_PREFIX",
     "RISK_CLASSES",
     "SECTION_LABELS",
+    "SKILL_ACTION_PREFIX",
     "SOURCE",
     "STOP_REASON",
     "TEMPLATE_CONFIG_ID",
@@ -238,6 +264,9 @@ __all__ = [
     "TRAINING_PRIVACY",
     "UNDERSTANDER_ABSENT_REASON",
     "WEEK_SECTIONS",
+    "ActionDecision",
+    "ActionVerdict",
+    "AgentFamily",
     "AuthorizationError",
     "CallbackNote",
     "ChangeFlowError",
@@ -282,6 +311,7 @@ __all__ = [
     "ResetOutcome",
     "RiskClass",
     "RuleNote",
+    "RuntimeAuthorization",
     "SkillDraft",
     "SkillProposal",
     "SuggestionDraft",
@@ -298,11 +328,13 @@ __all__ = [
     "WeeklyReportError",
     "WeeklyReportFamily",
     "WeeklyReportStore",
+    "agent_family",
     "build_l6",
     "due_on",
     "evolution_family",
     "judge",
     "proposal_family",
+    "skill_action_id",
     "week_key",
     "week_window",
     "weekly_report_family",

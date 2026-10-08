@@ -28,6 +28,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime
 from typing import Any
 
@@ -206,7 +207,7 @@ def build_agent_output(
     | 终止原因 | 产出 |
     | --- | --- |
     | ``finished`` | ``ok``（证据包；无步亦可——模型直接作答是合法结果） |
-    | ``step_limit`` / ``llm_call_limit`` / ``needs_confirmation`` / ``denied`` | 有步 → ``ok`` + 终止标注；无步 → ``empty`` + 原因 |
+    | ``step_limit`` / ``llm_call_limit`` / ``needs_confirmation`` / ``denied`` | 有步 → ``ok`` + 终止标注；无步 → ``empty`` + 原因（后两者无步时按 :func:`_handback_reason` **显式交还**） |
     | ``unknown_tool`` / ``gate_absent`` | 有步 → ``ok``；无步 → ``failed`` + 留痕指针 |
     | ``endpoint_unavailable`` | ``unavailable`` + 中性降级告知（fail-closed，GWT-6） |
     | ``llm_failed`` | 端点侧的信封**原样透出**（不重包、不改 status、不吞 reason） |
@@ -272,7 +273,34 @@ def _without_steps(
             f"（记录时刻 {moment.isoformat()}，该时刻不代表数据截止时间）",
             last_updated_at=moment,
         )
-    if termination in ("catalog_empty", "needs_confirmation", "denied",
-                       "step_limit", "llm_call_limit"):
+    if termination in ("needs_confirmation", "denied"):
+        # 终止交还（T-AGT-005.2 / 05 §10）：状态仍是 empty（**非 ok**，不把半程结果
+        # 呈现为已完成），但说明须**显式**——待确认的那一步、为什么没执行、已收集多少证据
+        return ResultEnvelope.empty(_handback_reason(outcome, reason))
+    if termination in ("catalog_empty", "step_limit", "llm_call_limit"):
         return ResultEnvelope.empty(reason)
     return ResultEnvelope.failed(reason, log_ref=log_ref)
+
+
+def _handback_reason(outcome: LoopOutcome, reason: str) -> str:
+    """终止交还的显式说明（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)「交还必须显式」）。
+
+    四段：**下一步需确认**什么（工具 + 依据的参数）· 循环给出的中性原因 · 闸门给出的成因（有则给）·
+    本次**已收集证据**多少步（一步未执行时如实记 0，**不把空集合说得像有结果**）。
+    """
+    pieces: list[str] = ["下一步需确认"]
+    pending = outcome.pending
+    if pending is not None:
+        pieces[0] = f"下一步需确认：调用 {pending.name}"
+        pieces.append(f"依据 {_args_text(pending.arguments)}")
+    if reason:
+        pieces.append(f"未执行：{reason}")
+    if outcome.gate_reason:
+        pieces.append(f"闸门成因：{outcome.gate_reason}")
+    pieces.append(f"本次已收集证据 {len(outcome.steps)} 步（其中已执行的步均已照实留痕）")
+    return "；".join(pieces)
+
+
+def _args_text(arguments: Any) -> str:
+    """调用参数的确定性可读形态（排序键 + 不转义非 ASCII，同工作上下文的口径）。"""
+    return json.dumps(dict(arguments or {}), ensure_ascii=False, sort_keys=True, default=repr)
