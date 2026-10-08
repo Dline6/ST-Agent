@@ -1,10 +1,10 @@
 """任务派发总线（[05 §4](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
 
 意图确认后派发执行：**所有派发产生 `trace_id`**（[01 §4](../../../../docs/技术架构-v2/01-平台共享契约.md)），
-按 [§3.1](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的六类去向路由，结果以
+按 [§3.1](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的七类去向路由，结果以
 [01 §5](../../../../docs/技术架构-v2/01-平台共享契约.md) 的 ``ResultEnvelope`` 语义渲染。
 
-**去向与接入态**（假设 A1）：六类去向逐一登记接入态。**尚未接入的去向不得伪造
+**去向与接入态**（假设 A1）：七类去向逐一登记接入态。**尚未接入的去向不得伪造
 执行、也不得静默丢弃**——按 ``unavailable`` 呈现且 `reason` **点名归属任务**
 （同 [`card.py`](../home/card.py)「生产方未接入即 `unavailable` + 点名」的先例）。
 本批接 ``query``（经注入的 L1 ``SkillRunner``）、``explain``（把调用方给的链
@@ -22,6 +22,12 @@
 经注入的**训练对话面**触发 [08-L6 §3](../../../../docs/技术架构-v2/08-L6-反思演进.md) 协议，
 形态与 ``analyze`` **同一条口径**（鸭子面透出、本层不 import L6），见
 :attr:`DispatchOutcome.training`。
+``investigate`` 由 [`T-AGT-006`](../../../项目管理/tasks/T-AGT-006-第七类意图investigate与派发去向接线.md)
+接入——经注入的**循环端口**触发 [05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)
+的自主查证循环（循环本体住 L3 自身，但其**装配**归 [`T-INT-006`](../../../项目管理/tasks/T-INT-006-M5集成关卡受控自主闭环.md)
+的 M5 集成关卡），形态仍与 ``analyze`` 同一条口径（鸭子面透出，见
+:attr:`DispatchOutcome.investigation`）；**未注入端口即 fail-closed**，`reason`
+点名装配归属方 `T-INT-006`。
 
 **`trace_id` 从哪来**（假设 A2）：[01 §1](../../../../docs/技术架构-v2/01-平台共享契约.md)
 登记其产生方为「L1 调度器」，故 ``query`` 去向的链**由 L1 产**、本层经
@@ -61,6 +67,7 @@ __all__ = [
     "ANALYZE_ABSENT_REASON",
     "DISPATCH_INITIATOR",
     "DISPATCH_PURPOSE",
+    "INVESTIGATE_ABSENT_REASON",
     "LLM_DEGRADED_NOTICE",
     "ROUTE_BY_INTENT",
     "ROUTE_SPECS",
@@ -78,6 +85,17 @@ DISPATCH_PURPOSE = "对话意图派发"
 ANALYZE_ABSENT_REASON = "未注入多视角编排面，无法派发 analyze 去向（05 §4）"
 
 TRAIN_ABSENT_REASON = "未注入训练对话面，无法派发 train 去向（05 §4 / 08 §3）"
+
+INVESTIGATE_ABSENT_REASON = (
+    "未注入自主查证循环端口，无法派发 investigate 去向"
+    "（05 §4 / §10；循环端口的装配归属 T-INT-006，M5 集成关卡）"
+)
+"""``investigate`` 去向的缺省 fail-closed 原因。
+
+与 :data:`ANALYZE_ABSENT_REASON` / :data:`TRAIN_ABSENT_REASON` **同口径**（未注入即
+`unavailable`、不伪造执行），差别在**点名装配归属方**——该去向**已接入**（`wired=True`，
+`owner=None` 同其余六类），缺的只是组合根里的**循环装配**（[05 §4](../../../../docs/技术架构-v2/05-L3-对话主入口.md)：
+「循环的装配归 M5 集成关卡」），故把归属写进文案而非 `owner` 字段。"""
 
 LLM_DEGRADED_NOTICE = (
     "云端 LLM 端点暂不可用；可改用本地推理模式（能力受限），或稍后重试。"
@@ -132,12 +150,16 @@ ROUTE_SPECS: tuple[RouteSpec, ...] = (
         intent="explain", wired=True,
         note="把调用方给的推理链作为载荷返回；展开渲染归 T-L3-004",
     ),
+    RouteSpec(
+        intent="investigate", wired=True,
+        note="经注入的循环端口触发 05 §10 自主查证循环（载荷按鸭子面透出）；循环端口的装配归 T-INT-006",
+    ),
 )
-"""六类去向的登记（[05 §3.1](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 分类表逐行对应、同序）。"""
+"""七类去向的登记（[05 §3.1](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 分类表逐行对应、同序）。"""
 
 ROUTE_BY_INTENT: dict[str, RouteSpec] = {spec.intent: spec for spec in ROUTE_SPECS}
 assert set(ROUTE_BY_INTENT) == set(INTENT_KINDS), (
-    "路由表必须与 05 §3.1 的六类意图逐项对应（缺项即契约漂移）"
+    "路由表必须与 05 §3.1 的七类意图逐项对应（缺项即契约漂移）"
 )
 
 
@@ -226,6 +248,13 @@ class DispatchOutcome(BaseModel):
     `l3 < l6`）：只要求含 `envelope`（本层已核为 `ResultEnvelope`）；会话 / 复述 / 提案候选
     等 L6 产物由**渲染与后续轮次按属性取值**——用户对复述的确认是**下一轮**的事，其落账
     由 L6 的 `record` 承担，总线只负责把这次理解递出去。"""
+    investigation: Any = None
+    """``investigate`` 去向的**循环产出载荷**（[05 §3.1](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的
+    「自主查证循环 → 证据包渲染」）；其余去向为 `None`。
+
+    **鸭子类型**（循环本体虽住 L3 自身，端口仍只认鸭子面，同 `analyze` / `train` 的取向）：只
+    要求含 ``envelope``（本层已核为 `ResultEnvelope`）；证据包 / 留痕指针等由**渲染与后续轮次
+    按属性取值**。循环端口的**装配**归 [`T-INT-006`](../../../项目管理/tasks/T-INT-006-M5集成关卡受控自主闭环.md)。"""
 
 
 def _now() -> datetime:
@@ -269,17 +298,23 @@ class DispatchBus:
         ``start(confirmation, *, values=None, now=None) -> 含 envelope 的载荷``，
         如 L6 的 ``TrainingProtocol``——组合根注入，本层不 import L6）；
         缺省 ``None`` → ``train`` 去向 fail-closed（``unavailable`` + 点名），**不臆测**
+    :param investigations: 注入的循环端口（鸭子类型
+        ``investigate(confirmation, *, values=None, now=None) -> 含 envelope 的载荷``，
+        如包 [`run_agent_loop`](../runtime/loop.py) + [`conclude_agent_run`](../runtime/report.py)
+        的装配件——**组合根注入**，其装配归 [`T-INT-006`](../../../项目管理/tasks/T-INT-006-M5集成关卡受控自主闭环.md)）；
+        缺省 ``None`` → ``investigate`` 去向 fail-closed（``unavailable`` + 点名），**不臆测**
     """
 
     def __init__(
         self, *, runner: Any = None, configs: Any = None, adjudications: Any = None,
-        deliberations: Any = None, trainings: Any = None,
+        deliberations: Any = None, trainings: Any = None, investigations: Any = None,
     ) -> None:
         self._runner = runner
         self._configs = configs
         self._adjudications = adjudications
         self._deliberations = deliberations
         self._trainings = trainings
+        self._investigations = investigations
 
     def dispatch(
         self,
@@ -323,6 +358,8 @@ class DispatchBus:
             return self._dispatch_analyze(confirmation, spec, values, moment)
         if confirmation.intent == "train":
             return self._dispatch_train(confirmation, spec, values, moment)
+        if confirmation.intent == "investigate":
+            return self._dispatch_investigate(confirmation, spec, values, moment)
         return self._pending(spec, moment)
 
     # ───────────────────────── 去向实现 ─────────────────────────
@@ -562,6 +599,48 @@ class DispatchBus:
             envelope=envelope, trace_id=chain.trace_id.value,
             intent=confirmation.intent, route=confirmation.intent,
             wired=spec.wired, training=payload, trace=chain,
+        )
+
+    def _dispatch_investigate(
+        self,
+        confirmation: IntentConfirmation,
+        spec: RouteSpec,
+        values: Mapping[str, Any] | None,
+        moment: datetime,
+    ) -> DispatchOutcome:
+        """``investigate`` 去向：经注入的循环端口触发 [05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 自主查证循环（§3.1）。
+
+        未注入循环端口 → ``unavailable`` + 原因（同 ``analyze`` 去向「未注入多视角编排面」
+        的写法，但**点名装配归属方** `T-INT-006`——该去向已接入，缺的只是组合根里的循环装配），
+        **不伪造**；端口返回的载荷按**鸭子面**消费——只核其 ``envelope`` 为 ``ResultEnvelope``
+        （形状不合即 ``dependency_failed``），证据包等其余字段原样承载给渲染与后续轮次。
+        端口的失败信封（``unavailable`` / ``failed`` / ``empty`` 等）**原样透出**，
+        不重包、不改 status、不吞 reason。
+
+        链为**空链**（同 ``configure`` / ``memory_op`` / ``train`` 去向）——循环的动作步由
+        L1 ``SkillRunner`` 自然追加，本层不伪造派发步骤；``explain`` 去向据留痕的 ``trace_id``
+        找回那条只含动作步的链（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+        """
+        chain = Trace(trace_id=TraceId.generate())
+        if self._investigations is None:
+            return self._outcome(
+                ResultEnvelope.unavailable(INVESTIGATE_ABSENT_REASON, last_updated_at=moment),
+                chain, spec,
+            )
+        payload = self._investigations.investigate(confirmation, values=values, now=moment)
+        envelope = getattr(payload, "envelope", None)
+        if not isinstance(envelope, ResultEnvelope):
+            return self._outcome(
+                ResultEnvelope.dependency_failed(
+                    "循环端口返回非法结构（须含 envelope: ResultEnvelope）："
+                    f"{type(payload).__name__}"
+                ),
+                chain, spec,
+            )
+        return DispatchOutcome(
+            envelope=envelope, trace_id=chain.trace_id.value,
+            intent=confirmation.intent, route=confirmation.intent,
+            wired=spec.wired, investigation=payload, trace=chain,
         )
 
     def _pending(self, spec: RouteSpec, moment: datetime) -> DispatchOutcome:

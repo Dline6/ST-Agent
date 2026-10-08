@@ -21,6 +21,7 @@ from st_agent.l3.commands import INTENT_KINDS, CommandRegistry
 from st_agent.l3.errors import IntentValidationError
 from st_agent.l3.intent import (
     CLARIFICATION_BUDGET,
+    CONFIRMATION_HEADER,
     DIRECTION_LIMIT,
     INTENT_PARAM_SPECS,
     INTENT_TARGETS,
@@ -415,6 +416,48 @@ class TestIntentLevelParams:
         """未声明的意图（如无 target 的 `query`）行为**逐字节不变**：不凭空产问项。"""
         protocol = self._protocol(checked_draft(intent="query", target=None), skills)
         draft = protocol.understand("看看").data
+        assert draft.open_questions == ()
+        round_ = protocol.clarify(draft)
+        assert round_.questions == () and round_.envelope.status == "empty"
+
+
+# ─────────── T-AGT-006：第七类意图 investigate 的确认卡（05 §3.2） ───────────
+
+
+class TestInvestigateConfirmation:
+    """T-AGT-006 GWT-2：`investigate` **刻意无**意图级参数声明（其循环上界是系统预算、
+    非用户可调项，[05 §3.2]），故确认卡**只有「意图」一条目**、抬头计数正确——**不因
+    无参数而构造失败**（`_intent_item` 直取 `INTENT_TARGETS[draft.intent]`）。"""
+
+    def test_vocabulary_includes_the_seventh_intent(self) -> None:
+        assert "investigate" in INTENT_KINDS
+        assert "investigate" in INTENT_TARGETS
+        assert "investigate" not in INTENT_PARAM_SPECS  # 刻意无参数声明
+
+    def test_card_has_exactly_the_intent_item(self, skills: SkillRegistry) -> None:
+        protocol = IntentProtocol(
+            understander=_Understander(ResultEnvelope.ok(checked_draft(
+                intent="investigate", target=None,
+            ))),
+            descriptors=skills,
+        )
+        draft = protocol.understand("查一下这家公司的上下游关联").data
+        card = protocol.confirm(draft)
+        assert len(card.items) == 1
+        assert card.items[0].source == "intent"
+        assert card.items[0].param is None
+        assert card.header() == CONFIRMATION_HEADER.format(n=1)
+        assert card.values == {}
+
+    def test_no_questions_are_asked_for_investigate(self, skills: SkillRegistry) -> None:
+        """`investigate` 不产任何澄清问项（无参数可问）——clarify 回空，不臆造问项。"""
+        protocol = IntentProtocol(
+            understander=_Understander(ResultEnvelope.ok(checked_draft(
+                intent="investigate", target=None,
+            ))),
+            descriptors=skills,
+        )
+        draft = protocol.understand("查一下上游供应商").data
         assert draft.open_questions == ()
         round_ = protocol.clarify(draft)
         assert round_.questions == () and round_.envelope.status == "empty"

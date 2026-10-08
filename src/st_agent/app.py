@@ -578,6 +578,7 @@ def _build_l3(
     feedback_sink: Any = None,
     trainings: Any = None,
     callbacks: Any = None,
+    investigations: Any = None,
 ) -> _L3Stack:
     """叠 L3（会话落 `chat_history`）并装载官方资源包（01 §13）。
 
@@ -595,6 +596,10 @@ def _build_l3(
     :param callbacks: 训练**回访面**（鸭子类型 `callbacks()` / `acknowledge(...)`）——给了则
         对话往返带上待回访项（[08 §3](../../docs/技术架构-v2/08-L6-反思演进.md) 第 3 步）；
         缺省 ``None`` ⇒ 返回**不加**该键（既有行为，逐字节不变）。
+    :param investigations: 注入总线的 `investigate` 去向端口（鸭子面，`None` 即该去向
+        fail-closed + 点名）；缺省 ``None`` ⇒ **本层不装配循环**——循环端口的实际装配
+        （protocol / runner / tools / gate / store）与 M5 组合根归 `T-INT-006`（[05 §4](../../docs/技术架构-v2/05-L3-对话主入口.md)：
+        「循环的装配归 M5 集成关卡」），本参数即那批装配落进总线的**注射点**。
     """
     store = runtime.store
     sessions = SessionStore(store)
@@ -621,6 +626,7 @@ def _build_l3(
     bus = DispatchBus(
         runner=runtime.runner, configs=configs, adjudications=adjudicator,
         deliberations=deliberations, trainings=trainings,
+        investigations=investigations,
     )
 
     # ── 官方资源包（01 §13）：类型化容器按 kind 分发到各消费方 ─────────────────

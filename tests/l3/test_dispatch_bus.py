@@ -20,6 +20,7 @@ from st_agent.l1.skills import SkillRegistry
 from st_agent.l3.commands import INTENT_KINDS
 from st_agent.l3.dispatch import (
     ANALYZE_ABSENT_REASON,
+    INVESTIGATE_ABSENT_REASON,
     LLM_DEGRADED_NOTICE,
     RENDER_SEMANTICS,
     ROUTE_BY_INTENT,
@@ -168,8 +169,9 @@ class TestGwt3PendingRoutes:
         assert tuple(spec.intent for spec in ROUTE_SPECS) == INTENT_KINDS
 
     def test_no_route_is_left_unwired(self) -> None:
-        """六类去向**全部接入**（`train` 由 [T-L6-002.1] 接活，原登记 `owner=T-L6-002`）——
-        接线后不再有待接入去向，故无「点名归属任务」的 `_pending` 路径可达。"""
+        """七类去向**全部接入**（`train` 由 [T-L6-002.1] 接活，原登记 `owner=T-L6-002`；
+        `investigate` 由 [T-AGT-006] 接活）——接线后不再有待接入去向，故无「点名归属任务」
+        的 `_pending` 路径可达。"""
         assert all(spec.wired for spec in ROUTE_SPECS), [
             spec.intent for spec in ROUTE_SPECS if not spec.wired
         ]
@@ -209,11 +211,11 @@ class TestGwt3PendingRoutes:
         assert outcome.envelope.last_updated_at == NOW
         assert "不代表数据截止时间" in outcome.envelope.reason
 
-    def test_wired_routes_cover_all_six_intents(self) -> None:
+    def test_wired_routes_cover_all_intents(self) -> None:
         """`configure` 由 T-L3-003.1 接活（原登记 `owner=T-L3-003`）；`memory_op` 由
         T-L3-005.1 接活（原登记 `owner=T-L3-005`）；`analyze` 由 T-INT-003（M2 关卡）
         接活（原登记 `owner=T-L4-002`，**陈旧指针**，随接线一并订正）；`train` 由
-        [T-L6-002.1] 接活（原登记 `owner=T-L6-002`）。"""
+        [T-L6-002.1] 接活（原登记 `owner=T-L6-002`）；`investigate` 由 [T-AGT-006] 接活。"""
         assert {s.intent for s in ROUTE_SPECS if s.wired} == set(INTENT_KINDS)
 
 
@@ -306,3 +308,90 @@ def _envelope(status: str) -> ResultEnvelope:
     if status == "dependency_failed":
         return ResultEnvelope.dependency_failed("上游失败")
     return ResultEnvelope.validation_failed("参数非法")
+
+
+# ───────────────────────── T-AGT-006 investigate 去向 ─────────────────────────
+
+
+class _LoopPayload:
+    """最小循环产出载荷（鸭子面：含 ``envelope``）。"""
+
+    def __init__(self, envelope: ResultEnvelope) -> None:
+        self.envelope = envelope
+        self.agent_run_id = "ar_" + "0" * 20
+
+
+class _FakeLoopPort:
+    """最小循环端口替身（``investigate(confirmation, *, values, now) -> 含 envelope 的载荷``）。"""
+
+    def __init__(self, payload: _LoopPayload) -> None:
+        self._payload = payload
+        self.calls: list[tuple] = []
+
+    def investigate(self, confirmation, *, values=None, now=None):
+        self.calls.append((confirmation, values, now))
+        return self._payload
+
+
+class TestInvestigateRoute:
+    """T-AGT-006：`investigate` 去向接线——走注入的循环端口、只见鸭子面、缺省 fail-closed。"""
+
+    def test_route_is_registered_as_wired(self) -> None:
+        spec = ROUTE_BY_INTENT["investigate"]
+        assert spec.wired is True
+        assert spec.owner is None
+
+    def test_envelope_passes_through_from_the_injected_port(self) -> None:
+        """GWT-3：端口被调用且产出信封**原样透出**（不重包、不改 status、不吞 reason）。"""
+        original = ResultEnvelope.ok({"steps": [{"tool": "x"}]})
+        payload = _LoopPayload(original)
+        port = _FakeLoopPort(payload)
+        outcome = DispatchBus(investigations=port).dispatch(_card("investigate"), now=NOW)
+        assert len(port.calls) == 1
+        assert outcome.envelope is original
+        assert outcome.wired is True
+        assert outcome.investigation is payload
+
+    def test_absent_port_is_fail_closed_and_names_the_owner(self) -> None:
+        """GWT-4：未注入循环端口 → `unavailable` + `reason` 点名装配归属方 T-INT-006。"""
+        outcome = DispatchBus().dispatch(_card("investigate"), now=NOW)
+        assert outcome.envelope.status == "unavailable"
+        assert outcome.envelope.reason == INVESTIGATE_ABSENT_REASON
+        assert "T-INT-006" in outcome.envelope.reason
+        assert outcome.investigation is None
+
+    def test_unconfirmed_card_is_refused(self) -> None:
+        """GWT-5：既有总线口径不因新去向放宽——未确认即 `validation_failed`，且端口**不被调用**。"""
+        card = _card("investigate")
+        draft_only = checked_confirmation(
+            envelope=card.envelope, intent=card.intent, target=card.target,
+            items=card.items, values={}, confirmed=False,
+        )
+        port = _FakeLoopPort(_LoopPayload(ResultEnvelope.ok({})))
+        outcome = DispatchBus(investigations=port).dispatch(draft_only, now=NOW)
+        assert outcome.envelope.status == "validation_failed"
+        assert port.calls == []
+
+    def test_failure_envelope_passes_through(self) -> None:
+        """端口的失败信封原样透出（不重包、不改 status、不吞 reason）——同其余鸭子端口。"""
+        original = ResultEnvelope.unavailable("端点未声明支持工具调用", last_updated_at=NOW)
+        outcome = DispatchBus(investigations=_FakeLoopPort(_LoopPayload(original))).dispatch(
+            _card("investigate"), now=NOW,
+        )
+        assert outcome.envelope is original
+
+    def test_values_are_forwarded_to_the_port(self) -> None:
+        port = _FakeLoopPort(_LoopPayload(ResultEnvelope.ok({})))
+        DispatchBus(investigations=port).dispatch(
+            _card("investigate"), values={"x": 1}, now=NOW,
+        )
+        assert port.calls[0][1] == {"x": 1}
+
+    def test_illegal_port_payload_is_dependency_failed(self) -> None:
+        class Broken:
+            def investigate(self, confirmation, *, values=None, now=None):
+                return "不是载荷"
+
+        outcome = DispatchBus(investigations=Broken()).dispatch(_card("investigate"), now=NOW)
+        assert outcome.envelope.status == "dependency_failed"
+        assert "非法结构" in outcome.envelope.reason
