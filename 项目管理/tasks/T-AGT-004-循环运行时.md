@@ -8,9 +8,9 @@ arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P0
 milestone: M5
 depends_on: [T-AGT-003, T-AGT-001]
-status: todo
+status: done
 decisions: [D-090, D-091]
-verify:
+verify: 分组节点不单独验收——由三叶 GWT 合成；三叶全 done（.1 19 例 / .2 24 例 / .3 36 例）· 范围 1003 passed · 全量 3740 passed / 0 failed / 14 deselected（基线 +86 无残差）· verify_docs --strict 检查 1–9 全过 0 断链 · 见执行日志 [T-AGT-004]
 ---
 
 # T-AGT-004 · 循环运行时（分组节点）

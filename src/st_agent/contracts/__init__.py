@@ -13,6 +13,7 @@ from st_agent.contracts.identifiers import (
     ID_ALIASES,
     ID_KINDS,
     ID_REGISTRY,
+    AgentRunId,
     AnnouncementId,
     ChangeId,
     DatasetSnapshotId,

@@ -8,9 +8,9 @@ arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P0
 milestone: M5
 depends_on: [T-AGT-004.1, T-AGT-001]
-status: todo
+status: done
 decisions: [D-090, D-091]
-verify:
+verify: 新用例 24 例（GWT-1..7 + 闸门三态 + 端点能力 + 目录外调用 + 指针真实存在；执行面一律真 SkillRunner + 真 Store + 真官方 Pack）· 范围 1003 passed（217.34s）· 全量 3740 passed / 0 failed / 14 deselected（964.37s；基线 3654 核账 +86 逐项归因无残差）· verify_docs --strict 检查 1–9 全过 0 断链 · 未触发联网面（自愿补跑 live 2 passed 作旁证）· 见执行日志 [T-AGT-004]
 ---
 
 # T-AGT-004.2 · 循环驱动、协议端口与上界
@@ -44,12 +44,15 @@ verify:
   - [`SkillRunner.run`](../../src/st_agent/l1/runner/runner.py)（执行面；含 `approved_permissions` 与 `initiator` / `purpose` 口径）。
   - 契约口径：[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md) · [01 §4 步骤口径](../../docs/技术架构-v2/01-平台共享契约.md)。
 - **输出**：
-  - `src/st_agent/l3/runtime/**` 的**循环驱动**、**协议端口**（接口 + T1 实现）、**上界**。
-  - 供 [`T-AGT-005`](T-AGT-005-动作闸门接入.md) 注入的**授权端口名与调用点**；供 [`.3`](T-AGT-004.3-产出接入、留痕与失败语义.md) 消费的**循环结果形态**。
+  - 新增 [`src/st_agent/l3/runtime/protocol.py`](../../src/st_agent/l3/runtime/protocol.py)：`ToolCallProtocol`（端口接口：`tool_calls_supported()` / `invoke_turn(context, *, initiator, purpose)`）、`TurnResult`（文本 / 工具调用 / 用量 / 端点侧失败）、**T1** 实现 `NativeToolCallProtocol`（薄包 `LlmClient.invoke(tools=…)`，目录经 `tools` 入参、不并进 prompt）。
+  - 新增 [`src/st_agent/l3/runtime/loop.py`](../../src/st_agent/l3/runtime/loop.py)：`run_agent_loop()`（四段驱动）、`LoopOutcome`、`TerminationReason`（十种终止原因）、`GateDecision` / `GateVerdict`、**上界参数** `max_steps` / `max_llm_calls`（**带默认值、可注入**，不做模块常量）。
+  - **供 [`T-AGT-005`](T-AGT-005-动作闸门接入.md) 注入的授权端口名与调用点**：`:data:`AGENT_GATE_METHOD`＝`"authorize"`，调用点＝每个待执行动作**执行之前**，以 `gate.authorize(skill_id=…, tool_name=…, arguments=…)` 问一次；返回 `GateDecision`（或 verdict 字符串）方才执行，**缺省不注入即 fail-closed**。
+  - 供 [`.3`](T-AGT-004.3-产出接入、留痕与失败语义.md) 消费的循环结果形态即 `LoopOutcome`（`termination` / `reason` / `steps` / `llm_calls` / `trace` / `answer` / `pending` / `gate_reason` / 生效上界 / `failure`）。
+  - 测试：`tests/l3/test_agent_loop.py`（GWT-1..7 + 闸门三态 + 端点能力 + 目录外调用 + 指针真实存在 + 非法入参；执行面一律**真** `SkillRunner` + 真 `Store`）。
 
 ## 可关闭的遗留
 
-- 无（开工 ④ 对齐时逐册读各遗留册未闭区复核）
+- 无（2026-10-07 开工逐册读未闭区复核，同 [`.1`](T-AGT-004.1-工具目录消费与循环工作上下文装配.md) 所记：全册 `T-AGT` / 循环 / 工具调用**零命中**，无归属本任务的条目）
 
 ## 假设与前提
 
@@ -58,7 +61,7 @@ verify:
   **验证方式**：GWT-3 以「未注入即一步不执行」钉死；`tests/l3` 的该用例是**不可放宽的红线用例**。
 - **A2 · 上界取「步数 + LLM 调用次数」两条**——前提：[D-090](../决策日志.md) ⑥ 拍定；两条都直接可观测。**「上界取值」本身属实现口径**（可调），契约只要求存在且触界如实标注。
   **若错的影响**：若 ④ 对齐判定还要 token / wall-clock 上界，返工面 = 上界判定加一维。
-  **验证方式**：GWT-4 / GWT-5 钉「触界即停」与「边界不误判」；取值在 ④ 对齐时定。
+  **验证方式**：GWT-4 / GWT-5 钉「触界即停」与「边界不误判」；取值在 ④ 对齐时定 —— **已定**（负责人 2026-10-07）：两条取值做成 `run_agent_loop` 的**注入参数**（`max_steps` 缺省 8 / `max_llm_calls` 缺省 12，调用上界有意高于步数以免剪掉收尾那一问），**不做模块常量**。**端用户级可调**（01 §7 配置项 / 05 §3.2 意图参数）与 [05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md) 现行口径「上界是系统预算、非用户可调项」相抵，**本批未做**，登记见 [L3 册](../遗留问题/L3-遗留问题.md)。
 - **A3 · 循环不自行判参数合法性**——前提：参数 / 输入 / 输出核验均由 L1 执行面判（[03 §1.2](../../docs/技术架构-v2/03-L1-能力底座-Skills与MCP.md) 的流水线），循环只搬运与呈现。
   **若错的影响**：若循环自判，会与 L1 出现**两套参数判定**，且 L1 的 `validation_failed` 违规点被吞成循环自己的失败。
   **验证方式**：GWT-6 以「由 L1 判」钉住（断言拿到的是 L1 的信封）。
