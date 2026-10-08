@@ -4,7 +4,8 @@
 //     pending_id / status / draft / actions / note) · `labels`(generated 动作键 → 中性标签)
 //
 // 每项的 `actions` 决定给出哪几个按钮（待批准队列三动作；周报候选只可「接受」；
-// 主动提案是**信息面**、不给动作）。**动作不进描述**（01 §12）：处置恒发往固定回环路由。
+// 主动提案 `studio`＝交 Studio 落画布，成功后换「接受 / 否决」）。**动作不进描述**
+// （01 §12）：处置恒发往固定回环路由。
 
 import { appendUnknownSlots, definitionList, el, readSlot } from '../../components/slots.js';
 import { postJson } from '../../api.js';
@@ -12,6 +13,8 @@ import { postJson } from '../../api.js';
 export const KNOWN_SLOTS = ['proposals', 'labels'];
 
 const ROUTE = '/api/reflection/proposals/decide';
+const STUDIO_ROUTE = '/api/reflection/proposals/studio';
+const STUDIO_DECIDE_ROUTE = '/api/reflection/proposals/studio/decide';
 
 const CHANGE_FIELDS = [
   ['配置项', 'config_id'],
@@ -90,10 +93,72 @@ function skillRow(item) {
   return wrap;
 }
 
+function studioDecideButtons(item, labels, status) {
+  return ['accept', 'reject'].map((action) => {
+    const button = el('button', 'proposal-actions__button', labels[action] || action);
+    button.type = 'button';
+    button.addEventListener('click', async () => {
+      button.disabled = true;
+      try {
+        const payload = await postJson(STUDIO_DECIDE_ROUTE, {
+          proposal_id: item.proposal_id,
+          action,
+        });
+        if (payload.status === 'ok') {
+          const data = payload.data || {};
+          status.textContent =
+            action === 'accept' ? `已接受（${data.flow_id || ''}）` : '已否决';
+          status.className = 'component__meta';
+        } else {
+          status.textContent = `未处置（${payload.status}）：${payload.reason || ''}`;
+          status.className = 'state state--error';
+        }
+      } catch (error) {
+        status.textContent = `请求失败：${error.message}`;
+        status.className = 'state state--error';
+      }
+    });
+    return button;
+  });
+}
+
+function studioActions(item, labels, status) {
+  const row = el('div', 'proposal-actions');
+  const handoff = el('button', 'proposal-actions__button', labels.studio || '交 Studio');
+  handoff.type = 'button';
+  handoff.addEventListener('click', async () => {
+    handoff.disabled = true;
+    try {
+      const payload = await postJson(STUDIO_ROUTE, { proposal_id: item.proposal_id });
+      if (payload.status !== 'ok') {
+        status.textContent = `未交 Studio（${payload.status}）：${payload.reason || ''}`;
+        status.className = 'state state--error';
+        handoff.disabled = false;
+        return;
+      }
+      const data = payload.data || {};
+      status.textContent = `已交 Studio 落画布（${data.base}，${data.node_count} 个节点）`;
+      status.className = 'component__meta';
+      row.replaceChildren(...studioDecideButtons(item, labels, status));
+    } catch (error) {
+      status.textContent = `请求失败：${error.message}`;
+      status.className = 'state state--error';
+      handoff.disabled = false;
+    }
+  });
+  row.append(handoff);
+  return row;
+}
+
 function proposalNode(item, labels) {
   const node = el('li', 'proposal-item');
   if (item.kind === 'skill') {
     node.append(skillRow(item));
+    if ((item.actions || []).includes('studio')) {
+      const status = el('p', 'component__meta', '');
+      node.append(studioActions(item, labels, status));
+      node.append(status);
+    }
     return node;
   }
   node.append(definitionList(CHANGE_FIELDS.map(([label, key]) => [label, item[key]])));

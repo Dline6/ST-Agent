@@ -83,6 +83,7 @@ from st_agent.l6.errors import (
     FeedbackPoolError,
     L6Error,
     ProposalError,
+    StudioHandoffError,
     TrainingError,
     WeeklyReportError,
 )
@@ -146,6 +147,11 @@ from st_agent.l6.runtime_authorization import (
     ActionVerdict,
     RuntimeAuthorization,
     skill_action_id,
+)
+from st_agent.l6.studio_adapter import (
+    StudioDraftView,
+    StudioHandoff,
+    to_workflow_draft,
 )
 from st_agent.l6.training import (
     CALLBACK_NOTICE,
@@ -314,6 +320,9 @@ __all__ = [
     "RuntimeAuthorization",
     "SkillDraft",
     "SkillProposal",
+    "StudioDraftView",
+    "StudioHandoff",
+    "StudioHandoffError",
     "SuggestionDraft",
     "Tier",
     "TrainingDraft",
@@ -335,6 +344,7 @@ __all__ = [
     "judge",
     "proposal_family",
     "skill_action_id",
+    "to_workflow_draft",
     "week_key",
     "week_window",
     "weekly_report_family",

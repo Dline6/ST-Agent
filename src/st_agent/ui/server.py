@@ -73,6 +73,11 @@ _POST_ROUTES: dict[str, Callable[[UiApp, dict], dict]] = {
     # 反思中心的写面（`T-UI-004.2`）：反馈采集与提案处置
     "/api/reflection/feedback": lambda app, body: app.api_reflection_feedback(body),
     "/api/reflection/proposals/decide": lambda app, body: app.api_reflection_decide(body),
+    # 主动提案落 Studio（`T-L6-004.2`）：交 Studio 落画布 + 接受 / 否决
+    "/api/reflection/proposals/studio": lambda app, body: app.api_reflection_studio_handoff(body),
+    "/api/reflection/proposals/studio/decide": lambda app, body: (
+        app.api_reflection_studio_decide(body)
+    ),
     # 演进面的写面（`T-UI-004.3`）：一键回滚 / 应用设置 / 出厂重置
     "/api/evolution/changes/rollback": lambda app, body: app.api_evolution_rollback(body),
     "/api/evolution/authorization": lambda app, body: app.api_evolution_set(body),

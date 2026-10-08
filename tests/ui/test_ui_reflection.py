@@ -116,6 +116,8 @@ class FakeReflection:
         pending=PENDING,
         proposals=SKILL_PROPOSAL,
         decide=None,
+        studio_handoff=None,
+        studio_decide=None,
         experiments=(),
         trainings=(),
     ) -> None:
@@ -129,6 +131,18 @@ class FakeReflection:
         self._pending = list(pending)
         self._proposals = list(proposals)
         self._decide = decide if decide is not None else {"action": "accept", "applied": True}
+        self._studio_handoff = (
+            studio_handoff
+            if studio_handoff is not None
+            else {"available": True, "proposal_id": "prp_1", "base": "wf_x",
+                  "flow_id": "wf_x_v0.0", "node_count": 3, "violations": []}
+        )
+        self._studio_decide = (
+            studio_decide
+            if studio_decide is not None
+            else {"available": True, "action": "accept", "applied": True,
+                  "flow_id": "wf_x_v1.0", "change_id": "chg_1"}
+        )
         self._experiments = list(experiments)
         self._trainings = list(trainings)
         self.calls: list[tuple] = []
@@ -154,6 +168,18 @@ class FakeReflection:
         if isinstance(self._decide, Exception):      # 替身按需抛出「输入类失败」
             raise self._decide
         return self._decide
+
+    def studio_handoff(self, proposal_id):
+        self.calls.append(("studio_handoff", proposal_id))
+        if isinstance(self._studio_handoff, Exception):
+            raise self._studio_handoff
+        return self._studio_handoff
+
+    def studio_decide(self, *, proposal_id, action):
+        self.calls.append(("studio_decide", proposal_id, action))
+        if isinstance(self._studio_decide, Exception):
+            raise self._studio_decide
+        return self._studio_decide
 
     def experiments(self):
         return list(self._experiments)
@@ -195,6 +221,8 @@ def test_read_endpoints_are_unavailable_without_the_face(ui_server, http_get, au
     [
         ("/api/reflection/feedback", {"target": {"kind": "delivery", "ref": "dlv_x"}, "action": "adopted"}),
         ("/api/reflection/proposals/decide", {"action": "accept", "pending_id": "pnd_1"}),
+        ("/api/reflection/proposals/studio", {"proposal_id": "prp_1"}),
+        ("/api/reflection/proposals/studio/decide", {"proposal_id": "prp_1", "action": "accept"}),
     ],
 )
 def test_write_endpoints_are_unavailable_without_the_face(ui_server, http_post, auth, path, body):
@@ -307,7 +335,8 @@ def test_proposal_card_carries_queue_candidates_and_skill_proposals(reflection_s
     assert queued["pending_id"] == "pnd_1"
     assert queued["actions"] == ["accept", "reject", "defer"]
     assert candidate["pending_id"] == "" and candidate["actions"] == ["accept"]
-    assert skill["actions"] == []                      # 主动提案是信息面（接受 → Studio 草稿，未接线）
+    assert skill["actions"] == ["studio"]              # 主动提案：交 Studio 落画布（[T-L6-004.2]）
+    assert payload["data"]["slots"]["labels"]["studio"] == "交 Studio"
     assert skill["draft"]["nodes"] == 3
 
 
@@ -323,6 +352,63 @@ def test_decide_forwards_action_and_pending_id(reflection_server, http_post, aut
     assert payload["status"] == "ok"
     assert payload["data"]["note"] == "留痕"
     assert facade.calls == [("decide", "reject", "pnd_1", None)]
+
+
+def test_studio_handoff_forwards_proposal_id(reflection_server, http_post, auth):
+    """交 Studio：经固定回环路由转发 `proposal_id`，画布视图随 `ok` 信封回（[T-L6-004.2]）。"""
+    facade = FakeReflection()
+    with reflection_server(facade) as running:
+        payload = http_post(
+            running, "/api/reflection/proposals/studio", {"proposal_id": "prp_1"},
+            headers=auth(running),
+        ).json()
+    assert payload["status"] == "ok"
+    assert payload["data"]["base"] == "wf_x"
+    assert facade.calls == [("studio_handoff", "prp_1")]
+
+
+def test_studio_handoff_unavailable_is_not_faked(reflection_server, http_post, auth):
+    """子面未接线 ⇒ `available: false` 转成 `unavailable` + 点名（**不**包成 `ok`）。"""
+    facade = FakeReflection(
+        studio_handoff={"available": False, "reason": "未接入 Studio 草稿接收面（08 §4）"}
+    )
+    with reflection_server(facade) as running:
+        payload = http_post(
+            running, "/api/reflection/proposals/studio", {"proposal_id": "prp_1"},
+            headers=auth(running),
+        ).json()
+    assert payload["status"] == "unavailable"
+    assert "Studio" in payload["reason"]
+
+
+def test_studio_handoff_missing_proposal_id_is_validation_failed(reflection_server, http_post, auth):
+    with reflection_server(FakeReflection()) as running:
+        payload = http_post(
+            running, "/api/reflection/proposals/studio", {}, headers=auth(running)
+        ).json()
+    assert payload["status"] == "validation_failed"
+
+
+def test_studio_decide_forwards_accept(reflection_server, http_post, auth):
+    facade = FakeReflection()
+    with reflection_server(facade) as running:
+        payload = http_post(
+            running, "/api/reflection/proposals/studio/decide",
+            {"proposal_id": "prp_1", "action": "accept"}, headers=auth(running),
+        ).json()
+    assert payload["status"] == "ok"
+    assert payload["data"]["change_id"] == "chg_1"
+    assert facade.calls == [("studio_decide", "prp_1", "accept")]
+
+
+def test_studio_decide_input_failure_maps_to_validation_failed(reflection_server, http_post, auth):
+    facade = FakeReflection(studio_decide=ValueError("处置动作须为 accept/reject"))
+    with reflection_server(facade) as running:
+        payload = http_post(
+            running, "/api/reflection/proposals/studio/decide",
+            {"proposal_id": "prp_1", "action": "defer"}, headers=auth(running),
+        ).json()
+    assert payload["status"] == "validation_failed"
 
 
 def test_input_shaped_failure_from_the_face_maps_to_validation_failed(reflection_server, http_post, auth):
