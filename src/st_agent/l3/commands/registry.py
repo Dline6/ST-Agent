@@ -6,7 +6,7 @@
 Pack 更新。本模块只产**注册与解析面**，不含菜单渲染。
 
 **意图模板**：:data:`INTENT_KINDS` 是 [05 §3.1](../../../docs/技术架构-v2/05-L3-对话主入口.md)
-六类意图的**机器可读副本**（同 [04 §1](../../../docs/技术架构-v2/04-L2-记忆图谱.md)
+七类意图的**机器可读副本**（同 [04 §1](../../../docs/技术架构-v2/04-L2-记忆图谱.md)
 ``NODE_TYPES`` 的写法），供 ``T-L3-002`` 的意图分类复用——**不新造第二套词汇**
 （假设 A2）。
 
@@ -48,14 +48,16 @@ COMMAND_PREFIX = "/"
 """触发前缀（§8：``/`` 触发的命令注册表）。"""
 
 INTENT_KINDS: tuple[str, ...] = (
-    "query", "configure", "analyze", "memory_op", "train", "explain",
+    "query", "configure", "analyze", "memory_op", "train", "explain", "investigate",
 )
-"""§3.1 六类意图的枚举（机器可读副本；派发目标的对应关系见 05 §3.1 表）。"""
+"""§3.1 七类意图的枚举（机器可读副本；派发目标的对应关系见 05 §3.1 表）。"""
 
 SOURCES: tuple[str, ...] = ("official", "user")
 """条目来源分组：官方 Pack / 用户自定义（[`T-ECO-001`](../../../项目管理/tasks/T-ECO-001-分享物类型格式导出流程来源追溯链.md) 的分享物亦落 ``user``）。"""
 
-IntentKind = Literal["query", "configure", "analyze", "memory_op", "train", "explain"]
+IntentKind = Literal[
+    "query", "configure", "analyze", "memory_op", "train", "explain", "investigate",
+]
 CommandSource = Literal["official", "user"]
 ParamValue = str | int | float | bool
 
@@ -69,7 +71,7 @@ class QuickCommand(BaseModel):
     """指令名（**不含**前导 :data:`COMMAND_PREFIX`；用户以 ``/名称`` 触发）。"""
     description: str = Field(min_length=1, max_length=200)
     intent: IntentKind
-    """意图模板（[05 §3.1](../../../docs/技术架构-v2/05-L3-对话主入口.md) 的六类之一）。"""
+    """意图模板（[05 §3.1](../../../docs/技术架构-v2/05-L3-对话主入口.md) 的七类之一）。"""
     param_defaults: dict[str, ParamValue] = Field(default_factory=dict)
     """参数预填：键对齐 [01 §2](../../../docs/技术架构-v2/01-平台共享契约.md) ``SkillDescriptor.parameters``
     的声明名，值只做**默认值覆盖**（假设 A3），不引入新参数体系。"""

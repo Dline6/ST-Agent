@@ -8,9 +8,9 @@ arch_link: "[05 §3.1](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P0
 milestone: M5
 depends_on: [T-AGT-004.3, T-AGT-005]
-status: todo
-decisions: [D-090, D-091]
-verify:
+status: done
+decisions: [D-090, D-091, D-098]
+verify: 范围套件（tests/contracts + test_layering + test_tools + tests/integration + tests/l3）1033 passed（239.15s）+ 补跑 tests/l6 527 passed（62.90s）；新用例 11 例钉 GWT-1..7（Fake 循环端口 / 缺省 fail-closed 点名 T-INT-006 / 未确认不派发 / 确认卡恰好一条目）；verify_docs --strict 检查 1–9 全过、0 断链。执行日志 [T-AGT-006]
 ---
 
 # T-AGT-006 · 第七类意图 `investigate` 与派发去向接线
@@ -37,19 +37,20 @@ verify:
 ## 接口面
 
 - **输入**：
-  - [`T-AGT-004.3`](T-AGT-004.3-产出接入、留痕与失败语义.md) 的循环**产出面**（信封 + 描述件）。
-  - [`T-AGT-005`](T-AGT-005-动作闸门接入.md) 已接入的闸门（循环内部生效，本任务不重复）。
-  - 既有 L3 面：[`DispatchBus`](../../src/st_agent/l3/dispatch/bus.py)（路由表 + 注入端口范式）· [`IntentProtocol`](../../src/st_agent/l3/intent/protocol.py)（确认卡 / 澄清 / 中性校验）· [`CommandRegistry`](../../src/st_agent/l3/commands/registry.py)（`INTENT_KINDS`）。
-  - 契约口径：[05 §3.1 / §3.2 / §4 / §8](../../docs/技术架构-v2/05-L3-对话主入口.md) · [01 §6](../../docs/技术架构-v2/01-平台共享契约.md)（生成文案过中性闸门）。
-- **输出**：
-  - `src/st_agent/l3/commands/registry.py`——`INTENT_KINDS` + `IntentKind`。
-  - `src/st_agent/l3/dispatch/bus.py`——`ROUTE_SPECS` 新去向 + `_dispatch_investigate` + 构造函数新注入位。
-  - `src/st_agent/l3/intent/protocol.py`——`INTENT_TARGETS` 新条目（`INTENT_PARAM_SPECS` **不加**）。
-  - `src/st_agent/app.py`——组合根装配（把循环注入总线）。
+  - [`T-AGT-004.3`](T-AGT-004.3-产出接入、留痕与失败语义.md) 的循环**产出面**——`conclude_agent_run(store, outcome) -> AgentRunReport`，其 `.envelope` 即该去向要透出的信封（`src/st_agent/l3/runtime/report.py`）。
+  - [`T-AGT-005`](T-AGT-005-动作闸门接入.md) 的闸门（`RuntimeAuthorization.decide` / `ActionGate.authorize`）——**循环内部生效**，本任务不重复接线，仅经端口间接消费。
+  - 既有 L3 面：[`DispatchBus`](../../src/st_agent/l3/dispatch/bus.py)（路由表 + 注入端口范式，构造形参见 `runner` / `deliberations` / `trainings`）· [`IntentProtocol`](../../src/st_agent/l3/intent/protocol.py)（`_intent_item` 直取 `INTENT_TARGETS[draft.intent]`）· [`CommandRegistry`](../../src/st_agent/l3/commands/registry.py)（`INTENT_KINDS` / `IntentKind`）。
+  - 契约口径：[05 §3.1 / §3.2 / §4 / §8 / §10](../../docs/技术架构-v2/05-L3-对话主入口.md) · [01 §5](../../docs/技术架构-v2/01-平台共享契约.md) · [01 §7](../../docs/技术架构-v2/01-平台共享契约.md)。
+- **输出**（本任务交付的公共 API 与落盘位置）：
+  - `src/st_agent/l3/commands/registry.py`——`INTENT_KINDS` 追加 `"investigate"`（尾位，随 05 §3.1 表序）+ `IntentKind` 扩为七类 Literal。
+  - `src/st_agent/l3/dispatch/bus.py`——`INVESTIGATE_ABSENT_REASON` 常量 · `ROUTE_SPECS` 追加 `investigate` 去向（`wired=True`，尾位）· `_dispatch_investigate` · `DispatchBus(investigations=…)` 构造注入位 · `DispatchOutcome.investigation` 载荷槽。
+  - `src/st_agent/l3/intent/protocol.py`——`INTENT_TARGETS` 追加 `investigate` 条目（尾位，与 `INTENT_KINDS` 同序）；`INTENT_PARAM_SPECS` **不加**（假设 A2）。
+  - `src/st_agent/app.py`——`_build_l3(..., investigations=None)` 形参并透传 `DispatchBus`（＝「把循环注入总线」的注射点）；**不**新增 M5 组合根、**不**改 `__main__.py`（假设 A6，实际装配归 [`T-INT-006`](T-INT-006-M5集成关卡受控自主闭环.md)）。
+  - 测试：`tests/l3/test_dispatch_bus.py` 补 `investigate` 去向用例（GWT-3/4/5）；`tests/l3/test_commands_registry.py` / `tests/l3/test_intent_protocol.py` 的枚举断言同批跟上（GWT-1/2/7）。
 
 ## 可关闭的遗留
 
-- 无（开工 ④ 对齐时逐册读各遗留册未闭区复核）
+- 无。开工 ④ 逐册读六本遗留册未闭区（2026-10-08 复核）：L0 册 `C3` / `C5`（皆**人决**）· L1 册全段闭 · L2 册全段闭 · L3 册 `A3`（**人决**，上界是否开放端用户可调）· L5 册空 · L6 册 `B1`（待人立项，主动提案落地点）——均「归属 / 解封条件」**非本任务**，无本批可闭项。
 
 ## 假设与前提
 
@@ -73,6 +74,15 @@ verify:
 - **A4 · 首刀只接 `investigate`，不覆写 `query`**——前提：[D-090](../决策日志.md) ⑤ 的保护取向——`query` 的**确定性是可审计性的一部分**。
   **若错的影响**：若改 `query` 为多步，简单查询会被迫付循环的成本与不确定性。
   **验证方式**：GWT-6 以「既有六类逐字节不变」钉死。
+- **A5 · 循环端口的形态（构造形参名 / 端口方法名 / 调用式）**——前提：与既有去向**同型**——构造形参 `investigations`（同 `runner` / `deliberations` / `trainings` 的注入取向），端口方法 `investigate(confirmation, *, values=None, now=None)`，只取返回载荷里的 `.envelope`（鸭子面，本层不认循环类型）。[05 §4](../../docs/技术架构-v2/05-L3-对话主入口.md) 只定「注入」与「只见鸭子面」，未定方法名，故此处为**实现口径**。
+  **若错的影响**：端口形态是 [`T-INT-006`](T-INT-006-M5集成关卡受控自主闭环.md) 装配时的交接点——改名会连带改其装配代码（返工面小，但属跨任务交接面）。
+  **验证方式**：GWT-3 以 Fake 端口钉住调用式与「信封原样透出」。
+- **A6 · `app.py` 的改动边界＝只落「注入缝」**——前提：本任务在 [`_build_l3`](../../src/st_agent/app.py) 增 `investigations` 形参并透传 `DispatchBus`（「把循环注入总线」的注射点）；循环端口的**实际装配**（protocol / runner / tools / gate / store）、M5 组合根与 [`__main__.py`](../../src/st_agent/__main__.py) 换默认根归 [`T-INT-006`](T-INT-006-M5集成关卡受控自主闭环.md)（[05 §4](../../docs/技术架构-v2/05-L3-对话主入口.md) 明写「循环的**装配**归 M5 集成关卡」）。
+  **若错的影响**：若本任务越界装配，会与 `T-INT-006` 声明的交付面（「M5 组合根：循环装配 + 授权面注入 + 探测步骤接线」）重叠或冲突；反之若本任务完全不碰 `app.py`，则该去向在生产组合根里**无注射点**。
+  **验证方式**：本任务不改 `__main__.py`、不新增 `build_m5_runtime`；GWT-3/4 只经 `DispatchBus` 新注入位验，`build_m5_runtime` 的端到端生效由 `T-INT-006` 的 GWT-7 断。
+- **A7 · 未注入时的「点名归属任务」落在 `reason` 文案**——前提：`investigate` 去向登记为 `wired=True, owner=None`（同其余六类；既有用例 `test_no_route_is_left_unwired` 断言**全表** `owner is None`），故 [GWT-4](#验收标准given-when-then) 的「点名归属任务」只能落在 `reason` 文本里——点名**装配归属方** [`T-INT-006`](T-INT-006-M5集成关卡受控自主闭环.md)（同 A6 的依据）。**不复用** `_pending` 路径（那条要求 `owner` 非空）。
+  **若错的影响**：若改登记为 `wired=False, owner=…`，会破既有「全表 `wired=True` 且 `owner is None`」的断言（GWT-6「既有六类行为逐字节不变」），并把一条**已实现**的去向假装成未接入。
+  **验证方式**：GWT-4 断言 `unavailable` 且 `reason` 含 `T-INT-006` 字样。
 
 ## 涉及契约
 

@@ -38,7 +38,16 @@ class TestGwt1CommandSchema:
 
     def test_intent_vocabulary_matches_05_3_1(self) -> None:
         assert INTENT_KINDS == ("query", "configure", "analyze",
-                                "memory_op", "train", "explain")
+                                "memory_op", "train", "explain", "investigate")
+
+    def test_shortcut_may_use_the_seventh_intent(self, registry: CommandRegistry) -> None:
+        """GWT-7（T-AGT-006）：快捷指令的意图模板与 §3.1 同源——`investigate` 同样可引用
+        （经 §6 中性校验登记，不是只存在于枚举里）。"""
+        command = registry.register(QuickCommand(
+            name="查证", description="对给定问题做多步自主查证", intent="investigate",
+        ))
+        assert command.intent == "investigate"
+        assert registry.get("查证") is command
 
 
 class TestGwt2SlashResolution:
