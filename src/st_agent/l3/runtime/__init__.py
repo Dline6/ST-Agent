@@ -11,12 +11,12 @@
 | [`context`](context.py) | 工作上下文与工具目录的**装配件**（纯函数；截断 + 留痕指针）——[`T-AGT-004.1`](../../../项目管理/tasks/T-AGT-004.1-工具目录消费与循环工作上下文装配.md) |
 | [`protocol`](protocol.py) | **工具调用协议端口**（接口 + T1 原生 function calling 实现）——[`T-AGT-004.2`](../../../项目管理/tasks/T-AGT-004.2-循环驱动、协议端口与上界.md) |
 | [`loop`](loop.py) | **四段驱动 + 双上界 + 授权端口**——[`T-AGT-004.2`](../../../项目管理/tasks/T-AGT-004.2-循环驱动、协议端口与上界.md) |
-| [`report`](report.py) | **产出装配 + 留痕 + 失败与降级**——[`T-AGT-004.3`](../../../项目管理/tasks/T-AGT-004.3-产出接入、留痕与失败语义.md) |
+| [`gate`](gate.py) | **逐步授权闸门**（动作标识派生 + 判据经鸭子端口取用 + fail-closed）——[`T-AGT-005.2`](../../../项目管理/tasks/T-AGT-005.2-逐步闸门与终止交还.md) |
+| [`report`](report.py) | **产出装配 + 留痕 + 失败与降级 + 终止交还**——[`T-AGT-004.3`](../../../项目管理/tasks/T-AGT-004.3-产出接入、留痕与失败语义.md) · [`T-AGT-005.2`](../../../项目管理/tasks/T-AGT-005.2-逐步闸门与终止交还.md) |
 
 **本包不接线**：把循环接到 `investigate` 意图上是 [`T-AGT-006`](../../../项目管理/tasks/T-AGT-006-第七类意图investigate与派发去向接线.md)
-的事；授权闸门本体是 [`T-AGT-005`](../../../项目管理/tasks/T-AGT-005-动作闸门接入.md) 的事——
-本包只交出它们要接住的**入口面**（:func:`run_agent_loop` 的 ``gate`` 端口与
-:data:`AGENT_GATE_METHOD`）与**产出面**（:func:`conclude_agent_run`）。
+的事——本包只交出它要接住的**入口面**（:func:`run_agent_loop` 的 ``gate`` 端口与
+:data:`AGENT_GATE_METHOD`、:class:`ActionGate`）与**产出面**（:func:`conclude_agent_run`）。
 """
 
 from st_agent.l3.runtime.context import (
@@ -30,6 +30,12 @@ from st_agent.l3.runtime.context import (
     assemble_work_context,
     log_ref_of,
     new_work_step,
+)
+from st_agent.l3.runtime.gate import (
+    AGENT_DECISION_METHOD,
+    SKILL_ACTION_PREFIX,
+    ActionGate,
+    action_id_of,
 )
 from st_agent.l3.runtime.loop import (
     AGENT_GATE_METHOD,
@@ -65,6 +71,7 @@ from st_agent.l3.runtime.report import (
 )
 
 __all__ = [
+    "AGENT_DECISION_METHOD",
     "AGENT_GATE_METHOD",
     "AGENT_RUN_PREFIX",
     "AGENT_UNAVAILABLE_NOTICE",
@@ -77,7 +84,9 @@ __all__ = [
     "DEFAULT_WORK_CONTEXT_BUDGET",
     "GATE_VERDICTS",
     "RESULT_TRUNCATE_CHARS",
+    "SKILL_ACTION_PREFIX",
     "TRUNCATED_PREVIEW_CHARS",
+    "ActionGate",
     "AgentRunRecord",
     "AgentRunReport",
     "AgentRunStepRef",
@@ -91,6 +100,7 @@ __all__ = [
     "TurnResult",
     "WorkContext",
     "WorkStep",
+    "action_id_of",
     "agent_log_ref_of",
     "assemble_work_context",
     "build_agent_output",
