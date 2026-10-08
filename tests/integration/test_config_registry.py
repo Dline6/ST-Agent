@@ -73,6 +73,19 @@ def test_global_families_are_reachable_from_the_assembled_root(rig: M1Rig) -> No
     assert any(i.startswith("memory-policy/") for i in ids)
 
 
+def test_investigate_bounds_registered_by_the_assembled_root(rig: M1Rig) -> None:
+    """T-AGT-007：循环双上界经组合根注册到 01 §7（L1 不 import L3，族适配器住 L3）。"""
+    facade = rig.m1.runtime.config_registry
+    ids = {e.config_id for e in facade.list(scope="global")}
+    assert {"investigate.max_steps", "investigate.max_llm_calls"} <= ids
+    entry = facade.entry("investigate.max_steps")
+    assert entry is not None and entry.scope == "global"
+    assert entry.panel_form_spec.widget == "number"          # 面板通道可改
+    assert entry.description_for_chat                        # 对话通道可改
+    # 组合根的 bounds 句柄与登记项同源
+    assert rig.m1.bounds.steps() == entry.default
+
+
 def test_audit_switch_is_registered_and_hot_switches_the_gateway(rig: M1Rig) -> None:
     """T-L0-018.2 GWT-2：01 §7 条目可读可写，落值**不需重启进程**即生效。"""
     facade = rig.m1.runtime.config_registry
