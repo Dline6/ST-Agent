@@ -13,12 +13,23 @@
 | [`loop`](loop.py) | **四段驱动 + 双上界 + 授权端口**——[`T-AGT-004.2`](../../../项目管理/tasks/T-AGT-004.2-循环驱动、协议端口与上界.md) |
 | [`gate`](gate.py) | **逐步授权闸门**（动作标识派生 + 判据经鸭子端口取用 + fail-closed）——[`T-AGT-005.2`](../../../项目管理/tasks/T-AGT-005.2-逐步闸门与终止交还.md) |
 | [`report`](report.py) | **产出装配 + 留痕 + 失败与降级 + 终止交还**——[`T-AGT-004.3`](../../../项目管理/tasks/T-AGT-004.3-产出接入、留痕与失败语义.md) · [`T-AGT-005.2`](../../../项目管理/tasks/T-AGT-005.2-逐步闸门与终止交还.md) |
+| [`bounds`](bounds.py) | **双上界的 01 §7 配置项**（owner + 条目）——[`T-AGT-007`](../../../项目管理/tasks/T-AGT-007-循环上界开放为配置项.md) |
+| [`registry_adapter`](registry_adapter.py) | **``investigate.*`` 族的门面适配器**（组合根注入 L1 门面）——[`T-AGT-007`](../../../项目管理/tasks/T-AGT-007-循环上界开放为配置项.md) |
 
 **本包不接线**：把循环接到 `investigate` 意图上是 [`T-AGT-006`](../../../项目管理/tasks/T-AGT-006-第七类意图investigate与派发去向接线.md)
 的事——本包只交出它要接住的**入口面**（:func:`run_agent_loop` 的 ``gate`` 端口与
 :data:`AGENT_GATE_METHOD`、:class:`ActionGate`）与**产出面**（:func:`conclude_agent_run`）。
 """
 
+from st_agent.l3.runtime.bounds import (
+    INVESTIGATE_CONFIG_PREFIX,
+    MAX_LLM_CALLS_CEILING,
+    MAX_LLM_CALLS_CONFIG_ID,
+    MAX_STEPS_CEILING,
+    MAX_STEPS_CONFIG_ID,
+    LoopBounds,
+    loop_bounds_config_entries,
+)
 from st_agent.l3.runtime.context import (
     CATALOG_EMPTY_REASON,
     DEFAULT_WORK_CONTEXT_BUDGET,
@@ -69,6 +80,7 @@ from st_agent.l3.runtime.report import (
     new_agent_run_id,
     record_agent_run,
 )
+from st_agent.l3.runtime.registry_adapter import InvestigateFamily, investigate_family
 
 __all__ = [
     "AGENT_DECISION_METHOD",
@@ -83,6 +95,11 @@ __all__ = [
     "DEFAULT_TURN_PURPOSE",
     "DEFAULT_WORK_CONTEXT_BUDGET",
     "GATE_VERDICTS",
+    "INVESTIGATE_CONFIG_PREFIX",
+    "MAX_LLM_CALLS_CEILING",
+    "MAX_LLM_CALLS_CONFIG_ID",
+    "MAX_STEPS_CEILING",
+    "MAX_STEPS_CONFIG_ID",
     "RESULT_TRUNCATE_CHARS",
     "SKILL_ACTION_PREFIX",
     "TRUNCATED_PREVIEW_CHARS",
@@ -92,6 +109,8 @@ __all__ = [
     "AgentRunStepRef",
     "GateDecision",
     "GateVerdict",
+    "InvestigateFamily",
+    "LoopBounds",
     "LoopOutcome",
     "NativeToolCallProtocol",
     "TerminationReason",
@@ -105,8 +124,10 @@ __all__ = [
     "assemble_work_context",
     "build_agent_output",
     "conclude_agent_run",
+    "investigate_family",
     "load_agent_run",
     "log_ref_of",
+    "loop_bounds_config_entries",
     "new_agent_run_id",
     "new_work_step",
     "record_agent_run",

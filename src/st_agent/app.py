@@ -95,6 +95,7 @@ from st_agent.l3.render import (
     describe_draft,
     describe_trace,
 )
+from st_agent.l3.runtime import LoopBounds, investigate_family
 from st_agent.l4.analyze import AnalyzeService
 from st_agent.l4.crosscheck import CrossExaminer
 from st_agent.l4.deliberation import Deliberation
@@ -433,6 +434,7 @@ class M1Runtime:
     feedback: FeedbackCollector
     bus: DispatchBus
     chat: DialogFacade
+    bounds: LoopBounds
 
     @property
     def store(self):
@@ -504,6 +506,7 @@ class _L3Stack:
     feedback: FeedbackCollector
     bus: DispatchBus
     chat: DialogFacade
+    bounds: LoopBounds
 
 
 @dataclass(frozen=True)
@@ -600,8 +603,14 @@ def _build_l3(
         fail-closed + 点名）；缺省 ``None`` ⇒ **本层不装配循环**——循环端口的实际装配
         （protocol / runner / tools / gate / store）与 M5 组合根归 `T-INT-006`（[05 §4](../../docs/技术架构-v2/05-L3-对话主入口.md)：
         「循环的装配归 M5 集成关卡」），本参数即那批装配落进总线的**注射点**。
+
+    同批把 L3 的 `investigate.*` 族（循环双上界的 01 §7 配置项，`T-AGT-007`）注入
+    01 §7 统一配置注册表：L1 不 import L3（[铁律 7](../../项目管理/工程宪法.md)），
+    故适配器住 L3、在组合根注册；`bounds` 句柄经 `_L3Stack` 供下游（循环装配）取用。
     """
     store = runtime.store
+    bounds = LoopBounds(store)
+    runtime.config_registry.register_family(investigate_family(bounds))
     sessions = SessionStore(store)
     commands = CommandRegistry()
     if understander is None:
@@ -655,7 +664,7 @@ def _build_l3(
     return _L3Stack(
         sessions=sessions, commands=commands, intent=intent, configs=configs,
         handling=handling, adjudicator=adjudicator, feedback=feedback, bus=bus,
-        chat=chat,
+        chat=chat, bounds=bounds,
     )
 
 
