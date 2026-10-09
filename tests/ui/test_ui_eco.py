@@ -213,7 +213,14 @@ def test_inbox_renders_a_table(eco_server, http_get, auth):
     with eco_server(facade) as running:
         payload = http_get(running, "/api/eco/inbox", headers=auth(running)).json()
     assert payload["data"]["component_type"] == "table"
-    assert payload["data"]["slots"]["rows"] == [["a.stskill", 128]]
+    # 行是**键控**形状（列键 → 值）：渲染件按 `row[column.key]` 取值。
+    # 位置形状（`[["a.stskill", 128]]`）曾同时存在于六处产出方，而渲染件读的是键控——
+    # 那六张表在生产面上**全是空的**（2026-10-09 实机实测，[D-105] ①）。
+    assert payload["data"]["slots"]["rows"] == [{"file_name": "a.stskill", "size": 128}]
+    assert payload["data"]["slots"]["columns"] == [
+        {"key": "file_name", "label": "文件名", "kind": "text"},
+        {"key": "size", "label": "大小（字节）", "kind": "number", "digits": 0},
+    ]
 
 
 def test_review_renders_the_four_segments(eco_server, http_post, auth):
@@ -301,7 +308,7 @@ def test_index_renders_a_table(eco_server, http_get, auth):
         payload = http_get(running, "/api/eco/index", headers=auth(running)).json()
     assert payload["status"] == "ok"
     assert payload["data"]["component_type"] == "table"
-    assert payload["data"]["slots"]["rows"][0][1] == "官方 Pack"
+    assert payload["data"]["slots"]["rows"][0]["name"] == "官方 Pack"
 
 
 def test_index_is_unavailable_when_the_endpoint_is_missing(eco_server, http_get, auth):
@@ -333,7 +340,13 @@ def test_ledger_with_records_renders_a_table(eco_server, http_get, auth):
         payload = http_get(running, "/api/eco/imports", headers=auth(running)).json()
     assert payload["status"] == "ok"
     assert payload["data"]["slots"]["rows"] == [
-        ["imp_1", "skill", "sk_ma_v1.0", "alice", "2026-10-07T18:00:00+08:00"]
+        {
+            "import_id": "imp_1",
+            "kind": "skill",
+            "installed_id": "sk_ma_v1.0",
+            "sharer": "alice",
+            "imported_at": "2026-10-07T18:00:00+08:00",
+        }
     ]
 
 
@@ -378,7 +391,9 @@ def test_violation_history_renders_a_table(eco_server, http_get, auth):
     with eco_server(FakeEco()) as running:
         payload = http_get(running, "/api/eco/violations/history", headers=auth(running)).json()
     assert payload["data"]["component_type"] == "table"
-    assert payload["data"]["slots"]["rows"][0][:2] == ["sk_ma_watch", "local_read"]
+    assert [
+        (row["skill_id"], row["violation"]) for row in payload["data"]["slots"]["rows"]
+    ][0] == ("sk_ma_watch", "local_read")
 
 
 def test_disable_is_forwarded(eco_server, http_post, auth):

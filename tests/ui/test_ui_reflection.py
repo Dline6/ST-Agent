@@ -23,6 +23,7 @@ import pytest
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.ui.app import build_ui
 from st_agent.ui.server import serve
+from st_agent.ui.tables import Column, table_slots, table_text_kinds
 
 CST = timezone(__import__("datetime").timedelta(hours=8))
 
@@ -457,11 +458,12 @@ def test_experiments_and_trainings_render_tables(reflection_server, http_get, au
         exp = http_get(running, "/api/reflection/experiments", headers=auth(running)).json()
         trn = http_get(running, "/api/reflection/training", headers=auth(running)).json()
     assert exp["data"]["component_type"] == "table"
-    assert exp["data"]["slots"]["rows"][0][0] == "新文案更易被采纳"
-    assert exp["data"]["slots"]["columns"][-1] == "状态"
+    # 行是**键控**形状（列键 → 值）——渲染件按 `row[column.key]` 取值；位置形状会让表全空
+    assert exp["data"]["slots"]["rows"][0]["hypothesis"] == "新文案更易被采纳"
+    assert exp["data"]["slots"]["columns"][-1]["label"] == "状态"
     # 训练留痕里含**用户原话**（第一人称）：整槽按 data ⇒ 不过中性化门、原样呈现（D-053）
     assert trn["status"] == "ok"
-    assert trn["data"]["slots"]["rows"][0][1] == "我这条不对，因为估值偏高"
+    assert trn["data"]["slots"]["rows"][0]["correction"] == "我这条不对，因为估值偏高"
 
 
 # ── 出站两闸：必填槽与渲染前中性化门 ──────────────────────────────────────────
@@ -479,8 +481,8 @@ def test_gated_description_blocks_unneutral_generated_text():
     with pytest.raises(ValueError):
         app._gated_description(
             "table",
-            slots={"columns": ["我认为该买"], "rows": []},
-            text_kinds={"columns": "generated", "rows": "data"},
+            slots=table_slots((Column("verdict", "我认为该买"),), []),
+            text_kinds=table_text_kinds(),
             title="实验日志",
         )
 
@@ -490,12 +492,14 @@ def test_gated_description_passes_user_data_through():
     app = build_ui(host="127.0.0.1", port=1)
     description = app._gated_description(
         "table",
-        slots={"columns": ["修正原话"], "rows": [["我觉得这条不对"]]},
-        text_kinds={"columns": "generated", "rows": "data"},
+        slots=table_slots(
+            (Column("correction", "修正原话"),), [{"correction": "我觉得这条不对"}]
+        ),
+        text_kinds=table_text_kinds(),
         title="训练留痕",
     )
     payload = json.loads(json.dumps(description.model_dump(mode="json")))
-    assert payload["slots"]["rows"] == [["我觉得这条不对"]]
+    assert payload["slots"]["rows"] == [{"correction": "我觉得这条不对"}]
 
 
 def test_descriptions_carry_a_tz_aware_snapshot_time(reflection_server, http_get, auth):

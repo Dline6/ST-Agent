@@ -104,6 +104,22 @@ main {
 .component-table td { padding: .35rem .5rem; border-bottom: 1px solid var(--line); text-align: left; }
 .component-table th { color: var(--fg-muted); font-weight: 600; }
 
+/* 数字列与涨跌列（13-visual-design §2.2 / §3 / §4 / §5；T-UI-009.1）
+   数字右对齐成列 + 自带等宽 + 表格数字特性——对齐是功能，不是风格。
+   涨跌的**三路冗余**里只有「颜色」一路由本文件承担，方向符（▲▼—）与数值符号由渲染件
+   与它**同一次**产出并写在同一个单元格上，故本文件不会、也无法让某一路单独出现。 */
+.component-table th.num,
+.component-table td.num {
+  text-align: right;
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+}
+.component-table .num--up { color: var(--up); }
+.component-table .num--down { color: var(--down); }
+.component-table .num--flat { color: var(--flat); }
+/* 无数据**不是**一个方向：取占位墨（不冒充「平」），并带说明性 title（规范 §6 不静默留白）。 */
+.component-table .num--none { color: var(--fg-faint); }
+
 .component-report h3 { margin: 0 0 .5rem; font-size: var(--text-md); }
 .component-report h4 { margin: .75rem 0 .25rem; font-size: var(--text-sm); color: var(--fg-muted); }
 .component-report ul { margin: 0; padding-left: 1.1rem; }
