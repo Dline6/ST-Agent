@@ -238,10 +238,13 @@ def test_agt_layer_sits_after_ui():
     assert rl.LAYER_ORDER["INT"] == len(rl.LAYERS) - 1
 
 
-def test_m5_milestone_registered():
-    """M5（受控自主）已登记在 MILESTONES 末位（决策日志 D-090）——账本里程碑视图据它成行。"""
-    assert [m[0] for m in rl.MILESTONES] == ["M0", "M1", "M2", "M3", "M4", "M5"]
-    assert rl.MILESTONES[-1][1] == "受控自主"
+def test_milestones_registered():
+    """M0–M5 既有里程碑 + M6 / M7 已登记（决策日志 D-090 / D-103）——账本里程碑视图据它成行。"""
+    assert [m[0] for m in rl.MILESTONES] == [
+        "M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7",
+    ]
+    assert {m[0]: m[1] for m in rl.MILESTONES}["M5"] == "受控自主"
+    assert [m[1] for m in rl.MILESTONES[-2:]] == ["界面完备", "打包发布"]
 
 
 # ───────────────────────── archive：移动后改正相对链接 ─────────────────────────
