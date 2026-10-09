@@ -106,5 +106,6 @@
 - **量化指标与度量方案**：另立文档，本 PRD 不含
 - **站点地图（IA 骨架）**：✅ 已生成 → [11-sitemap.md](11-sitemap.md)；各 story 的「关联页面」字段已同批回填
 - **页面 Flow 设计资产**：✅ 已生成 → [11-sitemap.md §3 页面 Flow](11-sitemap.md#3-页面-flow)；各 story 的「设计资产」字段已同批回填
+- **视觉设计规范**：✅ 已生成 → [13-visual-design.md](13-visual-design.md)（设计原则 / 色彩 / 字体 / 版式 / 14 型组件视觉基线 / 六态 / 动效 / 暗色 / 可达性；§2.1 令牌总表与 `src/st_agent/ui/web/css/tokens.css` 逐名一致）
 - **异常态系统穷举**：待跑，生成后新增 `12-edge-cases.md`，重点覆盖离线、LLM 不可用、MCP Server 崩溃、本地存储损坏、演进漂移等场景
 - **Persona 用研校准**：三类 Persona 均为场景推断锚点，待用户研究验证（尤其陈姐这一隐私敏感型用户的真实存在性）

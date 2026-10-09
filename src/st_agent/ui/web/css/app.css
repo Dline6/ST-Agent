@@ -1,34 +1,7 @@
-/* 骨架样式：只解决可读性与六态的可辨识度，不做视觉定稿。
-   配色只用中性灰阶 + 一套语义色，避免在渲染器尚未定型时先立品牌视觉。 */
+/* 骨架样式：**结构与六态 chrome 归本文件，视觉值一律取自 `tokens.css`**（T-UI-007 / D-104）。
 
-:root {
-  color-scheme: light dark;
-  --fg: #1c1c1e;
-  --fg-muted: #5c5c60;
-  --bg: #fbfbfd;
-  --card: #ffffff;
-  --line: #e3e3e8;
-  --ok: #1f6f43;
-  --empty: #5c5c60;
-  --delayed: #8a5a00;
-  --error: #a52121;
-  --notice: #2a4d8f;
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --fg: #ececf0;
-    --fg-muted: #a0a0a8;
-    --bg: #16161a;
-    --card: #1e1e23;
-    --line: #33333a;
-    --ok: #6fcf97;
-    --empty: #a0a0a8;
-    --delayed: #e0b050;
-    --error: #f08a8a;
-    --notice: #8ab0f0;
-  }
-}
+   消费方不写裸色值——改了令牌名要同批改 `docs/PRD-v2-Agent/13-visual-design.md` §2.1 的令牌总表
+   （两处一致性由 tests/ui/test_ui_design_tokens.py 断言）。 */
 
 * { box-sizing: border-box; }
 
@@ -37,12 +10,14 @@ body {
   padding: 2rem 1.25rem 4rem;
   background: var(--bg);
   color: var(--fg);
-  font: 15px/1.6 -apple-system, "Segoe UI", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  font-family: var(--font-ui);
+  font-size: var(--text-md);
+  line-height: var(--leading);
 }
 
 .masthead { max-width: 46rem; margin: 0 auto 1.5rem; }
-.masthead h1 { margin: 0 0 .25rem; font-size: 1.4rem; letter-spacing: .01em; }
-.hint { margin: 0; color: var(--fg-muted); font-size: .9rem; }
+.masthead h1 { margin: 0 0 .25rem; font-size: var(--text-xl); letter-spacing: .01em; }
+.hint { margin: 0; color: var(--fg-muted); font-size: var(--text-sm); }
 
 /* 页面导航（壳）：与主区同宽；跳页链接由 main.js 拼回 fragment 里的令牌。 */
 .nav { max-width: 46rem; margin: 0 auto .75rem; }
@@ -50,16 +25,16 @@ body {
 .nav__link {
   display: inline-block;
   padding: .15rem .45rem;
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   color: var(--fg-muted);
-  font-size: .9rem;
+  font-size: var(--text-sm);
   text-decoration: none;
 }
 .nav__link:hover { color: var(--fg); background: var(--line); }
 .nav__link[aria-current="page"] { color: var(--fg); font-weight: 600; background: var(--line); }
 
 /* 未实现页面的可用性探针占位（只证明路由通、端口在不在，不冒充业务内容）。 */
-.page-probe__title { margin: 0 0 .25rem; font-size: 1.05rem; }
+.page-probe__title { margin: 0 0 .25rem; font-size: var(--text-lg); }
 .page-probe__body { margin-top: .75rem; }
 
 main {
@@ -68,7 +43,7 @@ main {
   padding: 1.25rem;
   background: var(--card);
   border: 1px solid var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
 }
 
 .state { margin: 0 0 .5rem; font-weight: 600; }
@@ -80,8 +55,8 @@ main {
 .state--input-error { color: var(--error); }
 
 .reason { margin: .25rem 0; }
-.meta { margin: .25rem 0; color: var(--fg-muted); font-size: .88rem; }
-.notice { margin: .5rem 0; color: var(--notice); font-size: .9rem; }
+.meta { margin: .25rem 0; color: var(--fg-muted); font-size: var(--text-sm); }
+.notice { margin: .5rem 0; color: var(--notice); font-size: var(--text-sm); }
 
 .payload {
   margin: .75rem 0 0;
@@ -89,8 +64,10 @@ main {
   overflow-x: auto;
   background: var(--bg);
   border: 1px solid var(--line);
-  border-radius: 6px;
-  font: 13px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-num);
+  font-size: var(--text-xs);
+  line-height: 1.5;
 }
 
 #dev-panel {
@@ -99,10 +76,10 @@ main {
   padding: 1rem 1.25rem;
   background: var(--card);
   border: 1px dashed var(--line);
-  border-radius: 10px;
+  border-radius: var(--radius-lg);
 }
 
-#dev-panel h2 { margin: 0 0 .5rem; font-size: .95rem; color: var(--fg-muted); font-weight: 600; }
+#dev-panel h2 { margin: 0 0 .5rem; font-size: var(--text-md); color: var(--fg-muted); font-weight: 600; }
 #dev-panel .row { display: flex; flex-wrap: wrap; gap: .5rem; }
 
 #dev-panel button {
@@ -110,9 +87,9 @@ main {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   font: inherit;
-  font-size: .85rem;
+  font-size: var(--text-xs);
   cursor: pointer;
 }
 
@@ -122,30 +99,30 @@ main {
 
 .component { margin-top: .75rem; }
 
-.component-table { width: 100%; border-collapse: collapse; font-size: .9rem; }
+.component-table { width: 100%; border-collapse: collapse; font-size: var(--text-sm); font-variant-numeric: tabular-nums; }
 .component-table th,
 .component-table td { padding: .35rem .5rem; border-bottom: 1px solid var(--line); text-align: left; }
 .component-table th { color: var(--fg-muted); font-weight: 600; }
 
-.component-report h3 { margin: 0 0 .5rem; font-size: 1rem; }
-.component-report h4 { margin: .75rem 0 .25rem; font-size: .9rem; color: var(--fg-muted); }
+.component-report h3 { margin: 0 0 .5rem; font-size: var(--text-md); }
+.component-report h4 { margin: .75rem 0 .25rem; font-size: var(--text-sm); color: var(--fg-muted); }
 .component-report ul { margin: 0; padding-left: 1.1rem; }
 
-.component--degraded { padding: .75rem; border: 1px dashed var(--line); border-radius: 8px; }
-.component--degraded summary { cursor: pointer; color: var(--fg-muted); font-size: .85rem; }
+.component--degraded { padding: .75rem; border: 1px dashed var(--line); border-radius: var(--radius-md); }
+.component--degraded summary { cursor: pointer; color: var(--fg-muted); font-size: var(--text-xs); }
 
 /* ── L3 四型（05 §2 / §5 / §7 / §9；槽词汇表见 D-064） ──────────── */
 
-.component__title { margin: 0 0 .35rem; font-size: 1rem; }
-.component__meta { margin: .2rem 0; color: var(--fg-muted); font-size: .88rem; }
+.component__title { margin: 0 0 .35rem; font-size: var(--text-md); }
+.component__meta { margin: .2rem 0; color: var(--fg-muted); font-size: var(--text-sm); }
 .component__greeting,
 .component__summary,
 .component__question { margin: .35rem 0; }
 .component__pairs { display: grid; grid-template-columns: max-content 1fr; gap: .2rem .75rem; margin: .35rem 0; }
-.component__pairs dt { color: var(--fg-muted); font-size: .88rem; }
+.component__pairs dt { color: var(--fg-muted); font-size: var(--text-sm); }
 .component__pairs dd { margin: 0; }
 .component__unknown { margin-top: .5rem; }
-.component__unknown summary { cursor: pointer; color: var(--delayed); font-size: .85rem; }
+.component__unknown summary { cursor: pointer; color: var(--delayed); font-size: var(--text-xs); }
 
 .badge {
   display: inline-block;
@@ -153,7 +130,7 @@ main {
   margin-right: .3rem;
   border: 1px solid var(--line);
   border-radius: 999px;
-  font-size: .8rem;
+  font-size: var(--text-xs);
 }
 .badge--degraded { color: var(--delayed); border-color: var(--delayed); }
 .chip--action { color: var(--notice); border-color: var(--notice); }
@@ -164,12 +141,12 @@ main {
 .trace-step summary { cursor: pointer; }
 .trace-step__index { display: inline-block; min-width: 1.2rem; color: var(--fg-muted); }
 .trace-step__type { font-weight: 600; }
-.trace-step__meta { margin-left: .5rem; color: var(--fg-muted); font-size: .85rem; }
+.trace-step__meta { margin-left: .5rem; color: var(--fg-muted); font-size: var(--text-xs); }
 .trace-conclusion { margin: .5rem 0 0; font-weight: 600; }
 
 /* context_card（05 §2）：六段固定卡片 */
-.card-section { margin: .5rem 0; padding: .5rem .75rem; border: 1px solid var(--line); border-radius: 8px; }
-.card-section__title { margin: 0 0 .25rem; font-size: .95rem; }
+.card-section { margin: .5rem 0; padding: .5rem .75rem; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.card-section__title { margin: 0 0 .25rem; font-size: var(--text-md); }
 .card-section__items,
 .card-section__tags { margin: .25rem 0; padding-left: 1.1rem; }
 .card-section__tags { list-style: none; padding-left: 0; }
@@ -186,14 +163,14 @@ main {
 
 /* conflict_adjudication_card（05 §9）：两方并列、不合并 */
 .conflict-sides { display: flex; flex-wrap: wrap; gap: .75rem; margin: .5rem 0; }
-.conflict-side { flex: 1 1 14rem; padding: .5rem .75rem; border: 1px solid var(--line); border-radius: 8px; }
-.conflict-side__label { margin: 0 0 .25rem; font-size: .95rem; }
+.conflict-side { flex: 1 1 14rem; padding: .5rem .75rem; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.conflict-side__label { margin: 0 0 .25rem; font-size: var(--text-md); }
 .conflict-directions { margin: .25rem 0; padding-left: 1.1rem; }
 .conflict-actions { margin: .25rem 0; }
 
 /* permission_approval_card（01 §10 / 03 §5.1 / 09 §3）：逐条并列、不合并 */
 .approval-items { margin: .5rem 0; padding: 0; list-style: none; }
-.approval-item { padding: .5rem .75rem; border: 1px solid var(--line); border-radius: 8px; margin-bottom: .4rem; }
+.approval-item { padding: .5rem .75rem; border: 1px solid var(--line); border-radius: var(--radius-md); margin-bottom: .4rem; }
 .approval-item__desc { margin: 0 0 .25rem; }
 .approval-item__state--pending { color: var(--delayed); border-color: var(--delayed); }
 .approval-item__state--approved { color: var(--ok); border-color: var(--ok); }
@@ -201,7 +178,7 @@ main {
 
 /* divergence_map（06 §5–§6）：矩阵为主视图、证据网络为辅视图，六段并列不合并 */
 .divergence__block { margin: .75rem 0; }
-.divergence__block h4 { margin: .5rem 0 .25rem; font-size: .9rem; color: var(--fg-muted); }
+.divergence__block h4 { margin: .5rem 0 .25rem; font-size: var(--text-sm); color: var(--fg-muted); }
 .divergence__stance { font-weight: 600; }
 .divergence__nodes,
 .divergence__edges,
@@ -210,22 +187,22 @@ main {
 .divergence__review-notes,
 .divergence__notes { margin: .25rem 0; padding-left: 1.1rem; }
 .divergence__nodes { list-style: none; padding-left: 0; }
-.divergence__conflict { padding: .5rem .75rem; border: 1px solid var(--line); border-radius: 8px; }
+.divergence__conflict { padding: .5rem .75rem; border: 1px solid var(--line); border-radius: var(--radius-md); }
 
 /* 反思中心的页面装配（/reflection 及其子页）：块与块自上而下并列 */
-.page__title { margin: 0 0 .5rem; font-size: 1.1rem; }
+.page__title { margin: 0 0 .5rem; font-size: var(--text-lg); }
 .page__block { margin: 0 0 1.25rem; }
-.page__block-title { margin: 0 0 .35rem; font-size: .95rem; color: var(--fg-muted); }
+.page__block-title { margin: 0 0 .35rem; font-size: var(--text-md); color: var(--fg-muted); }
 
 /* feedback_capture（01 §12 / 08 §1）：五类动作并列，原因入口独立一行 */
-.component--feedback { padding: .75rem; border: 1px solid var(--line); border-radius: 8px; }
+.component--feedback { padding: .75rem; border: 1px solid var(--line); border-radius: var(--radius-md); }
 .feedback__actions { display: flex; flex-wrap: wrap; gap: .4rem; margin: .5rem 0; }
 .feedback__button,
 .proposal-actions__button {
   font: inherit;
   padding: .2rem .6rem;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--card);
   color: var(--fg);
   cursor: pointer;
@@ -239,28 +216,28 @@ main {
   width: 100%;
   padding: .25rem .45rem;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--card);
   color: var(--fg);
 }
 
 /* proposal_card（01 §12 / 08 §3–§5）：逐条并列，动作行附在每条之下 */
 .proposal-list { margin: .5rem 0; padding: 0; list-style: none; }
-.proposal-item { padding: .6rem .75rem; border: 1px solid var(--line); border-radius: 8px; margin-bottom: .5rem; }
+.proposal-item { padding: .6rem .75rem; border: 1px solid var(--line); border-radius: var(--radius-md); margin-bottom: .5rem; }
 .proposal-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin: .4rem 0 .2rem; }
 .proposal-skill { padding: .2rem 0; }
 
 /* change_timeline（01 §12 / 08 §5–§6）：逐条变更并列，回滚动作附在每条之下 */
-.component--changes { padding: .75rem; border: 1px solid var(--line); border-radius: 8px; }
+.component--changes { padding: .75rem; border: 1px solid var(--line); border-radius: var(--radius-md); }
 .change-list { margin: .5rem 0; padding-left: 1.2rem; }
-.change-item { margin-bottom: .6rem; padding: .5rem .75rem; border: 1px solid var(--line); border-radius: 8px; }
+.change-item { margin-bottom: .6rem; padding: .5rem .75rem; border: 1px solid var(--line); border-radius: var(--radius-md); }
 .change-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin: .4rem 0 .2rem; }
 .change-actions__button,
 .setting-actions__button {
   font: inherit;
   padding: .2rem .6rem;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--card);
   color: var(--fg);
   cursor: pointer;
@@ -271,28 +248,28 @@ main {
 .setting-actions__button:disabled { opacity: .5; cursor: progress; }
 
 /* setting_panel（01 §12 / 08 §5）：逐条设置项，候选值 + 应用动作 */
-.component--setting { padding: .75rem; border: 1px solid var(--line); border-radius: 8px; }
+.component--setting { padding: .75rem; border: 1px solid var(--line); border-radius: var(--radius-md); }
 .setting-list { margin: .5rem 0; padding: 0; list-style: none; }
-.setting-item { padding: .5rem .75rem; border: 1px solid var(--line); border-radius: 8px; margin-bottom: .5rem; }
+.setting-item { padding: .5rem .75rem; border: 1px solid var(--line); border-radius: var(--radius-md); margin-bottom: .5rem; }
 .setting-item__name { margin: 0; font-weight: 600; }
 .setting-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin: .4rem 0 .2rem; }
 .setting__select {
   font: inherit;
   padding: .2rem .4rem;
   border: 1px solid var(--line);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--card);
   color: var(--fg);
 }
 
 /* violation_alert（01 §12；09 §3 的运行时防护）：警示 + 越界事实 + 禁用动作 */
-.component--violation { padding: .75rem; border: 1px solid var(--error); border-radius: 8px; }
+.component--violation { padding: .75rem; border: 1px solid var(--error); border-radius: var(--radius-md); }
 .violation-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin: .4rem 0 .2rem; }
 .violation-actions__button {
   font: inherit;
   padding: .2rem .6rem;
   border: 1px solid var(--error);
-  border-radius: 6px;
+  border-radius: var(--radius-sm);
   background: var(--card);
   color: var(--error);
   cursor: pointer;

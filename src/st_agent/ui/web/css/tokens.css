@@ -1,0 +1,81 @@
+/* ST Agent · 设计令牌（[D-104] / [T-UI-007]）
+
+   本文件是表现层**视觉值的唯一真相源**：`app.css` 与后续各页面只消费变量，不写裸值。
+   令牌名与 `docs/PRD-v2-Agent/13-visual-design.md` §2.1 的「令牌总表」**逐名一致**——
+   由 `tests/ui/test_ui_design_tokens.py` 断言，两处不得漂移。
+
+   方向（D-104 ①）：**研判页（对照栏）** 为主干——提问输入、输出是一份被书写的「页」，
+   多视角分歧是同名并列的对照栏；吸收台账的批注追溯与工作台的信息密度。
+   两条硬约束落在这里：**中性**（界面读作工具与仪表，不读作人，铁律 2）与
+   **并列不合并**（铁律 4）——故层级靠线与留白，不靠阴影与卡片堆叠。 */
+
+:root {
+  color-scheme: light dark;
+
+  /* ── 面：纸底 / 面板 / 结构线 ── */
+  --bg: #f7f8f9;
+  --card: #ffffff;
+  --line: #d8dbdf;
+
+  /* ── 墨：三级（正文 / 次要 / 禁用） ── */
+  --fg: #1b1b1d;
+  --fg-muted: #5a5f66;
+  --fg-faint: #8a9099;
+
+  /* ── 强调：刻度靛（陈述性链接 / 当前项 / 焦点环） ── */
+  --accent: #24457f;
+  --accent-weak: #e8edf6;
+
+  /* ── 六态（01 §5 的呈现档：ok / empty / delayed / error / input_error） ── */
+  --ok: #1f6f43;
+  --empty: #5a5f66;
+  --delayed: #8a5a00;
+  --error: #a52121;
+  --input-error: #a52121;
+  --notice: #24457f;
+
+  /* ── 涨跌（D-104 ②：A 股惯例红涨绿跌，色值避开纯饱和以示弱；──
+     颜色**恒与** ▲▼ 方向符和数值符号同时出现，见规范 §2.2 的冗余编码） ── */
+  --up: #b23a30;
+  --down: #1f7a4d;
+  --flat: #5a5f66;
+
+  /* ── 字体：中文走系统栈（不嵌字体）；数字走自带等宽（财务对齐是功能） ── */
+  --font-ui: -apple-system, "Segoe UI", "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+  --font-num: ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+
+  /* ── 字号阶梯与行高（中文行高比拉丁放宽一档） ── */
+  --text-xs: .8rem;
+  --text-sm: .88rem;
+  --text-md: 1rem;
+  --text-lg: 1.1rem;
+  --text-xl: 1.4rem;
+  --leading: 1.7;
+
+  /* ── 圆角（三档，按层级取，不按元素类型取） ── */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14161a;
+    --card: #1b1e23;
+    --line: #33383f;
+    --fg: #e8eaed;
+    --fg-muted: #a3aab3;
+    --fg-faint: #7c838c;
+    --accent: #8fb0e8;
+    --accent-weak: #1e2836;
+    --ok: #6fcf97;
+    --empty: #a3aab3;
+    --delayed: #e0b050;
+    --error: #f08a8a;
+    --input-error: #f08a8a;
+    --notice: #8fb0e8;
+    --up: #e08a80;
+    --down: #6fcf97;
+    --flat: #a3aab3;
+  }
+}
