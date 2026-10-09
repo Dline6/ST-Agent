@@ -41,11 +41,15 @@ exclude = ["st_agent.ui.dev"]
 # （市场库 DDL `st_agent/l0/market/schema.sql` 不在本表里：setuptools 默认的
 #  include-package-data 已带上它——T-UI-002.3 实测 `pip wheel` 产物核对过。）
 "st_agent.ui" = [
+    # **递归**模式——`**` 经 `glob(..., recursive=True)` 展开（setuptools 的 `build_py.find_data_files`），
+    # 故 `web/` 下任意深度都被覆盖，新增目录不必再改本表。
+    # 逐目录枚举曾在 2026-10-09 被真 wheel 证伪：只列顶层 `js/` 与 `plugins/l3/` 时，
+    # `pages/` 与 `plugins/{reflection,eco,studio}/` 共 10 个文件不进包 ⇒ 四个页面与多个组件型
+    # 在非 editable 安装下静默失效（`T-UI-008`）。「`web/` 下每个文件都被某模式覆盖」
+    # 与「无模式匹配 `dev/**`」由 `tests/ui/test_ui_dev_excluded.py` 断言。
     "web/*.html",
-    "web/css/*.css",
-    "web/js/*.js",
-    "web/js/components/*.js",
-    "web/js/plugins/l3/*.js",
+    "web/**/*.css",
+    "web/**/*.js",
 ]
 
 [tool.pytest.ini_options]

@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import glob
 import tomllib
 from pathlib import Path
 
@@ -16,6 +17,24 @@ from st_agent.ui.dev import SAMPLE_STATUSES
 from st_agent.ui.errors import DevSurfaceUnavailable
 
 _PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
+_UI = Path(__file__).resolve().parents[2] / "src" / "st_agent" / "ui"
+_WEB = _UI / "web"
+
+
+def _package_data_patterns() -> list[str]:
+    """`package-data["st_agent.ui"]` 的模式表（相对包目录 `st_agent/ui`）。"""
+    data = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
+    return data["tool"]["setuptools"]["package-data"]["st_agent.ui"]
+
+
+def _expand(pattern: str) -> set[Path]:
+    """按 **setuptools 的同一套语义**求值：``glob(..., recursive=True)``。
+
+    见 `setuptools.command.build_py.find_data_files`——它把模式交给 `glob(recursive=True)`，
+    故 `**` 真递归。**不得**改用 `fnmatch`：它的 `*` 会跨 `/`，会把「未覆盖」算成
+    「已覆盖」——本组断言正是为 2026-10-09 那次真 wheel 漏 10 个文件而加强的（[T-UI-008]）。
+    """
+    return {Path(p) for p in glob.glob(str(_UI / pattern), recursive=True) if Path(p).is_file()}
 
 
 def test_release_build_excludes_the_dev_package() -> None:
@@ -25,9 +44,32 @@ def test_release_build_excludes_the_dev_package() -> None:
 
 
 def test_web_assets_travel_with_the_package() -> None:
-    data = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    patterns = data["tool"]["setuptools"]["package-data"]["st_agent.ui"]
-    assert any(pattern.startswith("web/") for pattern in patterns)
+    """`web/**` 下的**每个**文件都被某个模式覆盖。
+
+    原断言只要求「存在任一以 `web/` 开头的模式」——任何模式集都能过，等于没守：
+    T-UI-008 实测真 wheel 少 10 个前端文件，而本条用例**照样绿**。
+    """
+    covered: set[Path] = set()
+    for pattern in _package_data_patterns():
+        covered |= _expand(pattern)
+    sources = {p for p in _WEB.rglob("*") if p.is_file()}
+    assert sources, "未扫到任何前端资产（根路径写错会让本用例空跑）"
+    assert not sources - covered, (
+        "以下前端资产不会被任何 package-data 模式打进发布包（非 editable 安装下会 404 / 降级）："
+        f"{sorted(p.relative_to(_UI).as_posix() for p in sources - covered)}"
+    )
+
+
+def test_package_data_patterns_never_reach_the_dev_surface() -> None:
+    """模式不得匹配 `dev/**`——dev 面在发布构建里是**物理剔除**的（[D-060] ④I）。"""
+    dev_files = {p for p in (_UI / "dev").rglob("*") if p.is_file()}
+    assert dev_files, "未扫到 dev 面文件（本用例会空跑）"
+    hit: set[Path] = set()
+    for pattern in _package_data_patterns():
+        hit |= _expand(pattern) & dev_files
+    assert not hit, (
+        f"以下 dev 面文件会被打进发布包：{sorted(p.relative_to(_UI).as_posix() for p in hit)}"
+    )
 
 
 def test_dev_endpoint_absent_when_dev_is_off(ui_server, http_get, auth) -> None:
