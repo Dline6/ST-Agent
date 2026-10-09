@@ -86,6 +86,7 @@ from st_agent.l2.memory import (
     new_node_id,
     official_onboarding_entry,
 )
+from st_agent.l2.memory.models import AttentionNode
 from st_agent.l3.approval import ApprovalRequest, CapabilityApprovalPanel
 from st_agent.l3.chat import SessionStore
 from st_agent.l3.commands import COMMAND_KIND, CommandRegistry, official_command_entry
@@ -1540,6 +1541,86 @@ def _grading_rules(raw: Any) -> tuple[EvolutionRiskRule, ...]:
     return tuple(rules)
 
 
+POSITION_SCOPES: tuple[str, ...] = ("holdings", "watchlist")
+"""持仓 / 关注两段的**面键**（与 [`AttentionNode`](../src/st_agent/l2/memory/models.py) 的同名字段
+逐名对应，[04 §3.1]）。表现层按它出两条读面，描述**不接受** URL / 方法（[01 §12] 的动作不进描述）。"""
+
+
+@dataclass(frozen=True)
+class MemoryPositionsFacade:
+    """记忆区的**持仓 / 关注读面**（组合根所有；`ui` 只经鸭子端口消费，[`T-UI-009.2`]）。
+
+    两件事都在组合根做完，故表现层不必（也不得）import L2 / L0 的类型：
+
+    - **取数**——持仓与关注取自记忆的 `attention` 节点（[04 §3.1]），行情取自本地市场库的
+      最新日线视图（`v_k_line_latest` 的收盘 / 涨跌幅 / 换手率 + `security` 的名称）。
+      **只读、不触网**：`market` 是鸭子类型（`MarketDb.query`），与 L1 执行器同一取数面。
+    - **据实报缺口**——行情源未注入、或本地行情库查询非 `ok`，都**不**退化成「只有代码、
+      没有行情」的半表（那会让人以为行情本身就是空的），而是 `available=False` + 写明原因，
+      由表现层回 `unavailable`。某标的在缓存里**没有**日线则只该行的行情列缺席（`None`），
+      由渲染面出「无数据」——那是真实情况，不冒充 0，也不读作「平」。
+
+    一处**优先级**：本段在记忆里**没有**标的时回空行集（表现为 `empty`），**先于**行情缺口的
+    判定——对着一个空持仓说「行情源不可用」是噪声，不是信息。
+    """
+
+    reader: MemoryReader
+    market: Any = None
+
+    _QUOTES_SQL = (
+        "SELECT k.code AS code, k.close AS close, k.pct_chg AS pct_chg, k.turn AS turn,"
+        " (SELECT s.code_name FROM security s WHERE s.code = k.code) AS code_name"
+        " FROM v_k_line_latest k WHERE k.code IN ({placeholders})"
+    )
+
+    def positions(self, scope: str) -> dict[str, Any]:
+        """一段（``holdings`` / ``watchlist``）的行集；`available=False` 时 `reason` 点名缺口。"""
+        if scope not in POSITION_SCOPES:
+            raise ValueError(f"不认识的面：{scope!r}（只认 {POSITION_SCOPES}）")
+        codes = self.codes(scope)
+        if not codes:
+            return {"available": True, "reason": "", "rows": []}
+        if self.market is None:
+            return {
+                "available": False,
+                "reason": "行情源未注入：本次装配未带本地行情库（装配归生产入口）",
+                "rows": [],
+            }
+        envelope = self.market.query(
+            self._QUOTES_SQL.format(placeholders=", ".join("?" for _ in codes)), codes
+        )
+        if getattr(envelope, "status", None) != "ok":
+            reason = getattr(envelope, "reason", "") or "本地行情库未给出原因"
+            return {"available": False, "reason": f"本地行情库暂不可用：{reason}", "rows": []}
+        quotes = {row["code"]: row for row in (envelope.data or {}).get("rows") or []}
+        return {
+            "available": True,
+            "reason": "",
+            "rows": [
+                {
+                    "code": code,
+                    "code_name": quotes.get(code, {}).get("code_name"),
+                    "close": quotes.get(code, {}).get("close"),
+                    "pct_chg": quotes.get(code, {}).get("pct_chg"),
+                    "turn": quotes.get(code, {}).get("turn"),
+                }
+                for code in codes
+            ],
+        }
+
+    def codes(self, scope: str) -> tuple[str, ...]:
+        """记忆里的证券代码——去重**保序**（同一标的在一次读面里只占一行）。"""
+        result = self.reader.query(
+            SliceQuery(task_type="chat", topic="", token_budget=None, view="list")
+        )
+        found: list[str] = []
+        for slice_ in result.slices:
+            node = slice_.node
+            if isinstance(node, AttentionNode):
+                found.extend(getattr(node, scope, ()) or ())
+        return tuple(dict.fromkeys(found))
+
+
 class ReflectionFacade:
     """L6 反思演进栈的**表现层适配面**（组合根所有；`ui` 只经鸭子端口消费，[`T-UI-004.2`]）。
 
@@ -2658,6 +2739,13 @@ class M5Runtime:
 
     m4: M4Runtime
     investigations: Any
+    memory: MemoryPositionsFacade
+    """记忆区的**持仓 / 关注读面**（组合根造好；表现层经鸭子端口 `memory` 消费）。
+
+    行情源缺席时本面仍在（`positions()` 据实回 `available=False` + 原因），故表现层拿到的
+    永远是一个可问的面，而不是 `None`——**「未接线」与「接了但行情不可用」是两回事**
+    （[01 §5]：六态不可混用）。
+    """
 
     # ── 与 M1–M4 同形的便捷取用 ──────────────────────────────────────────
 
@@ -2709,6 +2797,8 @@ class M5Runtime:
 def build_m5_runtime(
     root: Path | str,
     passphrase: str,
+    *,
+    market_query: Any = None,
     **kwargs: Any,
 ) -> M5Runtime:
     """装配 M5 全栈（＝ M4 的 L0–L6 + ECO + **受控自主运行时**；[`T-INT-006`] 的**生产组合根**）。
@@ -2745,6 +2835,10 @@ def build_m5_runtime(
         return port
 
     m4 = build_m4_runtime(
-        root, passphrase, investigations_of=investigations_of, **kwargs
+        root, passphrase, market_query=market_query, investigations_of=investigations_of, **kwargs
     )
-    return M5Runtime(m4=m4, investigations=holder[0])
+    return M5Runtime(
+        m4=m4,
+        investigations=holder[0],
+        memory=MemoryPositionsFacade(reader=m4.m1.reader, market=market_query),
+    )

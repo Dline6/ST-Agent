@@ -85,7 +85,7 @@ def test_the_memory_export_round_trip(running, rig) -> None:
     shutil.copy(source, Path(rig.root) / "inbox" / source.name)
 
     _, inbox = _call(running, "GET", "/api/eco/inbox")
-    assert [row[0] for row in inbox["data"]["slots"]["rows"]] == [source.name]
+    assert [row["file_name"] for row in inbox["data"]["slots"]["rows"]] == [source.name]
 
     _, review = _call(
         running, "POST", "/api/eco/import/review",

@@ -28,6 +28,7 @@ from st_agent.ui.errors import DevSurfaceUnavailable
 from st_agent.ui.neutrality_gate import NeutralityGate
 from st_agent.ui.registry import slot_gaps
 from st_agent.ui.security import RequestGuard, new_token, resolve_static
+from st_agent.ui.tables import Column, table_slots, table_text_kinds
 
 __all__ = ["DEV_SCRIPT_MARKER", "PAGE_PATHS", "UiApp", "WEB_ROOT", "build_ui"]
 
@@ -35,6 +36,7 @@ WEB_ROOT = Path(__file__).resolve().parent / "web"
 """生产静态资产根（无构建 ES modules）。"""
 
 PAGE_PATHS = frozenset({
+    "/memory",
     "/reflection",
     "/reflection/changes",
     "/reflection/experiments",
@@ -145,6 +147,99 @@ _STUDIO_LABELS = {
 _STUDIO_CANVAS_TITLE = "Studio 画布"
 """画布描述标题（生成文案，过 [01 §6] 执行点 2）。"""
 
+# ── 各表的列（`table` 槽的**唯一漏斗**在 `ui/tables.py`，形状与呈现角色见其模块文档） ──
+#
+# 列名是**生成文案**（过 [01 §6] 执行点 2）；表要用 `table_slots` / `table_text_kinds` 出，
+# 不在这里手拼 slots——手拼正是 2026-10-09 那处「产出方与渲染件形状不一致、六张表全空」的成因
+# （[D-105] ①）。
+
+_EXPERIMENT_COLUMNS = (
+    Column("hypothesis", "假设"),
+    Column("scope", "范围"),
+    Column("sample", "样本"),
+    Column("result", "结果"),
+    Column("decision", "决策"),
+    Column("status", "状态"),
+)
+"""A/B 实验日志的表（[08 §4]）。"""
+
+_TRAINING_COLUMNS = (
+    Column("training_id", "训练 id"),
+    Column("correction", "用户的修正（原话）"),
+    Column("restatement", "复述"),
+    Column("pattern", "模式"),
+    Column("confirmed", "已确认"),
+    Column("created_at", "时刻"),
+)
+"""训练对话留痕的表（[08 §1]）；`correction` 是**用户原话**，整行按 `data` 原样呈现（[D-053]）。"""
+
+_INBOX_COLUMNS = (
+    Column("file_name", "文件名"),
+    Column("size", "大小（字节）", kind="number", digits=0),
+)
+"""导入收件目录的表。"""
+
+_INDEX_COLUMNS = (
+    Column("kind", "类别"),
+    Column("name", "名称"),
+    Column("version", "版本"),
+    Column("description", "说明"),
+    Column("download_url", "下载地址"),
+    Column("checksum", "校验和"),
+)
+"""官方 Skill 索引的表（[09 §6]）。"""
+
+_IMPORT_COLUMNS = (
+    Column("import_id", "留痕"),
+    Column("kind", "种类"),
+    Column("installed_id", "装入标识"),
+    Column("sharer", "分享者"),
+    Column("imported_at", "导入时间"),
+)
+"""导入留痕的表（[09 §7] 的来源追溯）。"""
+
+_VIOLATION_COLUMNS = (
+    Column("skill_id", "能力"),
+    Column("violation", "越界类别"),
+    Column("occurred_at", "时刻"),
+    Column("trace_id", "关联推理链"),
+    Column("disabled", "已禁用"),
+)
+"""越界行为留痕的表（[09 §3]）。"""
+
+_POSITION_COLUMNS = (
+    Column("code", "代码"),
+    Column("code_name", "名称"),
+    Column("close", "收盘", kind="number"),
+    Column("pct_chg", "涨跌幅", kind="direction"),
+    Column("turn", "换手率", kind="number"),
+)
+"""记忆区的**持仓 / 关注行情读面**（[`T-UI-009.2`]）。
+
+`pct_chg` 是 `direction` 列——**三路冗余编码（颜色 + ▲▼ + 带符号数值）由渲染件一次产出**
+（[13-visual-design §2.2]），本层只给**数值**；某标的在本地缓存里没有日线时给 `None`，
+由渲染面出「无数据」，**不**冒充 0、**不**读作「平」。"""
+
+_POSITION_SCOPES: dict[str, tuple[str, str]] = {
+    "holdings": ("持仓", "记忆中没有持仓信息"),
+    "watchlist": ("关注池", "记忆中没有关注池信息"),
+}
+"""两段的**面键** →（段名 · 空态原因）。原因措辞与 [05 §2] 上下文卡片的同段一致：
+空是邀请（说清空的原因），不是留白。"""
+
+
+def _training_row(item: Mapping[str, Any]) -> dict[str, Any]:
+    """训练留痕的一行（`session` 段可能缺席，逐字段取值、不抛）。"""
+    session = item.get("session") or {}
+    return {
+        "training_id": session.get("training_id"),
+        "correction": session.get("correction"),
+        "restatement": session.get("restatement"),
+        "pattern": _compact(session.get("pattern")),
+        "confirmed": "是" if session.get("confirmed") else "否",
+        "created_at": session.get("created_at"),
+    }
+
 
 def _as_datetime(value: Any) -> datetime | None:
     """把 ISO 串还原成**带时区**的 ``datetime``（[01 §8]：`as_of` 须带时区语义）。"""
@@ -182,6 +277,14 @@ class UiApp:
 
     eco: Any = None
     """生态面（鸭子端口：`exporter` / `importer` / `index`）；缺省 ``None`` → 生态面 fail-closed。"""
+
+    memory: Any = None
+    """记忆区读面（鸭子端口：``positions(scope) -> dict``）；缺省 ``None`` → 记忆区 fail-closed。
+
+    **与其余三端口同一形**：由组合根注入适配面（`MemoryPositionsFacade`），`ui` 不 import
+    `l2` / `l0` 的类型。注意它与「面在、但行情源没注入」是**两回事**——后者是面自己回的
+    ``available=False``（表现为 `unavailable` + 原因并有最后更新时间），本条只管「面本身没接」。
+    """
 
     @property
     def dev_enabled(self) -> bool:
@@ -454,21 +557,21 @@ class UiApp:
             lambda face: ResultEnvelope.ok(
                 self._gated_description(
                     "table",
-                    slots={
-                        "columns": ["假设", "范围", "样本", "结果", "决策", "状态"],
-                        "rows": [
-                            [
-                                item.get("hypothesis"),
-                                item.get("scope"),
-                                _compact(item.get("sample")),
-                                _compact(item.get("result")),
-                                item.get("decision"),
-                                item.get("status"),
-                            ]
+                    slots=table_slots(
+                        _EXPERIMENT_COLUMNS,
+                        [
+                            {
+                                "hypothesis": item.get("hypothesis"),
+                                "scope": item.get("scope"),
+                                "sample": _compact(item.get("sample")),
+                                "result": _compact(item.get("result")),
+                                "decision": item.get("decision"),
+                                "status": item.get("status"),
+                            }
                             for item in face.experiments()
                         ],
-                    },
-                    text_kinds={"columns": "generated", "rows": "data"},
+                    ),
+                    text_kinds=table_text_kinds(),
                     title="A/B 实验日志",
                 )
             ),
@@ -481,23 +584,8 @@ class UiApp:
             lambda face: ResultEnvelope.ok(
                 self._gated_description(
                     "table",
-                    slots={
-                        "columns": [
-                            "训练 id", "用户的修正（原话）", "复述", "模式", "已确认", "时刻",
-                        ],
-                        "rows": [
-                            [
-                                (item.get("session") or {}).get("training_id"),
-                                (item.get("session") or {}).get("correction"),
-                                (item.get("session") or {}).get("restatement"),
-                                _compact((item.get("session") or {}).get("pattern")),
-                                "是" if (item.get("session") or {}).get("confirmed") else "否",
-                                (item.get("session") or {}).get("created_at"),
-                            ]
-                            for item in face.trainings()
-                        ],
-                    },
-                    text_kinds={"columns": "generated", "rows": "data"},
+                    slots=table_slots(_TRAINING_COLUMNS, map(_training_row, face.trainings())),
+                    text_kinds=table_text_kinds(),
                     title="训练对话留痕",
                 )
             ),
@@ -895,11 +983,14 @@ class UiApp:
         files = face.inbox()
         return self._gated_description(
             "table",
-            slots={
-                "columns": ["文件名", "大小（字节）"],
-                "rows": [[item.get("file_name"), item.get("size")] for item in files],
-            },
-            text_kinds={"columns": "generated", "rows": "data"},
+            slots=table_slots(
+                _INBOX_COLUMNS,
+                [
+                    {"file_name": item.get("file_name"), "size": item.get("size")}
+                    for item in files
+                ],
+            ),
+            text_kinds=table_text_kinds(),
             title="导入收件目录",
         )
 
@@ -978,18 +1069,21 @@ class UiApp:
         return ResultEnvelope.ok(
             self._gated_description(
                 "table",
-                slots={
-                    "columns": ["类别", "名称", "版本", "说明", "下载地址", "校验和"],
-                    "rows": [
-                        [
-                            item.get("kind"), item.get("name"), item.get("version"),
-                            item.get("description"), item.get("download_url"),
-                            item.get("checksum"),
-                        ]
+                slots=table_slots(
+                    _INDEX_COLUMNS,
+                    [
+                        {
+                            "kind": item.get("kind"),
+                            "name": item.get("name"),
+                            "version": item.get("version"),
+                            "description": item.get("description"),
+                            "download_url": item.get("download_url"),
+                            "checksum": item.get("checksum"),
+                        }
                         for item in entries
                     ],
-                },
-                text_kinds={"columns": "generated", "rows": "data"},
+                ),
+                text_kinds=table_text_kinds(),
                 title="官方 Skill 索引",
             )
         )
@@ -1008,18 +1102,20 @@ class UiApp:
     def _imports_description(self, records: list[dict[str, Any]]) -> UiDescription:
         return self._gated_description(
             "table",
-            slots={
-                "columns": ["留痕", "种类", "装入标识", "分享者", "导入时间"],
-                "rows": [
-                    [
-                        item.get("import_id"), item.get("kind"), item.get("installed_id"),
-                        (item.get("origin") or {}).get("sharer"),
-                        (item.get("origin") or {}).get("imported_at"),
-                    ]
+            slots=table_slots(
+                _IMPORT_COLUMNS,
+                [
+                    {
+                        "import_id": item.get("import_id"),
+                        "kind": item.get("kind"),
+                        "installed_id": item.get("installed_id"),
+                        "sharer": (item.get("origin") or {}).get("sharer"),
+                        "imported_at": (item.get("origin") or {}).get("imported_at"),
+                    }
                     for item in records
                 ],
-            },
-            text_kinds={"columns": "generated", "rows": "data"},
+            ),
+            text_kinds=table_text_kinds(),
             title="导入留痕",
         )
 
@@ -1055,19 +1151,62 @@ class UiApp:
         disabled = set(info.get("disabled") or ())
         return self._gated_description(
             "table",
-            slots={
-                "columns": ["能力", "越界类别", "时刻", "关联推理链", "已禁用"],
-                "rows": [
-                    [
-                        item.get("skill_id"), item.get("violation"), item.get("occurred_at"),
-                        item.get("trace_id"),
-                        "是" if item.get("skill_id") in disabled else "否",
-                    ]
+            slots=table_slots(
+                _VIOLATION_COLUMNS,
+                [
+                    {
+                        "skill_id": item.get("skill_id"),
+                        "violation": item.get("violation"),
+                        "occurred_at": item.get("occurred_at"),
+                        "trace_id": item.get("trace_id"),
+                        "disabled": "是" if item.get("skill_id") in disabled else "否",
+                    }
                     for item in records
                 ],
-            },
-            text_kinds={"columns": "generated", "rows": "data"},
+            ),
+            text_kinds=table_text_kinds(),
             title="越界行为留痕",
+        )
+
+    # ───────────────────── 记忆区（[T-UI-009.2]） ─────────────────────
+
+    def api_memory_positions(self, scope: str) -> dict[str, Any]:
+        """记忆区的**持仓 / 关注行情读面**（`table`）——两条端点，一条一段。
+
+        这是 [13-visual-design §2.2] 涨跌三路冗余编码与 `--font-num` 的**首个真实消费方**：
+        描述只承载**数值**（涨跌幅给带符号百分数），编码由渲染件一次产出——故「颜色与符号
+        恒同时出现」是结构上成立的，不靠本层自觉（[D-105] ②）。
+
+        三种缺口**互不冒充**（[01 §5] 六态）：面未接线 ⇒ `unavailable` + 点名；记忆里这段为空
+        ⇒ `empty` + 原因；行情源没注入 / 本地行情库非 `ok` ⇒ `unavailable` + 原因。某标的
+        在缓存里没有日线**不是**缺口——那一行的行情列给 `None`，由渲染面出「无数据」。
+        """
+        if scope not in _POSITION_SCOPES:
+            return envelope_payload(
+                ResultEnvelope.validation_failed(f"不认识的面：{scope!r}")
+            )
+        return self._call_face(
+            f"memory-{scope}", self.memory, "记忆面",
+            lambda face: self._positions_envelope(face, scope),
+        )
+
+    def _positions_envelope(self, face: Any, scope: str) -> ResultEnvelope:
+        label, empty_reason = _POSITION_SCOPES[scope]
+        view = face.positions(scope)
+        if not view.get("available"):
+            return ResultEnvelope.unavailable(
+                str(view.get("reason") or "记忆面未接线"), last_updated_at=_now()
+            )
+        rows = view.get("rows") or []
+        if not rows:
+            return ResultEnvelope.empty(empty_reason)
+        return ResultEnvelope.ok(
+            self._gated_description(
+                "table",
+                slots=table_slots(_POSITION_COLUMNS, rows),
+                text_kinds=table_text_kinds(),
+                title=f"{label}行情",
+            )
         )
 
     def _gated_description(
@@ -1197,14 +1336,15 @@ def build_ui(
     chat: Any = None,
     reflection: Any = None,
     eco: Any = None,
+    memory: Any = None,
 ) -> UiApp:
     """按已绑定的 ``host`` / ``port`` 装配表现层。
 
     ``dev=True`` 而 dev 子包不可用时抛 :class:`DevSurfaceUnavailable`——发布构建里
     「带 dev 跑」是配置错误，必须响，不能装作正常。
 
-    ``chat`` / ``reflection`` / ``eco``：三个**鸭子端口**，由生产入口注入；缺省 ``None``
-    时对应面 fail-closed（`ui` 不 import `st_agent.app`，只经端口消费）。
+    ``chat`` / ``reflection`` / ``eco`` / ``memory``：四个**鸭子端口**，由生产入口注入；缺省
+    ``None`` 时对应面 fail-closed（`ui` 不 import `st_agent.app`，只经端口消费）。
     """
     dev_package = _load_dev() if dev else None
     if dev and dev_package is None:
@@ -1219,4 +1359,5 @@ def build_ui(
         chat=chat,
         reflection=reflection,
         eco=eco,
+        memory=memory,
     )

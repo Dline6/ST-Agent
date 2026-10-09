@@ -10,11 +10,18 @@
 
 import { renderEcoPage, renderImportPage, renderImportsPage, renderIndexPage, renderSecurityPage } from './pages/eco.js';
 import { renderEvolutionPage, renderChangesPage } from './pages/evolution.js';
+import { renderMemoryPage } from './pages/memory.js';
 import { renderReflectionPage, singleBlockPage } from './pages/reflection.js';
 import { renderStudioPage } from './pages/studio.js';
 
 export const PAGES = [
   { path: '/', title: '总览', statusPath: '/api/health' },
+  {
+    path: '/memory',
+    title: '持仓与关注',
+    statusPath: '/api/memory/holdings',
+    render: renderMemoryPage,
+  },
   {
     path: '/reflection',
     title: '反思中心',

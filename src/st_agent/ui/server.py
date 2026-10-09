@@ -70,6 +70,9 @@ _GET_ROUTES: dict[str, Callable[[UiApp, str], dict]] = {
     "/api/eco/imports": lambda app, _q: app.api_eco_imports(),
     "/api/eco/violations": lambda app, _q: app.api_eco_violations(),
     "/api/eco/violations/history": lambda app, _q: app.api_eco_violation_history(),
+    # 记忆区（`T-UI-009.2`）：持仓 / 关注行情读面——两段各一条，面键由路径定
+    "/api/memory/holdings": lambda app, _q: app.api_memory_positions("holdings"),
+    "/api/memory/watchlist": lambda app, _q: app.api_memory_positions("watchlist"),
 }
 """`GET` 数据面的路由表：路径 → `(UiApp, 查询串)` → 载荷。**只此一处**判定「某路径存在与否」
 ——散落的 `if path == …` 分支会随着端点增多而漂移（[`T-UI-003`] 的同型取向）。"""
@@ -298,12 +301,13 @@ def serve(
     chat: object = None,
     reflection: object = None,
     eco: object = None,
+    memory: object = None,
 ) -> RunningUi:
     """绑定 → 按**实际端口**装配 → 起服务线程 → 返回句柄。
 
     端口取 ``0`` 时由 OS 分配；守卫必须拿到真实端口才能校验 ``Host`` / ``Origin``，
-    故顺序是「先绑、后装配」。``chat`` / ``reflection`` / ``eco`` 透传给 :func:`build_ui`
-    （组合根注入三个鸭子端口；缺省全 ``None`` ⇒ 各面 fail-closed）。
+    故顺序是「先绑、后装配」。``chat`` / ``reflection`` / ``eco`` / ``memory`` 透传给
+    :func:`build_ui`（组合根注入四个鸭子端口；缺省全 ``None`` ⇒ 各面 fail-closed）。
     """
     resolved_token = token or new_token()
     server = UiServer((host, port), UiRequestHandler)
@@ -315,6 +319,7 @@ def serve(
         chat=chat,
         reflection=reflection,
         eco=eco,
+        memory=memory,
     )
     server.RequestHandlerClass = type("BoundUiRequestHandler", (UiRequestHandler,), {"app": app})
     threading.Thread(target=server.serve_forever, name="st-agent-ui", daemon=True).start()

@@ -26,6 +26,7 @@ from st_agent.contracts.result_envelope import EvidenceRef, ResultEnvelope
 from st_agent.contracts.trace import ConclusionRef, Trace, TraceStep, digest_of
 from st_agent.contracts.ui_description import UiDescription, new_description_id
 from st_agent.l2.memory.reader import SliceQuery
+from st_agent.ui.tables import Column, table_slots, table_text_kinds
 from st_agent.l4.crosscheck import CrossExaminer
 from st_agent.l4.deliberation import DeliberationResult
 from st_agent.l4.divergence_view import DivergenceViewer
@@ -171,15 +172,22 @@ def _handwritten() -> dict[str, UiDescription]:
             description_id=new_description_id(),
             component_type="table",
             title="示例表格",
-            slots={
-                "columns": [{"key": "code", "label": "代码"}, {"key": "note", "label": "备注"}],
-                "rows": [
-                    {"code": "sh.600000", "note": "示例数据一"},
-                    {"code": "sz.000001", "note": "示例数据二"},
+            slots=table_slots(
+                (
+                    Column("code", "代码"),
+                    Column("close", "收盘", kind="number"),
+                    Column("pct_chg", "涨跌幅", kind="direction"),
+                ),
+                [
+                    {"code": "sh.600000", "close": 7.53, "pct_chg": 1.24},
+                    {"code": "sz.000001", "close": 11.20, "pct_chg": -0.86},
+                    {"code": "sh.601988", "close": 4.05, "pct_chg": 0.0},
+                    # 无行情：走「无数据」中性呈现，**不**冒充 0（也**不**读作「平」）
+                    {"code": "sz.300750", "close": None, "pct_chg": None},
                 ],
-            },
+            ),
             # 列头是**生成文案**（过 §6）；行内容是**数据展示**（原样呈现，[D-053]）
-            text_kinds={"columns": "generated", "rows": "data"},
+            text_kinds=table_text_kinds(),
             as_of=_NOW,
         ),
         # 已登记、本期未实现 → 渲染面**显式降级**（01 §12），不猜测

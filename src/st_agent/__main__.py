@@ -604,6 +604,10 @@ def run_backend(
             # 而不是启动失败。
             reflection=getattr(runtime, "reflection", None),
             eco=getattr(runtime, "ecosystem", None),
+            # 记忆区读面同理经鸭子端口（[`T-UI-009.2`]）：组合根已把 L2 的 attention 面与
+            # L0 行情面装配成 `MemoryPositionsFacade`；表现层不 import 任何层类型。
+            # 未带该面的根（M1–M4）传 `None` ⇒ 记忆区端点回 `unavailable` + 点名。
+            memory=getattr(runtime, "memory", None),
         )
     except Exception as exc:                     # noqa: BLE001 —— 入口须给出机器可读失败行
         traceback.print_exc()
