@@ -113,8 +113,17 @@ class NativeToolCallProtocol:
         self._endpoint_id = endpoint_id
 
     def tool_calls_supported(self) -> bool:
-        """读端点记录的 ``supports_function_calling``（**探测所得**，非本端口自判）。"""
-        endpoint = self._endpoints.get(self._endpoint_id)
+        """读端点记录的 ``supports_function_calling``（**探测所得**，非本端口自判）。
+
+        **端点未登记 / 记录读不出 ⇒ ``False``**（fail-closed）——未登记的端点显然不
+        声明支持工具调用，[02 §4] 的「缺省不得假定为真」要求它与「探测为未知」同判。
+        故生产机未配 LLM 端点时，该去向按 [05 §10] 回 ``unavailable`` + 显式降级告知
+        （不是让循环抛异常）。
+        """
+        try:
+            endpoint = self._endpoints.get(self._endpoint_id)
+        except Exception:  # noqa: BLE001 —— 读不出即「没有可用的声明」，一律按不支持
+            return False
         return bool(endpoint.capability.supports_function_calling)
 
     def invoke_turn(self, context: WorkContext, *, initiator: str, purpose: str) -> TurnResult:

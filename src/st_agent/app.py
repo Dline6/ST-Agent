@@ -46,6 +46,7 @@ from st_agent.contracts.neutrality import (
 from st_agent.contracts.registry_types import SemVer
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.time_events import PlatformEvent
+from st_agent.contracts.trace import Trace
 from st_agent.eco import (
     ECOSYSTEM_BOUNDARY,
     EcoError,
@@ -101,7 +102,15 @@ from st_agent.l3.render import (
     describe_draft,
     describe_trace,
 )
-from st_agent.l3.runtime import LoopBounds, investigate_family
+from st_agent.l3.runtime import (
+    ActionGate,
+    AgentRunReport,
+    LoopBounds,
+    NativeToolCallProtocol,
+    conclude_agent_run,
+    investigate_family,
+    run_agent_loop,
+)
 from st_agent.l4.analyze import AnalyzeService
 from st_agent.l4.crosscheck import CrossExaminer
 from st_agent.l4.deliberation import Deliberation
@@ -153,18 +162,21 @@ from st_agent.l6 import (
 
 __all__ = [
     "DialogFacade",
+    "InvestigationOutcome",
     "LlmPatternObserver",
     "LlmTrainingUnderstander",
     "M1Runtime",
     "M2Runtime",
     "M3Runtime",
     "M4Runtime",
+    "M5Runtime",
     "ReflectionFacade",
     "TickResult",
     "build_m1_runtime",
     "build_m2_runtime",
     "build_m3_runtime",
     "build_m4_runtime",
+    "build_m5_runtime",
 ]
 
 _LLM_ENDPOINT_ID = "cloud-main"
@@ -589,6 +601,7 @@ def _build_l3(
     trainings: Any = None,
     callbacks: Any = None,
     investigations: Any = None,
+    bounds: Any = None,
 ) -> _L3Stack:
     """叠 L3（会话落 `chat_history`）并装载官方资源包（01 §13）。
 
@@ -610,13 +623,16 @@ def _build_l3(
         fail-closed + 点名）；缺省 ``None`` ⇒ **本层不装配循环**——循环端口的实际装配
         （protocol / runner / tools / gate / store）与 M5 组合根归 `T-INT-006`（[05 §4](../../docs/技术架构-v2/05-L3-对话主入口.md)：
         「循环的装配归 M5 集成关卡」），本参数即那批装配落进总线的**注射点**。
+    :param bounds: 循环双上界的 owner（:class:`~st_agent.l3.runtime.bounds.LoopBounds`）；
+        缺省 ``None`` ⇒ 本层自建一面。M5 组合根传入**同一实例**，使「注册进 01 §7 的
+        登记项」与「循环取用的生效上界」是**同一份**（不出现两个各读一遍的句柄）。
 
     同批把 L3 的 `investigate.*` 族（循环双上界的 01 §7 配置项，`T-AGT-007`）注入
     01 §7 统一配置注册表：L1 不 import L3（[铁律 7](../../项目管理/工程宪法.md)），
     故适配器住 L3、在组合根注册；`bounds` 句柄经 `_L3Stack` 供下游（循环装配）取用。
     """
     store = runtime.store
-    bounds = LoopBounds(store)
+    bounds = LoopBounds(store) if bounds is None else bounds
     runtime.config_registry.register_family(investigate_family(bounds))
     sessions = SessionStore(store)
     commands = CommandRegistry()
@@ -2416,6 +2432,7 @@ def build_m4_runtime(
     monitor_rules: tuple = DEFAULT_MONITOR_RULES,
     training_understander: Any = None,
     observer: Any = None,
+    investigations_of: Any = None,
     index_host: str = "",
     index_fetch: Any = None,
     notice_level: str = "important",
@@ -2440,6 +2457,11 @@ def build_m4_runtime(
         **离线关卡**传确定性替身，使 CI 不随本机 `.env` 有无而变（同 M1 A4 口径）。
     :param index_host / index_fetch: 官方索引端点的接线（缺任一项 ⇒ `browse()` 显式
         `unavailable`，**不内置端点**）。
+    :param investigations_of: `investigate` 去向端口的**装配缝**（鸭子类型
+        ``(runtime, l6_stack, bounds) -> port``）——给了即把产出的循环端口注入总线；
+        **缺省 ``None`` ⇒ M4 行为逐字节不变**（该去向 fail-closed + 点名）。M5 组合根
+        （:func:`build_m5_runtime`）经它装配循环——L3 的 `investigations=` 注射点早在
+        [`T-AGT-006`] 就备好，此处只是把「谁来造那个端口」接上。
     其余关键字透传 :func:`build_m3_runtime` 的同名项（渠道 / 原生端口 / 云端参数 / 时钟）。
     """
     bus = EventBus()
@@ -2470,6 +2492,13 @@ def build_m4_runtime(
         runtime, l2, l5, events=bus,
         training_understander=training_understander, observer=observer, now=now,
     )
+    # 循环端口的装配缝（缺省不装）：双上界的 owner 在此立起**唯一实例**，既交
+    # `_build_l3` 注册进 01 §7、又供端口取用（05 §10 的上界是 01 §7 配置项）。
+    bounds = LoopBounds(runtime.store)
+    investigations = (
+        None if investigations_of is None
+        else investigations_of(runtime, l6, bounds)
+    )
     # L3 最后叠——它的 `train` 去向与回访面要注入 L6 的面（层间只认鸭子面，铁律 7）。
     l3 = _build_l3(
         runtime, l2, now=now, understander=understander,
@@ -2480,6 +2509,7 @@ def build_m4_runtime(
         ),
         events=bus, feedback_sink=bus,
         trainings=l6.training, callbacks=l6.training,
+        investigations=investigations, bounds=bounds,
     )
     eco = _build_eco(
         runtime, l2, l4, index_host=index_host, index_fetch=index_fetch, now=now,
@@ -2513,3 +2543,208 @@ def build_m4_runtime(
         m3=m3, l6=l6, eco=eco, notifier=notifier,
         ecosystem=ecosystem, violations=violations,
     )
+
+
+# ────────────── M5：受控自主运行时（循环装配 + 授权面注入 + 探测接线） ──────────────
+# [`T-INT-006`] 的**生产组合根**：把 [`T-AGT-*`] 的七件交付（通道 / 探测 / 目录 / 循环三叶 /
+# 闸门 / 意图去向 / 上界配置）接起来，使 `investigate` 意图（[05 §3.1]）在**真运行时**上可被
+# 用户触发。循环本体住 L3 自身（[D-090] ②），跨层（L1 执行面 / L6 授权面）一律经**鸭子端口**
+# 注入（[铁律 7](../../项目管理/工程宪法.md)）——本段是那些端口在组合根里的**唯一**接线点。
+
+M5_ABSENT_TASK_REASON = (
+    "investigate 去向缺少任务描述（05 §3.2：无 target Skill 的意图，其任务经确认卡取值 "
+    "`task` 或 `target` 承载）；未运行自主查证循环（不臆造一个任务去跑）"
+)
+"""`investigate` 去向缺任务文本时的**显式**失败原因（不静默跑一个空任务）。"""
+
+
+@dataclass(frozen=True)
+class InvestigationOutcome:
+    """`investigate` 去向的**载荷形态**（总线只认 `.envelope`；[05 §4] 的鸭子面）。
+
+    除信封外另携两件**装配级**产物，供表现层与集成套件按属性取值（总线不看它们）：
+    ``report``（[`AgentRunReport`]，含 `agent_run_id` 与留痕记录）与 ``trace``（本次循环
+    的完整链，`explain` 去向据此逐步展开）。
+
+    ``report`` / ``trace`` 在**未运行**的终止（缺任务文本）时为 ``None``——那时确实没有
+    留痕与链，不拿空壳冒充。
+    """
+
+    envelope: ResultEnvelope
+    report: AgentRunReport | None = None
+    trace: Trace | None = None
+
+    @property
+    def agent_run_id(self) -> str:
+        """本次循环的留痕标识（未运行时为空串）。"""
+        return "" if self.report is None else self.report.agent_run_id
+
+
+class _AgentInvestigator:
+    """`investigate` 去向的**循环端口**（[05 §4] 的鸭子面：``investigate(confirmation, …)``）。
+
+    把一张已确认的意图卡收敛为**一次循环执行**，三件都在既有面上完成、本类**不重造**：
+
+    - **任务**取确认卡的取值（`values["task"]`）或 `target`；两者皆空即 `validation_failed`
+      （[05 §3.2] 的「无 target Skill 的意图」——任务由该两处之一承载，不臆造）；
+    - **执行** = [`run_agent_loop`]（真 L1 流水线：参数 / 权限 / 沙箱 / 留痕全沿用）；闸门是
+      [`ActionGate`]，判据取**注入的** L6 运行期授权面（`:data:`AGENT_DECISION_METHOD`）；双上界
+      取 `LoopBounds`（[01 §7] 登记项，[`T-AGT-007`]）；
+    - **收口** = [`conclude_agent_run`]（铸 `agent_run_id` → 落留痕 → 装证据包信封）。
+
+    缺省不注入授权面时 [`ActionGate`] 一律 `denied`（fail-closed，[05 §10]）——本类不因此
+    替它放行；端点不支持工具调用时循环自己回 `endpoint_unavailable`（[02 §4] 能力诚实性）。
+    """
+
+    def __init__(
+        self,
+        *,
+        store: Any,
+        runner: Any,
+        skills: Any,
+        bounds: Any,
+        protocol: Any,
+        endpoint_id: str,
+        authorization: Any = None,
+    ) -> None:
+        self._store = store
+        self._runner = runner
+        self._skills = skills
+        self._bounds = bounds
+        self._protocol = protocol
+        self._endpoint_id = endpoint_id
+        self._authorization = authorization
+
+    def investigate(
+        self, confirmation: Any, *, values: Mapping[str, Any] | None = None, now: Any = None
+    ) -> InvestigationOutcome:
+        """跑一次自主查证循环并把产出装成信封（[05 §10]；载荷见 :class:`InvestigationOutcome`）。"""
+        merged = {
+            **dict(getattr(confirmation, "values", {}) or {}),
+            **dict(values or {}),
+        }
+        task = str(merged.get("task") or getattr(confirmation, "target", "") or "").strip()
+        if not task:
+            return InvestigationOutcome(
+                envelope=ResultEnvelope.validation_failed(M5_ABSENT_TASK_REASON)
+            )
+        outcome = run_agent_loop(
+            task=task,
+            endpoint_id=self._endpoint_id,
+            protocol=self._protocol,
+            runner=self._runner,
+            tools=self._skills.tool_catalog(),
+            gate=ActionGate(self._authorization),
+            max_steps=self._bounds.steps(),
+            max_llm_calls=self._bounds.llm_calls(),
+        )
+        report = conclude_agent_run(self._store, outcome, now=now)
+        return InvestigationOutcome(
+            envelope=report.envelope, report=report, trace=outcome.trace
+        )
+
+
+@dataclass(frozen=True)
+class M5Runtime:
+    """一次 M5 装配的全部句柄（M4 全套 + 循环端口；由 :func:`build_m5_runtime` 构造）。
+
+    与 M4 的关系同 M3→M4 的做法：**裹**住 :class:`M4Runtime` 而非改造它——M4 是 M4 关卡的
+    冻结交付物；而「L3 循环经真 L1 执行、经真 L6 授权、由组合根装配并接进 `investigate`
+    去向」正是本关卡要证明的装配事实（[`T-INT-006`]）。
+
+    ``investigations`` 是注入总线的循环端口（:class:`_AgentInvestigator`）——**装配痕迹**，
+    供集成套件断言「循环端口真的在链上」（GWT-7），而非表现层的取数面。
+    """
+
+    m4: M4Runtime
+    investigations: Any
+
+    # ── 与 M1–M4 同形的便捷取用 ──────────────────────────────────────────
+
+    @property
+    def m1(self) -> M1Runtime:
+        return self.m4.m1
+
+    @property
+    def m2(self) -> M2Runtime:
+        return self.m4.m2
+
+    @property
+    def m3(self) -> M3Runtime:
+        return self.m4.m3
+
+    @property
+    def l6(self) -> L6Stack:
+        return self.m4.l6
+
+    @property
+    def events(self) -> EventBus:
+        return self.m4.events
+
+    @property
+    def store(self):
+        return self.m4.store
+
+    @property
+    def chat(self) -> DialogFacade:
+        return self.m4.chat
+
+    @property
+    def reflection(self) -> ReflectionFacade:
+        return self.m4.reflection
+
+    @property
+    def ecosystem(self):
+        return self.m4.ecosystem
+
+    def tick(self, now: datetime | None = None) -> TickResult:
+        """推进一轮主动服务与每周反思（同 :meth:`M4Runtime.tick`；M5 不新增节奏）。"""
+        return self.m4.tick(now)
+
+    def training_callbacks(self) -> tuple[Any, ...]:
+        """待回访项读面（同 :meth:`M4Runtime.training_callbacks`）。"""
+        return self.m4.training_callbacks()
+
+
+def build_m5_runtime(
+    root: Path | str,
+    passphrase: str,
+    **kwargs: Any,
+) -> M5Runtime:
+    """装配 M5 全栈（＝ M4 的 L0–L6 + ECO + **受控自主运行时**；[`T-INT-006`] 的**生产组合根**）。
+
+    与 :func:`build_m4_runtime` 复用**同一段**装配，差别只有一处接线（在组合根、不改任何层）：
+    经 `investigations_of` 缝装出循环端口并注入总线——故 `investigate` 去向从「未接入
+    （fail-closed + 点名）」变为真链路（[05 §4]）。
+
+    循环端口 = :class:`_AgentInvestigator`，其依赖全部**向下取用**（[铁律 7](../../项目管理/工程宪法.md)）：
+    L1 的 `runner` / `skills`（工具目录）/ `endpoints` / `llm`（经 :class:`NativeToolCallProtocol`）、
+    L3 的 `bounds`（双上界）、L6 的 `agent_authorization`（授权判据，经**鸭子端口**）。
+
+    其余关键字透传 :func:`build_m4_runtime` 的同名项（渠道 / 原生端口 / 云端参数 / 时钟 /
+    `llm_env` / `llm_post` 等）。**「端点能力启动探测」不需本根接线**——它住在 `build_l1_runtime`
+    的引导装载分支里，装配 M5 时自然执行（[`T-AGT-002`]）。
+    """
+    holder: list[_AgentInvestigator] = []          # 装配缝唯一被调一次，取回端口句柄
+
+    def investigations_of(runtime: L1Runtime, l6_stack: L6Stack, bounds: LoopBounds):
+        """造循环端口（在此处而非调用方，因为这些句柄在 `open_runtime` 之后才存在）。"""
+        port = _AgentInvestigator(
+            store=runtime.store,
+            runner=runtime.runner,
+            skills=runtime.skills,
+            bounds=bounds,
+            protocol=NativeToolCallProtocol(
+                llm=runtime.llm, endpoints=runtime.endpoints,
+                endpoint_id=_LLM_ENDPOINT_ID,
+            ),
+            endpoint_id=_LLM_ENDPOINT_ID,
+            authorization=l6_stack.agent_authorization,
+        )
+        holder.append(port)
+        return port
+
+    m4 = build_m4_runtime(
+        root, passphrase, investigations_of=investigations_of, **kwargs
+    )
+    return M5Runtime(m4=m4, investigations=holder[0])
