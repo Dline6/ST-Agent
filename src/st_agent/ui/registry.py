@@ -57,6 +57,10 @@ REQUIRED_SLOTS: dict[str, tuple[str, ...]] = {
     # 06 §5 要求**两视图均实现**：矩阵视图取 `matrix`（视角 × 结论逐行）、证据网络图取
     # `network`（节点 + 引用边）——缺任一处都出不了分歧图，故两者同为必填。
     "divergence_map": ("matrix", "network"),
+    # Studio 画布：`canvas`（数据槽：session / nodes / edges / groups / violations /
+    # issues / validation_ok，编辑后附 `edit` 小结）与 `labels`（生成文案槽：动作与标题标签，
+    # 按动作键并联）——缺任一处出不了画布页（T-UI-005.1）。
+    "studio_canvas": ("canvas", "labels"),
 }
 """每型的必填槽——新增实现型时**必须**在此表态（下面的断言会拦住漏填）。"""
 

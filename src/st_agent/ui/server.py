@@ -54,6 +54,12 @@ _GET_ROUTES: dict[str, Callable[[UiApp, str], dict]] = {
     "/api/reflection/proposals": lambda app, _q: app.api_reflection_proposals(),
     "/api/reflection/experiments": lambda app, _q: app.api_reflection_experiments(),
     "/api/reflection/training": lambda app, _q: app.api_reflection_training(),
+    # Studio 画布（`T-UI-005.1`）——已交会话一览 / 画布 / 可选 Skill 清单
+    "/api/studio/sessions": lambda app, _q: app.api_studio_sessions(),
+    "/api/studio/canvas": lambda app, q: app.api_studio_canvas(
+        proposal_id=_query(q, "proposal_id")
+    ),
+    "/api/studio/skills": lambda app, _q: app.api_studio_skills(),
     # 演进面（`T-UI-004.3`）
     "/api/evolution/changes": lambda app, _q: app.api_evolution_changes(),
     "/api/evolution/authorization": lambda app, _q: app.api_evolution_authorization(),
@@ -78,6 +84,8 @@ _POST_ROUTES: dict[str, Callable[[UiApp, dict], dict]] = {
     "/api/reflection/proposals/studio/decide": lambda app, body: (
         app.api_reflection_studio_decide(body)
     ),
+    # Studio 画布编辑（`T-UI-005.1`）：增删节点 / 连线断线 / 建分组解散
+    "/api/studio/edit": lambda app, body: app.api_studio_edit(body),
     # 演进面的写面（`T-UI-004.3`）：一键回滚 / 应用设置 / 出厂重置
     "/api/evolution/changes/rollback": lambda app, body: app.api_evolution_rollback(body),
     "/api/evolution/authorization": lambda app, body: app.api_evolution_set(body),

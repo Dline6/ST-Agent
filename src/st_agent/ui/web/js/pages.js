@@ -11,6 +11,7 @@
 import { renderEcoPage, renderImportPage, renderImportsPage, renderIndexPage, renderSecurityPage } from './pages/eco.js';
 import { renderEvolutionPage, renderChangesPage } from './pages/evolution.js';
 import { renderReflectionPage, singleBlockPage } from './pages/reflection.js';
+import { renderStudioPage } from './pages/studio.js';
 
 export const PAGES = [
   { path: '/', title: '总览', statusPath: '/api/health' },
@@ -53,6 +54,12 @@ export const PAGES = [
     title: '越界警示',
     statusPath: '/api/eco/status',
     render: renderSecurityPage,
+  },
+  {
+    path: '/studio',
+    title: 'Studio 画布',
+    statusPath: '/api/studio/sessions',
+    render: renderStudioPage,
   },
 ];
 
