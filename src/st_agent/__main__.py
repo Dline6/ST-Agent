@@ -1,9 +1,9 @@
 """生产运行入口 ``python -m st_agent``——**后端常驻主体**（[00 §1.1]；[D-076]）。
 
-职责链：解析平台默认存储根 → [`build_m4_runtime`](../st_agent/app.py) 装配 L0–L6 + 生态面 →
-`ui.serve(chat=…)` 起本机回环面 → **起常驻驱动循环**（按 [`M4Runtime.tick`] 的节奏推进
-主动服务与每周反思：调度 → 信号 → 升级链 → 日报 → 疲劳巡查 → 反思周报）→ 向 **stdout
-输出单行机器可读握手**
+职责链：解析平台默认存储根 → [`build_m5_runtime`](../st_agent/app.py) 装配 L0–L6 + 生态面
++ **受控自主运行时（`investigate` 循环）** → `ui.serve(chat=…)` 起本机回环面 → **起常驻驱动
+循环**（按 [`M5Runtime.tick`] 的节奏推进主动服务与每周反思：调度 → 信号 → 升级链 → 日报 →
+疲劳巡查 → 反思周报）→ 向 **stdout 输出单行机器可读握手**
 （``event=ready`` / ``host`` / ``port`` / ``token`` / ``pid`` / ``root`` / ``version``）。
 它是桌面壳 [`T-UI-002.2`] 消费的唯一接口：先 ``event=ready``，失败为 ``event=error``
 （携机器可读 ``code``）。UI 仍只经回环面取数——本入口**不提供**任何壳专有通道。
@@ -53,7 +53,7 @@ from pathlib import Path
 from typing import Any, TextIO
 
 from st_agent import __version__
-from st_agent.app import build_m4_runtime
+from st_agent.app import build_m5_runtime
 from st_agent.l0.market import MarketDb
 from st_agent.l0.storage import (
     StorageCorruptionError,
@@ -277,16 +277,18 @@ def flush_audit(runtime: Any) -> None:
 
 
 def build_ambient_runtime(root: Path | str, passphrase: str, **kwargs: Any) -> Any:
-    """生产组合根（M4）+ **原生通知端口**（表现层实现）。
+    """生产组合根（M5）+ **原生通知端口**（表现层实现）。
 
     入口是**唯一**可同时 import ``app`` 与 ``ui`` 的模块（[`T-UI-002.1`]），故原生能力的
     接线在此完成——``app`` 自己不 import 表现层（层序表里没有 ``ui``，[D-060] ⑤），
     而平台命令构造保持**单一份实现**（[D-082] ③ 否决「组合根自持第二份」）。
 
-    M4 起装的是 [`build_m4_runtime`]（L0–L5 + L6 反思演进 + ECO 生态面；[`T-INT-005`]）——
-    常驻循环由此也推进**每周反思**（到点投出周报），见 [`M4Runtime.tick`]。
+    M5 起装的是 [`build_m5_runtime`]（L0–L5 + L6 反思演进 + ECO 生态面 + **受控自主运行时**；
+    [`T-INT-006`]）——故 `investigate` 意图（[05 §3.1]）的生产链路在此生效，常驻循环也照旧
+    推进**每周反思**（到点投出周报），见 [`M5Runtime.tick`]。端点能力的**启动探测**不需本处
+    接线：它住在 `build_l1_runtime` 的引导装载分支，装配时自然执行（[`T-AGT-002`]）。
     """
-    return build_m4_runtime(root, passphrase, notify=send_notification, **kwargs)
+    return build_m5_runtime(root, passphrase, notify=send_notification, **kwargs)
 
 
 def _local_now() -> datetime:
@@ -596,7 +598,7 @@ def run_backend(
             chat=runtime.chat,
             # L6 / ECO 面经**鸭子端口**注入（[`T-UI-004.1`] / [`.2`]）：表现层不 import `app`，
             # 也不 import 各层类型，只经这两个口消费。注入的是组合根造好的**适配面**
-            # （`M4Runtime.reflection`），而非裸的 L6Stack——输入的归一与失败分类都留在
+            # （`M5Runtime.reflection`），而非裸的 L6Stack——输入的归一与失败分类都留在
             # 组合根，表现层只按 `ValueError` / 其他异常两类回 `validation_failed` / `failed`。
             # 组合根未带该面（如 M1/M2 根）时传 `None` ⇒ 相关端点回 `unavailable` + 点名，
             # 而不是启动失败。
