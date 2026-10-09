@@ -140,6 +140,12 @@ function studioActions(item, labels, status) {
       status.textContent = `已交 Studio 落画布（${data.base}，${data.node_count} 个节点）`;
       status.className = 'component__meta';
       row.replaceChildren(...studioDecideButtons(item, labels, status));
+      // 与 Studio 画布页的互跳（[T-UI-005.2]）：**只增**一条链接，卡上既有流程不变；
+      // `href` 拼回当前 fragment（令牌）以免跳页即丢令牌。
+      const canvasLink = el('a', 'proposal-actions__link', '去画布看看');
+      canvasLink.href =
+        `/studio?proposal_id=${encodeURIComponent(item.proposal_id)}` + window.location.hash;
+      row.append(canvasLink);
     } catch (error) {
       status.textContent = `请求失败：${error.message}`;
       status.className = 'state state--error';

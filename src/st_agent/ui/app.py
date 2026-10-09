@@ -45,6 +45,7 @@ PAGE_PATHS = frozenset({
     "/eco/index",
     "/eco/imports",
     "/eco/security",
+    "/studio",
 })
 """已知**页面路径**——它们回同一静态壳（SPA 回退），与 `ui/web/js/pages.js` 的登记表同源。
 
@@ -122,6 +123,27 @@ _FEEDBACK_LABELS = {
     "liked": "点赞",
 }
 """动作键 → 中性中文标签（**本层生成文案**，过 [01 §6] 执行点 2）。"""
+
+
+_STUDIO_LABELS = {
+    "accept": "接受",
+    "reject": "否决",
+    "edit": "编辑",
+    "add_node": "添加节点",
+    "remove_node": "删除节点",
+    "connect": "连线",
+    "disconnect": "断线",
+    "group": "建分组",
+    "ungroup": "解散分组",
+}
+"""Studio 画布的控件文案（**本层生成文案**，过 [01 §6] 执行点 2；[`T-UI-005.1`]）。
+
+动作键与组合根 `_CANVAS_EDIT_OPS` / `_STUDIO_ACTIONS` 同集——**动作不进描述**（01 §12）：
+描述只放数据与标签，发起写请求的路由（`/api/studio/edit` 等）是渲染件已知的固定回环路由。
+"""
+
+_STUDIO_CANVAS_TITLE = "Studio 画布"
+"""画布描述标题（生成文案，过 [01 §6] 执行点 2）。"""
 
 
 def _as_datetime(value: Any) -> datetime | None:
@@ -366,6 +388,63 @@ class UiApp:
                 ),
                 "Studio",
             ),
+        )
+
+    # ───────────────────── Studio 画布（[`T-UI-005.1`]） ─────────────────────
+
+    def api_studio_sessions(self) -> dict[str, Any]:
+        """已交 Studio 未处置的会话一览——画布页左栏（`{available, sessions}`）。"""
+        return self._call_face(
+            "studio-sessions", self.reflection, "L6 反思演进面",
+            lambda face: _studio_envelope(face.studio_sessions(), "Studio"),
+        )
+
+    def api_studio_skills(self) -> dict[str, Any]:
+        """画布页「加节点」的可选 Skill 清单（01 §2 描述体的投影；不新造第二份登记）。"""
+        return self._call_face(
+            "studio-skills", self.reflection, "L6 反思演进面",
+            lambda face: _studio_envelope(face.studio_skills(), "Studio"),
+        )
+
+    def api_studio_canvas(self, *, proposal_id: str) -> dict[str, Any]:
+        """某会话的画布——出站为 `studio_canvas` 描述（过必填槽 + 中性化两道闸）。"""
+        return self._call_face(
+            "studio-canvas", self.reflection, "L6 反思演进面",
+            lambda face: self._studio_canvas_envelope(face.studio_canvas(proposal_id)),
+        )
+
+    def api_studio_edit(self, body: dict[str, Any]) -> dict[str, Any]:
+        """一次画布结构编辑（增删节点 / 连线断线 / 建分组解散）——回 `studio_canvas` 描述，
+        附本次 `edit` 小结（`applied` / `message` / `blocked_by`）与**编辑后的画布**。"""
+        return self._call_face(
+            "studio-edit", self.reflection, "L6 反思演进面",
+            lambda face: self._studio_canvas_envelope(
+                face.studio_edit(
+                    proposal_id=str(_required(body, "proposal_id")),
+                    op=str(_required(body, "op")),
+                    args=body.get("args"),
+                )
+            ),
+        )
+
+    def _studio_canvas_envelope(self, payload: dict[str, Any]) -> Any:
+        """画布载荷 → 信封：子面未接线 ⇒ `unavailable` + 点名；否则出 `studio_canvas` 描述。
+
+        `canvas` 槽按 **data** 承载（节点 / 连线 / 分组是**数据展示**，含用户填的标识与
+        绑定值，不整串复检）；`labels` 槽是本层生成文案，过 [01 §6] 执行点 2。
+        """
+        if not payload.get("available"):
+            return ResultEnvelope.unavailable(
+                payload.get("reason") or "未接入 Studio 草稿接收面（08 §4）",
+                last_updated_at=_now(),
+            )
+        return ResultEnvelope.ok(
+            self._gated_description(
+                "studio_canvas",
+                slots={"canvas": payload["canvas"], "labels": dict(_STUDIO_LABELS)},
+                text_kinds={"canvas": "data", "labels": "generated"},
+                title=_STUDIO_CANVAS_TITLE,
+            )
         )
 
     def api_reflection_experiments(self) -> dict[str, Any]:

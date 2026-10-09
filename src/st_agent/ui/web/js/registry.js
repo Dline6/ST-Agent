@@ -19,6 +19,7 @@ import { renderChangeTimeline } from './plugins/reflection/change_timeline.js';
 import { renderFeedbackCapture } from './plugins/reflection/feedback_capture.js';
 import { renderProposalCard } from './plugins/reflection/proposal_card.js';
 import { renderSettingPanel } from './plugins/reflection/setting_panel.js';
+import { renderStudioCanvas } from './plugins/studio/studio_canvas.js';
 import { renderViolationAlert } from './plugins/eco/violation_alert.js';
 
 export const RENDERERS = {
@@ -35,6 +36,7 @@ export const RENDERERS = {
   setting_panel: renderSettingPanel,
   violation_alert: renderViolationAlert,
   divergence_map: renderDivergenceMap,
+  studio_canvas: renderStudioCanvas,
 };
 
 /** 取一个类型的渲染件；未登记 / 未实现返回 null（由调度处显式降级）。 */

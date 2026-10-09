@@ -66,6 +66,9 @@ ComponentType = Literal[
     # 由「已登记未实现」升为**本期实现**：01 §12 提前登记 `divergence_map` 的用途即此
     # ——补该形态属**实现**而非改契约（06 §5 分歧图；交付见 T-L4-004.2）
     "divergence_map",
+    # Studio 画布（T-UI-005.1）：story-06 主画布的载体——会话 + 节点 / 连线 / 分组 +
+    # 校验违规 + 接受 / 否决；可视化微调经固定回环路由，不进描述（01 §12 动作不进描述）
+    "studio_canvas",
     # 已登记、本期不实现——提前登记使后续补这些形态属于「实现」而非「改契约」
     "heatmap",
     "trend_chart",
@@ -91,6 +94,7 @@ IMPLEMENTED_COMPONENT_TYPES: tuple[str, ...] = (
     "setting_panel",
     "violation_alert",
     "divergence_map",
+    "studio_canvas",
 )
 """**本期实现**的类型（渲染方有对应渲染件）；其余登记型一律走**显式降级占位**。"""
 

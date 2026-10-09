@@ -1473,7 +1473,13 @@ _DECISION_ACTIONS = ("accept", "reject", "defer")
 """提案处置的三动作（[08 §5]：接受 / 否决 / 延后——**排队而非丢弃**）。"""
 
 _STUDIO_ACTIONS = ("accept", "reject")
-"""已交 Studio 提案的两动作（[`T-L6-004.2`]）——**微调**需画布页，不在其列。"""
+"""已交 Studio 提案的两动作（[`T-L6-004.2`]）——**微调**走画布编辑面（`/api/studio/edit`）。"""
+
+_CANVAS_EDIT_OPS = ("add_node", "remove_node", "connect", "disconnect", "group", "ungroup")
+"""Studio 画布的六个结构编辑操作（[`T-UI-005.1`]；与 `CanvasEditor` 的公开写面一一对应）。
+
+**不含** `params`（节点参数绑定）——那是 Skill 级表单面（story-06 的参数面板），
+本批不开放（[`T-UI-005.1` A3](tasks/T-UI-005.1-后端画布读面与编辑转交.md)）。"""
 
 _NO_FACTORY_RESET_REASON = "未接入出厂重置面，无法清空演进状态（装配归组合根）"
 """出厂重置子面缺席时的点名原因（同 [08 §5] 的「未接判据即 fail-closed」口径）。"""
@@ -1534,11 +1540,14 @@ class ReflectionFacade:
     分开（[01 §5] 六态不可混用）。
     """
 
-    def __init__(self, *, l6: L6Stack, feedback: Any) -> None:
+    def __init__(self, *, l6: L6Stack, feedback: Any, skills: Any = None) -> None:
         self._l6 = l6
         self._feedback = feedback
         """L3 的反馈采集面（`FeedbackCollector.record` 的绑定方法）——反馈的**产生方是交互层**，
         本面只转发（[01 §1] / [05 §9]）。"""
+        self._skills = skills
+        """L1 `SkillRegistry`（鸭子类型 `tool_catalog()`）——Studio 画布页「加节点」的可选 Skill
+        清单来源（[`T-UI-005.1`]）；缺省 ``None`` ⇒ 该子面 fail-closed 并点名，**不伪造**清单。"""
 
     # ── 周报 ────────────────────────────────────────────────────────────────
     def report_weeks(self) -> tuple[str, ...]:
@@ -1598,15 +1607,15 @@ class ReflectionFacade:
     def studio_decide(self, *, proposal_id: str, action: str) -> dict[str, Any]:
         """处置一条**已交 Studio** 的提案：接受（落 v1.0 创建 Skill）/ 否决。
 
-        两个动作都**委托** L1 `DraftIntake`（本面不复制其判定、不另造落盘）。**微调**
-        返回画布编辑句柄、需 Studio 画布页（本仓尚无），故此处不接受该动作。
+        两个动作都**委托** L1 `DraftIntake`（本面不复制其判定、不另造落盘）。**画布微调**
+        是另一条路（[`studio_edit`] 经 `CanvasEditor`），故此处只认这两动作。
         """
         studio = self._l6.studio
         if studio is None or not studio.available:
             return {"available": False, "reason": "未接入 Studio 草稿接收面（08 §4）"}
         if action not in _STUDIO_ACTIONS:
             raise ValueError(
-                f"处置动作须为 {'/'.join(_STUDIO_ACTIONS)}（画布微调需 Studio 画布页，08 §4）"
+                f"处置动作须为 {'/'.join(_STUDIO_ACTIONS)}（画布微调走 /api/studio/edit，08 §4）"
             )
         if not isinstance(proposal_id, str) or not proposal_id:
             raise ValueError("提案标识（proposal_id）必填——无法寻址的提案一律拒收")
@@ -1622,6 +1631,143 @@ class ReflectionFacade:
             raise ValueError(str(exc)) from exc
         except (DraftSessionError, DraftAcceptError) as exc:
             raise ValueError(str(exc)) from exc
+
+    # ── Studio 画布（[`T-UI-005.1`] / story-06 主画布） ─────────────────────
+
+    def studio_sessions(self) -> dict[str, Any]:
+        """仍在编辑中的 Studio 会话一览（画布页列「已交 Studio 未处置」的那些）。"""
+        studio = self._l6.studio
+        if studio is None or not studio.available:
+            return {"available": False, "reason": "未接入 Studio 草稿接收面（08 §4）"}
+        sessions: list[dict[str, Any]] = []
+        for proposal_id in studio.opened():
+            session = studio.session(proposal_id)
+            if session is None:                     # 理论上不可达；真发生则不臆造一行
+                continue
+            sessions.append(self._canvas_session(proposal_id, session))
+        return {"available": True, "sessions": sessions}
+
+    def studio_canvas(self, proposal_id: str) -> dict[str, Any]:
+        """某会话的画布视图（节点 / 连线 / 分组 / 校验违规）——画布页的取数面。
+
+        未交 Studio（无会话）⇒ ``ValueError``（输入类失败，表现层回 `validation_failed`）；
+        子面未接线 ⇒ ``{"available": False, …}``（表现层回 `unavailable` + 点名）。
+        """
+        studio = self._l6.studio
+        if studio is None or not studio.available:
+            return {"available": False, "reason": "未接入 Studio 草稿接收面（08 §4）"}
+        if not isinstance(proposal_id, str) or not proposal_id:
+            raise ValueError("提案标识（proposal_id）必填——无法寻址的提案一律拒收")
+        session = studio.session(proposal_id)
+        if session is None:
+            raise ValueError(f"该提案尚未交 Studio，无可查看的画布：{proposal_id!r}（08 §4）")
+        return {"available": True, "canvas": self._canvas_payload(proposal_id, session)}
+
+    def studio_skills(self) -> dict[str, Any]:
+        """画布页「加节点」的可选 Skill 清单（01 §2 描述体的投影——**唯一来源**是注册表）。
+
+        取 `SkillRegistry.tool_catalog()` 的**能力条目**（同 base 折叠、取最高版本），
+        只回名称 / 执行目标 / 描述——前端据它填下拉，不自己拼 `skill_id`。
+        """
+        if self._skills is None:
+            return {"available": False, "reason": "未接入 Skill 注册表（装配归组合根）"}
+        return {
+            "available": True,
+            "skills": [
+                {"name": entry.name, "skill_id": entry.skill_id,
+                 "description": entry.description}
+                for entry in self._skills.tool_catalog()
+            ],
+        }
+
+    def studio_edit(self, *, proposal_id: str, op: str, args: Mapping[str, Any] | None = None
+                    ) -> dict[str, Any]:
+        """把一次**画布结构编辑**转交该会话的 `CanvasEditor`（同一个句柄，不分裂）。
+
+        `op` ∈ [`_CANVAS_EDIT_OPS`]；`CanvasEditor` 是**全函数**（用户级冲突一律
+        `applied=False`，不抛异常），故本面把 `EditResult` 归一成载荷并**附编辑后的画布**——
+        表现层一次请求即可重渲染。缺键 / 非法 `op` / 无可编辑会话 ⇒ ``ValueError``。
+        """
+        studio = self._l6.studio
+        if studio is None or not studio.available:
+            return {"available": False, "reason": "未接入 Studio 草稿接收面（08 §4）"}
+        if not isinstance(proposal_id, str) or not proposal_id:
+            raise ValueError("提案标识（proposal_id）必填——无法寻址的提案一律拒收")
+        if op not in _CANVAS_EDIT_OPS:
+            raise ValueError(
+                f"画布编辑操作须为 {'/'.join(_CANVAS_EDIT_OPS)}，收到 {op!r}（08 §4）")
+        params = args if args is not None else {}
+        if not isinstance(params, Mapping):
+            raise ValueError("画布编辑参数须为对象（{参数名: 值}）")
+        session = studio.session(proposal_id)
+        if session is None:
+            raise ValueError(f"该提案尚未交 Studio，无可编辑的画布：{proposal_id!r}（08 §4）")
+        try:
+            editor = studio.tune(proposal_id)       # 同一个 CanvasEditor 句柄
+        except (StudioHandoffError, DraftSessionError) as exc:
+            raise ValueError(str(exc)) from exc
+        result = _apply_canvas_edit(editor, op, params)
+        edit = {
+            "action": result.action,
+            "applied": result.applied,
+            "message": result.message,
+            "blocked_by": [str(issue) for issue in result.blocked_by],
+        }
+        return {
+            "available": True,
+            "canvas": self._canvas_payload(proposal_id, session, edit=edit),
+        }
+
+    def _canvas_session(self, proposal_id: str, session: Any) -> dict[str, Any]:
+        """会话小结（一览用）——身份与规模，不含节点明细。"""
+        dag = session.dag
+        return {
+            "proposal_id": proposal_id,
+            "base": session.base,
+            "flow_id": dag.flow_id,
+            "node_count": len(dag.nodes),
+            "status": session.status,
+        }
+
+    def _canvas_payload(self, proposal_id: str, session: Any, *, edit: dict | None = None
+                        ) -> dict[str, Any]:
+        """画布 JSON 就绪结构（`studio_canvas` 的 `canvas` 槽）。
+
+        **校验结论取当前态**（`editor.validate_current()`）而非落画布时的首轮——编辑后
+        违规清单会随之变化，画布页要看到的是**现在**这一版（未编辑时两者逐字相同）。
+        """
+        dag = session.dag
+        validation = session.editor.validate_current()
+        catalog = self.studio_skills()
+        canvas: dict[str, Any] = {
+            "session": self._canvas_session(proposal_id, session),
+            "nodes": [
+                {
+                    "node_id": node.node_id,
+                    "skill_id": node.skill_id,
+                    "params": {name: binding.model_dump(mode="json")
+                               for name, binding in node.params.items()},
+                }
+                for node in dag.nodes
+            ],
+            "edges": [
+                {"edge_id": edge.edge_id, "from_node": edge.from_node,
+                 "to_node": edge.to_node}
+                for edge in dag.edges
+            ],
+            "groups": [
+                {"group_id": group.group_id, "name": group.name,
+                 "node_ids": list(group.node_ids)}
+                for group in dag.groups
+            ],
+            "schedule": dag.schedule.model_dump(mode="json"),
+            "violations": [str(issue) for issue in validation.issues],
+            "validation_ok": validation.ok,
+            "skill_options": list(catalog.get("skills") or ()) if catalog.get("available") else [],
+        }
+        if edit is not None:
+            canvas["edit"] = edit
+        return canvas
 
     def pending(self) -> list[dict[str, Any]]:
         """待批准 / 已延后的提案（**留痕即事实**，处置过的也在）。"""
@@ -1768,6 +1914,35 @@ class ReflectionFacade:
                 "——不足即拒、不留痕、不执行任何动作（08 §6）"
             )
         return reset.request(confirmations).model_dump(mode="json")
+
+
+def _apply_canvas_edit(editor: Any, op: str, args: Mapping[str, Any]) -> Any:
+    """把一次画布编辑转交 `CanvasEditor`（[`T-UI-005.1`]）。
+
+    只做**参数解包与必填校验**——判定件（成环 / 契约 / 标识形态 / 连带删除）一律在
+    `CanvasEditor` 里，**不在此复制**（[03 §4] 编辑面落地口径）。缺必填参数 ⇒ ``ValueError``
+    （输入类失败，表现层回 `validation_failed`）。
+    """
+    def need(key: str) -> str:
+        value = args.get(key)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            raise ValueError(f"画布编辑 {op} 缺少必填参数 {key!r}")
+        return str(value)
+
+    if op == "add_node":
+        return editor.add_node(need("node_id"), need("skill_id"))
+    if op == "remove_node":
+        return editor.remove_node(need("node_id"))
+    if op == "connect":
+        return editor.connect(need("edge_id"), need("from_node"), need("to_node"))
+    if op == "disconnect":
+        return editor.disconnect(need("edge_id"))
+    if op == "group":
+        raw = args.get("node_ids") or ()
+        if not isinstance(raw, (list, tuple)):
+            raise ValueError("画布编辑 group 的 node_ids 须为数组")
+        return editor.group(need("group_id"), need("name"), tuple(str(n) for n in raw))
+    return editor.ungroup(need("group_id"))          # op 已在 facade 侧校验为 ungroup
 
 
 def _run_payload(
@@ -2161,7 +2336,10 @@ class M4Runtime:
         反馈采集仍走**交互层**的采集面（[01 §1]：`feedback_id` 的产生方是 L3），故这里把
         :meth:`DialogFacade.record_feedback` 一并交给它转发，而**不是**让表现层直写 L6 池。
         """
-        return ReflectionFacade(l6=self.l6, feedback=self.m3.chat.record_feedback)
+        return ReflectionFacade(
+            l6=self.l6, feedback=self.m3.chat.record_feedback,
+            skills=self.m1.runtime.skills,
+        )
 
     def training_callbacks(self) -> tuple[Any, ...]:
         """待回访项读面（[08 §3] 第 3 步；表现层入口见 [`T-UI-004.2`]）。"""

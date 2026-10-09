@@ -48,21 +48,22 @@ class TestComponentTypes:
         assert COMPONENT_TYPES == get_args(ComponentType)
 
     def test_registered_types_partition_into_implemented_and_reserved(self):
-        """登记表二分且不漏：已实现 13 型 + 预留 4 型 = 全部 17 型（§12）。
+        """登记表二分且不漏：已实现 14 型 + 预留 4 型 = 全部 18 型（§12）。
 
         `divergence_map` 于 2026-10-04 由 `T-L4-004.2` 补为**实现**——§12 早已把它列入
         「已登记、本期不实现」，其理由即「使后续补这些形态属于实现而非改契约」，故总数不变。
-        `feedback_capture` / `proposal_card` / `feedback_capture` / `proposal_card` / `change_timeline` /
+        `feedback_capture` / `proposal_card` / `change_timeline` /
         `setting_panel` / `violation_alert` 于 2026-10-07 由 `T-UI-004.2` / `.3` / `.4` **新增登记**
         并同时实现（story-09 的反馈按钮组、提案卡、变更历史时间线、演进授权设置页与 story-10 的
-        异常行为警示对话框，此前无载体），故总数 +5。
+        异常行为警示对话框，此前无载体），故总数 +5。`studio_canvas` 于 2026-10-09 由
+        `T-UI-005.1` 新增登记并同时实现（story-06 的 Studio 主画布），故总数 +1。
         """
         assert set(IMPLEMENTED_COMPONENT_TYPES) | set(RESERVED_COMPONENT_TYPES) == set(
             COMPONENT_TYPES
         )
         assert not set(IMPLEMENTED_COMPONENT_TYPES) & set(RESERVED_COMPONENT_TYPES)
-        assert len(IMPLEMENTED_COMPONENT_TYPES) == 13
-        assert len(COMPONENT_TYPES) == 17
+        assert len(IMPLEMENTED_COMPONENT_TYPES) == 14
+        assert len(COMPONENT_TYPES) == 18
 
     def test_reserved_types_are_registered_but_not_implemented(self):
         """预留型是**已登记**的合法取值——提前登记使后续补形态属于实现而非改契约。"""
