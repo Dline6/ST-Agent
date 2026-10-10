@@ -9,7 +9,9 @@
 //      **不走**组件注册表；问句文本与理解条目一律取自后端，本页不杜撰。
 //   ④ 生成式 UI 宿主：回复里的 `description` 信封（UiDescription）交 `renderEnvelope` 按注册表
 //      渲染；未登记 / 未实现型由 `render.js` 走**显式降级**（不执行描述、不猜测、不静默丢弃）。
-//      「钉」入口与推理链入口是**容器动作**（01 §12：动作不进描述），本页只出入口。
+//      「钉」入口是**容器动作**（01 §12：动作不进描述），本页只出入口、落点归 [`T-UI-013`]；
+//      「推理链」入口由 [`T-UI-016.3`] 接通——链随 `/api/chat` 响应内联（`traces` 键），
+//      展开面板复用 `trace_timeline`（[11-sitemap §3.3] 的跨页复用件）。
 //
 // 前端只经回环 HTTP 取 JSON（不 import 任何 Python 侧模块）；只用 createElement / textContent
 // 构造 DOM，不直写 HTML（与「渲染器只解析描述、不解析任意代码」同一取向，见 05 §6）。
@@ -17,10 +19,9 @@
 import { getJson, postJson } from '../api.js';
 import { renderEnvelope } from '../render.js';
 
-// 容器动作的落点归属（本页只出入口，落点归各自任务）——点击即**显式**告知未接入 + 点名，
+// 「钉」的落点归属（本页只出入口，落点归 [`T-UI-013`]）——点击即**显式**告知未接入 + 点名，
 // **不**伪造执行、**不**静默 no-op（铁律：不静默失败）。
 const PIN_OWNER = 'T-UI-013';
-const TRACE_OWNER = 'T-UI-016';
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -212,7 +213,7 @@ function appendReply(stream, state, payload) {
 
   if (payload.clarification) turn.append(clarificationNode(payload.clarification));
   if (payload.needs_confirmation) turn.append(confirmationNode(stream, state, payload.data, turn));
-  if (payload.description) turn.append(descriptionNode(payload.description));
+  if (payload.description) turn.append(descriptionNode(payload.description, payload.traces));
 
   stream.append(turn);
   turn.scrollIntoView({ block: 'nearest' });
@@ -283,22 +284,79 @@ function confirmationNode(stream, state, items, turn) {
 }
 
 /** 生成式 UI 宿主：回复的 `description` 信封交既有注册表渲染 + 容器动作入口。 */
-function descriptionNode(envelope) {
+function descriptionNode(envelope, traces) {
   const box = el('div', 'chat__description');
   box.append(el('p', 'chat__description-title', '生成式 UI'));
   const body = el('div', 'chat__description-body');
   renderEnvelope(envelope, body);
   box.append(body);
-  box.append(containerActions());
+  box.append(containerActions(envelope, Array.isArray(traces) ? traces : []));
   return box;
 }
 
-/** 容器动作：钉住 / 推理链入口（只出入口，落点归所属任务；点击即显式告知未接入 + 点名）。 */
-function containerActions() {
+/** 容器动作：钉住入口（落点归 `T-UI-013`）与推理链入口（[T-UI-016.3] 已接通）。 */
+function containerActions(envelope, traces) {
+  const wrapper = el('div', 'chat__container-actions');
   const bar = el('div', 'chat__actions');
   bar.append(actionButton('钉到工作区', PIN_OWNER));
-  bar.append(actionButton('推理链', TRACE_OWNER));
-  return bar;
+
+  const panel = el('div', 'chat__trace-panel');
+  panel.hidden = true;
+  const button = el('button', 'chat__action', '推理链');
+  button.type = 'button';
+  button.addEventListener('click', () => {
+    if (panel.hidden) {
+      // 首次展开才装配（链随响应内联，无会话态——[D-112] ②）。
+      if (!panel.childElementCount) fillTracePanel(panel, envelope, traces);
+      panel.hidden = false;
+    } else {
+      panel.hidden = true;
+    }
+  });
+  bar.append(button);
+  wrapper.append(bar, panel);
+  return wrapper;
+}
+
+/** 推理链展开面板（[11-sitemap §3.3]）：逐视角呈现该视角**完整推理链**。
+ *
+ * 渲染复用 `trace_timeline`（跨页同一件：本处 / 视角追问 / 反思报告）；无可展开的链时
+ * **显式告知**（不伪造一条链）。
+ */
+function fillTracePanel(panel, envelope, traces) {
+  panel.replaceChildren();
+  if (!traces.length) {
+    panel.append(el('p', 'chat__action-note',
+      '本次没有可展开的推理链（本次派发不是多视角分析，或编排未产出链）。'));
+    return;
+  }
+  const names = lensNameMap(envelope);
+  for (const entry of traces) {
+    const row = el('div', 'chat__trace-entry');
+    const button = el('button', 'chat__action', names[entry.lens_id] || entry.lens_id);
+    button.type = 'button';
+    const mount = el('div', 'chat__trace-body');
+    button.addEventListener('click', () => {
+      mount.replaceChildren();
+      if (entry.description) {
+        renderEnvelope(entry.description, mount);
+      } else {
+        mount.append(el('p', 'state state--empty', '该视角本次没有可展开的推理链。'));
+      }
+    });
+    row.append(button, mount);
+    panel.append(row);
+  }
+}
+
+/** 分歧图矩阵行的 `lens_id → name` 对位（视角名由服务端下发，前端不自带词表）。 */
+function lensNameMap(envelope) {
+  const slots = (envelope && envelope.data && envelope.data.slots) || {};
+  const map = {};
+  for (const matrixRow of slots.matrix || []) {
+    if (matrixRow.lens_id) map[matrixRow.lens_id] = matrixRow.name || matrixRow.lens_id;
+  }
+  return map;
 }
 
 function actionButton(label, owner) {

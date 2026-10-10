@@ -454,3 +454,17 @@ main {
 .chat__action-note { margin: .35rem 0 0; color: var(--delayed); font-size: var(--text-sm); }
 
 .component__degraded-title { margin: 0 0 .25rem; font-weight: 600; }
+
+/* 推理链展开面板（[T-UI-016.3]，11-sitemap §3.3 的跨页复用件宿主）——虚线框：它是**降级友好**的
+   展开区而非错误态（[01 §12]：`state--error` 留给渲染失败）。 */
+.chat__trace-panel {
+  margin-top: .35rem; padding: .5rem .75rem;
+  border: 1px dashed var(--line); border-radius: var(--radius-md);
+}
+.chat__trace-entry { margin: .25rem 0; }
+.chat__trace-body { margin-top: .25rem; }
+
+/* 推理区决策表单的参与视角清单（[T-UI-016.3]）——逐条「采纳 / 忽略」，默认忽略。 */
+.deliberation__lenses { margin: .35rem 0; padding-left: 1.2rem; }
+.deliberation__lens { display: flex; align-items: center; gap: .5rem; margin: .2rem 0; }
+.deliberation__lens-name { flex: 1 1 auto; }

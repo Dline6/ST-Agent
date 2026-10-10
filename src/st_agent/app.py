@@ -443,12 +443,16 @@ class DialogFacade:
             )
             if isinstance(outcome, ResultEnvelope):  # 无待确认卡等前置失败
                 return {"reply": outcome, "session_id": sid, "needs_confirmation": False,
-                        "description": None, "clarification": None}
+                        "description": None, "clarification": None, "traces": []}
             description = None
+            traces: list[dict[str, Any]] = []
             if outcome.analysis is not None:  # analyze 去向：分歧图（06 §5）
                 view = getattr(outcome.analysis, "view", None)
                 described = describe_divergence_map(view, now=self._now())
                 description = described.data if described.status == "ok" else None
+                # 各视角链（[06 §5] 追问接口）：[`T-UI-016.3`] 起随响应**内联**，供结论卡的
+                # 「推理链」入口展开（无会话态、按锚点对位，见 `_analysis_traces`）。
+                traces = self._analysis_traces(outcome.analysis)
             elif outcome.run is not None and outcome.trace is not None:
                 described = describe_trace(outcome.trace, now=self._now())
                 description = described.data if described.status == "ok" else None
@@ -462,20 +466,46 @@ class DialogFacade:
                 description = described.data if described.status == "ok" else None
             return {"reply": outcome.envelope, "session_id": sid,
                     "needs_confirmation": False, "description": description,
-                    "clarification": None}
+                    "clarification": None, "traces": traces}
         # 默认：输入 → 理解 → 澄清 → 确认卡
         result = self.post(str(body.get("text") or ""), session_id=sid or None)
         if isinstance(result, ResultEnvelope):  # 理解失败 / 未落会话
             return {"reply": result, "session_id": sid, "needs_confirmation": False,
-                    "description": None, "clarification": None}
+                    "description": None, "clarification": None, "traces": []}
         clarification = _clarification_payload(result.clarification)
         if result.confirmation is None:  # 未收敛——回方向候选（clarification 的 empty 信封）
             return {"reply": result.clarification.envelope, "session_id": result.session_id,
                     "needs_confirmation": False, "description": None,
-                    "clarification": clarification}
+                    "clarification": clarification, "traces": []}
         return {"reply": result.confirmation.envelope, "session_id": result.session_id,
                 "needs_confirmation": True, "description": None,
-                "clarification": clarification}
+                "clarification": clarification, "traces": []}
+
+    def _analysis_traces(self, analysis: Any) -> list[dict[str, Any]]:
+        """各视角推理链 → 描述（[06 §5](../../docs/技术架构-v2/06-L4-多视角推理.md) 追问接口的取值面）。
+
+        按 `LensOpinion.trace_id` 与 `analysis.traces` **对锚点**对位——编排返回的两串本就同序，
+        但锚点对位不依赖该巧合（[`T-UI-016.3`] 起随 `/api/chat` 响应内联，供结论卡展开）。
+        链取不到描述时 `description` 为 `None`（渲染面据此显式告知，**不伪造**一条链）。
+        """
+        result = getattr(analysis, "result", None)
+        by_trace = {
+            getattr(getattr(trace, "trace_id", None), "value", None): trace
+            for trace in tuple(getattr(analysis, "traces", ()) or ())
+        }
+        out: list[dict[str, Any]] = []
+        for opinion in tuple(getattr(result, "opinions", ()) or ()):
+            trace_id = str(getattr(opinion, "trace_id", "") or "")
+            trace = by_trace.get(trace_id)
+            if trace is None:
+                continue
+            described = describe_trace(trace, now=self._now())
+            out.append({
+                "lens_id": str(getattr(opinion, "lens_id", "") or ""),
+                "trace_id": trace_id,
+                "description": described.data if described.status == "ok" else None,
+            })
+        return out
 
 
 @dataclass(frozen=True)
@@ -3125,11 +3155,74 @@ def _other_end(edge: Any, node_id: str) -> str:
 
 @dataclass(frozen=True)
 class DeliberationFacade:
-    """L4 多视角推理面：持阵容 / 编排 / 分歧视图。"""
+    """L4 多视角推理面：持阵容 / 编排 / 分歧视图 / `analyze` 去向的装配件。
+
+    [`T-UI-016.1`] 起增 `analyze`（[`AnalyzeService`]）与 :meth:`run_analysis`——表现层要
+    在 `/deliberation` 页上**自带触发**一次编排（[D-112] ②：无会话态、无落盘），故需要一个
+    「跑一次全链、把三段产物并列交出」的取数口；把 `AnalyzeService` 的入参形状收在本方法内，
+    表现层不必知道它收的是 `confirmation` 鸭子面。
+    """
 
     roster: Any
     deliberation: Any = None
     viewer: Any = None
+    analyze: Any = None
+    """`analyze` 去向的装配件（鸭子面 `analyze(confirmation, *, values=…)`）——[`T-UI-016.1`]。"""
+    reader: Any = None
+    """记忆读面（鸭子面 `query(SliceQuery)`，即 L2 `MemoryReader`）——决策留痕读面用（[`T-UI-016.3`]）。"""
+
+    def run_analysis(self, *, topic: str, mode: str) -> Any:
+        """跑一次编排全链（编排 → 对照 → 视图投影），返回 `AnalyzeOutcome` 形状的鸭子面。
+
+        `topic` / `mode` 经 `values` 传入（`AnalyzeService` 由 [05 §3.2] 的澄清协议收敛二者，
+        表现层的页内触发是同一口径的另一入口，[D-112] ②）。**不臆造缺省**：面缺席即由调用方
+        回 `unavailable` + 点名（见 [`UiApp.api_deliberation_analyze`]）。
+        """
+        return self.analyze.analyze(
+            _AnalyzeValues(values={}), values={"topic": topic, "mode": mode}
+        )
+
+    def decisions(self) -> list[dict[str, Any]]:
+        """决策留痕（[06 §2.4](../../docs/技术架构-v2/06-L4-多视角推理.md) 写下的 L2 `history` 节点）。
+
+        经注入的记忆读面按 `task_type="decision"` 取（[`TASK_TYPE_AFFINITY`] 该档含 `history`），
+        再**收窄到 `type == "history"`** ——本面要的是**决策记录**，不是该档带回的
+        `thesis` / `attention` / `identity`（那三类的读面归记忆区）。按 `updated_at` 降序。
+        读面缺席 ⇒ 空列表（调用方回 `unavailable` + 点名，不臆造留痕）。
+        """
+        if self.reader is None:
+            return []
+        from st_agent.l2.memory import SliceQuery  # 局部导入：仅决策读面需要
+        result = self.reader.query(
+            SliceQuery(task_type="decision", view="timeline", token_budget=None)
+        )
+        rows = [
+            {
+                "node_id": str(s.node.memory_node_id),
+                "event": str(getattr(s.node, "event", "") or ""),
+                "updated_at": s.node.updated_at,
+                "source": str(getattr(s.node, "source", "") or ""),
+                "confidence": float(s.confidence),
+            }
+            for s in result.slices
+            if str(getattr(s.node, "type", "")) == "history"
+        ]
+        rows.sort(key=lambda row: row["updated_at"], reverse=True)
+        return rows
+
+    def record_decision(self, **fields: Any) -> Any:
+        """决策沉淀（[06 §2.4](../../docs/技术架构-v2/06-L4-多视角推理.md)）——转发给编排面。
+
+        **不在此校验决策语义**（L4 `record_decision` 已声明该口径）；面缺席由调用方 fail-closed。
+        """
+        return self.deliberation.record_decision(**fields)
+
+
+@dataclass(frozen=True)
+class _AnalyzeValues:
+    """`AnalyzeService.analyze` 的 `confirmation` 鸭子面（它只消费 `.values`）。"""
+
+    values: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -3248,6 +3341,8 @@ class M5Runtime:
             roster=self.m2.roster,
             deliberation=self.m2.deliberation,
             viewer=self.m2.viewer,
+            analyze=self.m2.analyze,
+            reader=self.m2.reader,
         )
 
     @property

@@ -104,6 +104,16 @@ _GET_ROUTES: dict[str, Callable[[UiApp, str], dict]] = {
     # 供首页常驻卡片与 `/` 补全菜单；未接端口即 `unavailable` + 点名（写面仍只 `/api/chat`）。
     "/api/chat/context": lambda app, _q: app.api_chat_context(),
     "/api/chat/commands": lambda app, _q: app.api_chat_commands(),
+    # 推理区（[`T-UI-016.1`]）：视角阵容读面——**一条只读**；逐条启用态 + 启停 / 删除动作
+    # （内置只给停用，[06 §1]），路由由 `surface` 面键在渲染件的固定表里解析。
+    "/api/deliberation/lenses": lambda app, _q: app.api_deliberation_lenses(),
+    # 视角定义读面（[`T-UI-016.2`]）：`?lens=<id>`——带标识的面走**查询串**（[11-sitemap §2.2]：
+    # 路径集仍是有限字面量集合，不引入动态段）。
+    "/api/deliberation/lens": lambda app, q: app.api_deliberation_lens(
+        lens_id=_query(q, "id")
+    ),
+    # 决策留痕读面（[`T-UI-016.3`]）：[06 §2.4] 写下的 L2 `history` 节点，逐条并列。
+    "/api/deliberation/decisions": lambda app, _q: app.api_deliberation_decisions(),
 }
 """`GET` 数据面的路由表：路径 → `(UiApp, 查询串)` → 载荷。**只此一处**判定「某路径存在与否」
 ——散落的 `if path == …` 分支会随着端点增多而漂移（[`T-UI-003`] 的同型取向）。"""
@@ -135,6 +145,15 @@ _POST_ROUTES: dict[str, Callable[[UiApp, dict], dict]] = {
     # 确认**后的写；未经确认（`confirmed_by != "user"`）即拒（[04 §8] 的强制三步）。
     "/api/memory/export": lambda app, body: app.api_memory_export(body),
     "/api/memory/onboarding": lambda app, body: app.api_memory_onboarding_submit(body),
+    # 推理区（[`T-UI-016.1`]）：页内**自带触发**一次编排 + 自定义视角的增删启停——三条
+    # `POST`（`analyze` 会真跑 Skill / 读记忆，非幂等读面，故走写表）。
+    "/api/deliberation/analyze": lambda app, body: app.api_deliberation_analyze(body),
+    "/api/deliberation/lenses": lambda app, body: app.api_deliberation_lens_create(body),
+    "/api/deliberation/lenses/update": lambda app, body: (
+        app.api_deliberation_lens_update(body)
+    ),
+    # 决策沉淀（[`T-UI-016.3`]）：决策 + 理由 + 采纳 / 忽略视角 → L2 `history` 节点。
+    "/api/deliberation/decision": lambda app, body: app.api_deliberation_decision(body),
 }
 """`POST` 数据面的路由表：路径 → `(UiApp, body)` → 载荷。**非本表内的 POST 一律 404**。
 
