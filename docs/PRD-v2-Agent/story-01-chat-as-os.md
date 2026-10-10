@@ -52,14 +52,14 @@ consumed_by: [story-04, story-06, story-07]
 
 ## 设计触点
 
-- **屏**：Chat 主界面、上下文卡片、Generative UI 看板、推理链展开面板、快捷指令菜单、澄清追问对话框
+- **屏**：Chat 主界面、上下文卡片、Generative UI 看板、推理链展开面板、快捷指令菜单、澄清追问对话框、证据包结果面、闸门交还卡、终止与上界标注、失败步标注、降级告知面
 - **组件**：对话气泡、意图确认卡、Generative UI 容器、"钉"按钮、推理链时间线、Skill 配置草稿卡
-- **状态**：正常 / 思考中 / 追问中 / 执行中 / 失败 / 离线降级
+- **状态**：正常 / 思考中 / 追问中 / 执行中 / 失败 / 离线降级 / 交还待确认 / 达上界
 
 ## 关联文档
 
 - 平台契约：[10-platform-capabilities.md](10-platform-capabilities.md)（契约 6 双通道、契约 7 可追溯）
 - 依赖：[story-02 Skills Runtime](story-02-skills-runtime.md)（被调度的能力）· [story-03 Memory Graph](story-03-memory-graph.md)（上下文卡片数据源）· [story-05 本地优先](story-05-local-first.md)（历史存储）
 - 被依赖：[story-04](story-04-multi-lens.md)（Deliberation 触发入口）· [story-06](story-06-skill-studio.md)（对话生成工作流草稿）· [story-07](story-07-ambient-delivery.md)（晚间交互式对话时段）
-- 关联页面（Sitemap）：[11-sitemap.md · Chat 主界面 · 工作区](11-sitemap.md#chat-主界面)
-- 设计资产：[11-sitemap.md §3.2 用户发起（反向流）](11-sitemap.md#32-用户发起反向流) · [§3.3 推理链展开](11-sitemap.md#33-推理链展开)
+- 关联页面（Sitemap）：[11-sitemap.md · Chat 主界面 · 工作区 · 受控自主](11-sitemap.md#chat-主界面)
+- 设计资产：[11-sitemap.md §3.2 用户发起（反向流）](11-sitemap.md#32-用户发起反向流) · [§3.3 推理链展开](11-sitemap.md#33-推理链展开) · [§3.10 自主查证循环](11-sitemap.md#310-自主查证循环)
