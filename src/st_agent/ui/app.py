@@ -36,11 +36,17 @@ WEB_ROOT = Path(__file__).resolve().parent / "web"
 """生产静态资产根（无构建 ES modules）。"""
 
 PAGE_PATHS = frozenset({
+    "/workspace",
     "/memory",
+    "/skills",
+    "/mcp",
+    "/deliberation",
+    "/delivery",
     "/reflection",
     "/reflection/changes",
     "/reflection/experiments",
     "/reflection/training",
+    "/settings",
     "/settings/evolution",
     "/eco",
     "/eco/import",
@@ -50,6 +56,10 @@ PAGE_PATHS = frozenset({
     "/studio",
 })
 """已知**页面路径**——它们回同一静态壳（SPA 回退），与 `ui/web/js/pages.js` 的登记表同源。
+
+本集合＝[11-sitemap §2.2]（[`T-UI-010.2`] 冻结的权威口径）声明的**全部 19 条路径**去掉
+主入口 `/`（根路径在 `server.py` 里与 `/index.html` 同处判定，不进本集合）——两端由
+`tests/ui/test_ui_shell_routing.py` 的漂移断言逐项钉住。
 
 页面路径属**静态壳档**（只校 `Host` / 存在的 `Origin`），故首次导航不必带令牌
 （[D-063] 的令牌分档：令牌只压 `/api/*`）；用户数据的取数一律在 `/api/*` 之后。
@@ -285,6 +295,37 @@ class UiApp:
     `l2` / `l0` 的类型。注意它与「面在、但行情源没注入」是**两回事**——后者是面自己回的
     ``available=False``（表现为 `unavailable` + 原因并有最后更新时间），本条只管「面本身没接」。
     """
+
+    # ── M6 各面（七个新鸭子端口；[`T-UI-011.1`]） ──────────────────────────
+    # 每个端口由组合根注入同名薄门面（[`st_agent.app`]），`ui` 不 import 任何层类型；
+    # 缺省 `None` ⇒ 该面探针 fail-closed（`unavailable` + 点名，不 500、不装空表）。
+    # **端口名 = 面名**，故 `api_face_status("skills")` 的 `getattr` 直接可用。
+
+    workspace: Any = None
+    """工作区（钉住的持久组件）面；缺省 ``None`` → fail-closed。
+
+    **本批刻意保持未接线**：钉住物的落盘与读面归 [`T-UI-013`]，本批不造空门面冒充它
+    （[01 §5]：不拿空壳当「面在」）。故 `/api/workspace/status` 在真组合根上仍回
+    `unavailable` + 点名——这正是「未接线」该有的样子。
+    """
+
+    skills: Any = None
+    """L1 能力（Skill）面；缺省 ``None`` → fail-closed。"""
+
+    mcp: Any = None
+    """L1 能力（MCP）面；缺省 ``None`` → fail-closed。"""
+
+    graph: Any = None
+    """L2 记忆图谱面（服务既有 `/memory` 的三视图 / 画像）；缺省 ``None`` → fail-closed。"""
+
+    deliberation: Any = None
+    """L4 多视角推理面；缺省 ``None`` → fail-closed。"""
+
+    delivery: Any = None
+    """L5 主动触达面；缺省 ``None`` → fail-closed。"""
+
+    settings: Any = None
+    """L0 存储 / 配置面；缺省 ``None`` → fail-closed。"""
 
     @property
     def dev_enabled(self) -> bool:
@@ -1337,14 +1378,23 @@ def build_ui(
     reflection: Any = None,
     eco: Any = None,
     memory: Any = None,
+    workspace: Any = None,
+    skills: Any = None,
+    mcp: Any = None,
+    graph: Any = None,
+    deliberation: Any = None,
+    delivery: Any = None,
+    settings: Any = None,
 ) -> UiApp:
     """按已绑定的 ``host`` / ``port`` 装配表现层。
 
     ``dev=True`` 而 dev 子包不可用时抛 :class:`DevSurfaceUnavailable`——发布构建里
     「带 dev 跑」是配置错误，必须响，不能装作正常。
 
-    ``chat`` / ``reflection`` / ``eco`` / ``memory``：四个**鸭子端口**，由生产入口注入；缺省
-    ``None`` 时对应面 fail-closed（`ui` 不 import `st_agent.app`，只经端口消费）。
+    ``chat`` / ``reflection`` / ``eco`` / ``memory``：M1–M4 的四个**鸭子端口**；``workspace`` /
+    ``skills`` / ``mcp`` / ``graph`` / ``deliberation`` / ``delivery`` / ``settings``：M6 的
+    七个（[`T-UI-011.1`]）。全部缺省 ``None`` ⇒ 对应面 fail-closed（`ui` 不 import
+    `st_agent.app`，只经端口消费）。
     """
     dev_package = _load_dev() if dev else None
     if dev and dev_package is None:
@@ -1360,4 +1410,11 @@ def build_ui(
         reflection=reflection,
         eco=eco,
         memory=memory,
+        workspace=workspace,
+        skills=skills,
+        mcp=mcp,
+        graph=graph,
+        deliberation=deliberation,
+        delivery=delivery,
+        settings=settings,
     )

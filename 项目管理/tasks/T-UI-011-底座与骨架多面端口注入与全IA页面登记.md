@@ -8,8 +8,8 @@ arch_link: "[01 §12](../../docs/技术架构-v2/01-平台共享契约.md)"
 priority: P0
 milestone: M6
 depends_on: [T-UI-010]
-status: todo
-decisions: [D-103]
+status: done
+decisions: [D-103, D-106, D-109]
 verify:
 ---
 
@@ -21,39 +21,49 @@ verify:
 
 三件交付，都落在**表现层与组合根的骨架面**：
 
-1. **多面鸭子端口注入**——[`UiApp`](../../src/st_agent/ui/app.py) 现只有四个端口（`chat` / `reflection` / `eco` / `memory`）。本叶按 [11-sitemap §2](../../docs/PRD-v2-Agent/11-sitemap.md) 七面的取数需求，在**组合根** [`st_agent/app.py`](../../src/st_agent/app.py) 造齐各面门面（L1 Skill/MCP 面 · L2 图谱 / 画像面 · L4 推理面 · L5 触达面 · L0 存储 / 配置面），经**同形鸭子端口**注入 `UiApp` / `build_ui` / `serve` / [`__main__.py`](../../src/st_agent/__main__.py)。**未接线的面 fail-closed**（`unavailable` + 点名装配归属，不 500、不装空表）。
-2. **全 IA 页面登记**——[11-sitemap §2](../../docs/PRD-v2-Agent/11-sitemap.md) 声明的每条屏的**宿主页**进 [`PAGE_PATHS`](../../src/st_agent/ui/app.py) 与 [`pages.js`](../../src/st_agent/ui/web/js/pages.js)；未填 `render` 的页走 [`main.js`](../../src/st_agent/ui/web/js/main.js) 的**六态可用性探针**（只证「路由通、端口在不在」，不冒充业务内容）。
+1. **多面鸭子端口注入**——[`UiApp`](../../src/st_agent/ui/app.py) 现只有四个端口（`chat` / `reflection` / `eco` / `memory`）。按 [11-sitemap §2.2](../../docs/PRD-v2-Agent/11-sitemap.md) 的分区取数需求，在**组合根** [`st_agent/app.py`](../../src/st_agent/app.py) 造齐各面门面（L1 Skill 与 MCP 面 · L2 图谱面 · L4 推理面 · L5 触达面 · L0 存储 / 配置面），经**同形鸭子端口**注入 `UiApp` / `build_ui` / `serve` / [`__main__.py`](../../src/st_agent/__main__.py)。**未接线的面 fail-closed**（`unavailable` + 点名装配归属，不 500、不装空表）。
+2. **全 IA 页面登记**——[11-sitemap §2.2](../../docs/PRD-v2-Agent/11-sitemap.md) 声明的每条屏的**宿主页**进 [`PAGE_PATHS`](../../src/st_agent/ui/app.py) 与 [`pages.js`](../../src/st_agent/ui/web/js/pages.js)；未填 `render` 的页走 [`main.js`](../../src/st_agent/ui/web/js/main.js) 的**六态可用性探针**（只证「路由通、端口在不在」，不冒充业务内容）；`nav` 由「列全部登记项」收敛为「按分区根聚合」。
 3. **回环端点骨架**——各面的 `GET` 探针端点（`/api/<面>/status` 同形）+ 写面经**固定回环路由**（[01 §12 动作不进描述](../../docs/技术架构-v2/01-平台共享契约.md)）。
 
 **本批的边界**（不越界）：
 
 - **不填业务内容**——各页的具体读面 / 交互 / 渲染件归七面功能叶；本叶只让页面**可达**、探针**如实**。
 - **不动既有四端口语义**——`chat` / `reflection` / `eco` / `memory` 保持原形，新面只增。
-- **不引构建链**（[D-063](../../项目管理/决策日志.md)）。
+- **不引构建链**（[D-063](../决策日志.md)）。
 - **不越层取数**——组合根是唯一装配点，表现层只经鸭子端口（[铁律 7](../工程宪法.md)）。
+
+**拆分**（命中[拆分触发](../工作流.md)：验收 GWT 6 条 > 5；跨 [01 §5](../../docs/技术架构-v2/01-平台共享契约.md) / [§6](../../docs/技术架构-v2/01-平台共享契约.md) / [§7](../../docs/技术架构-v2/01-平台共享契约.md) / [§12](../../docs/技术架构-v2/01-平台共享契约.md) / [00 §1.1](../../docs/技术架构-v2/00-架构总览.md) / [05 §6](../../docs/技术架构-v2/05-L3-对话主入口.md) / [11-sitemap §2.2](../../docs/PRD-v2-Agent/11-sitemap.md) 多个契约小节；单次预计 Agent 会话轮次 > 20）——父转分组节点，交付由两叶承接（[D-109](../决策日志.md) ①）：
+
+- [`T-UI-011.1`](T-UI-011.1-多面端口注入与各面门面装配.md)——**端口与门面**：七个新鸭子端口 + 组合根六个薄门面 + 七条 `/api/<面>/status` 探针（`workspace` 面刻意 fail-closed）
+- [`T-UI-011.2`](T-UI-011.2-全IA页面登记与导航收敛.md)——**页面登记与导航收敛**：`PAGE_PATHS` / `pages.js` 补至 §2.2 全集 + `nav` 按分区根聚合 + 防漂移守卫
+
+不合并成一叶：两叶失败面不同（「端口未接线 / 门面越界填业务 / 探针假报」vs「路径漏项 / 文档与路由漂移 / 导航口径冲突」），且 `.2` 的各页 `statusPath` **依赖** `.1` 的探针端点（故 `.2` `depends_on` `.1`）。两叶一批连做、④ 对齐对整批做一次，逐叶收工留痕仍齐。
 
 ## 验收标准（Given-When-Then）
 
-- GWT-1：Given [11-sitemap §2](../../docs/PRD-v2-Agent/11-sitemap.md) 声明的每条屏，When 对位 [`PAGE_PATHS`](../../src/st_agent/ui/app.py) 与 [`pages.js`](../../src/st_agent/ui/web/js/pages.js)，Then 每条屏有宿主路径、每个路径两端同源登记，**无屏无家可归**
-- GWT-2：Given 每个新页面路径，When 首导航，Then 回静态壳（200，令牌只压 `/api/*`），且**未填 `render` 者**出六态可用性探针（`ok` / `empty` / `unavailable` / `delayed` / `error` 如实），**不**出错误红、**不**静默留白
-- GWT-3：Given 组合根未注入某面端口，When 取该面探针，Then `unavailable` + 点名装配归属（**fail-closed**），不 500、不回空表冒充
-- GWT-4：Given 全部新端点，When 检查写面，Then 写动作走**固定回环路由**（描述里**无** URL / 方法），只读呈现与带动作面分型清楚
-- GWT-5：Given 七面各一条取数路径，When 在真组合根 + 真回环服务上取数，Then 每面回该面**已定形态**的 `ResultEnvelope`（不越层、不旁路），中性化门在出站点生效
-- GWT-6：Given 全项目相对链接，When 跑 `python tools/verify_docs.py --strict`，Then 检查 1–9 全过、0 断链
+逐条落到两叶（父级只汇总，不重复）：
+
+- GWT-1：Given [11-sitemap §2](../../docs/PRD-v2-Agent/11-sitemap.md) 声明的每条屏，When 对位 [`PAGE_PATHS`](../../src/st_agent/ui/app.py) 与 [`pages.js`](../../src/st_agent/ui/web/js/pages.js)，Then 每条屏有宿主路径、每个路径两端同源登记，**无屏无家可归** → [`.2`](T-UI-011.2-全IA页面登记与导航收敛.md) GWT-1
+- GWT-2：Given 每个新页面路径，When 首导航，Then 回静态壳（200，令牌只压 `/api/*`），且**未填 `render` 者**出六态可用性探针（`ok` / `empty` / `unavailable` / `delayed` / `error` 如实），**不**出错误红、**不**静默留白 → [`.2`](T-UI-011.2-全IA页面登记与导航收敛.md) GWT-2 / GWT-4（探针端点由 [`.1`](T-UI-011.1-多面端口注入与各面门面装配.md) 交付）
+- GWT-3：Given 组合根未注入某面端口，When 取该面探针，Then `unavailable` + 点名装配归属（**fail-closed**），不 500、不回空表冒充 → [`.1`](T-UI-011.1-多面端口注入与各面门面装配.md) GWT-1 / GWT-3
+- GWT-4：Given 全部新端点，When 检查写面，Then 写动作走**固定回环路由**（描述里**无** URL / 方法），只读呈现与带动作面分型清楚 → [`.1`](T-UI-011.1-多面端口注入与各面门面装配.md) GWT-4（新增端点全为只读探针，写面白名单逐条不变）
+- GWT-5：Given 七面各一条取数路径，When 在真组合根 + 真回环服务上取数，Then 每面回该面**已定形态**的 `ResultEnvelope`（不越层、不旁路），中性化门在出站点生效 → [`.1`](T-UI-011.1-多面端口注入与各面门面装配.md) GWT-2 / GWT-3
+- GWT-6：Given 全项目相对链接，When 跑 `python tools/verify_docs.py --strict`，Then 检查 1–9 全过、0 断链 → 两叶共有
 
 ## 接口面
 
-<④ 对齐时实填（`doing` 起不可留占位），见 [工作流](../工作流.md) 第 ④ 步>
-- 输入（消费的前置接口）：
-- 输出（本任务交付的公共 API / 落盘位置）：
+父级只汇总；逐叶列于各自 `## 接口面`：
+
+- **输入**：[`T-UI-010.2`](T-UI-010.2-页面集与导航模型.md) 的 [11-sitemap §2.2](../../docs/PRD-v2-Agent/11-sitemap.md)（路径与导航权威口径）· 既有四端口与 `api_face_status` / `server.py` 两张白名单表（`T-UI-004.1` / `T-UI-009.2` 交付）· 组合根真句柄（`runtime.skills` · `l2` · `l4` · `l5` · L0 配置注册表）
+- **输出**：`UiApp` +7 端口字段与 `build_ui` / `serve` 同名关键字 · `__main__.py` 注入 · 六个薄门面（组合根）· 七条 `/api/<面>/status` 探针 · `PAGE_PATHS` 18 条 / `pages.js` 19 条 · `nav` 按分区根聚合 · 三条防漂移守卫
 
 ## 可关闭的遗留
 
-<④ 对齐时实填：扫 [遗留问题](../遗留问题/README.md) 各层册的未闭区，逐条列「归属＝本任务」或「解封条件＝本任务 `done`」的条目（册内 id + 处置）；无命中写 `无`。>
+无——逐册核未闭区（2026-10-10）：[L1](../遗留问题/L1-遗留问题.md) / [L2](../遗留问题/L2-遗留问题.md) / [L3](../遗留问题/L3-遗留问题.md) / [L6](../遗留问题/L6-遗留问题.md) 册未闭区为空；[L0](../遗留问题/L0-遗留问题.md) 册 `C3` / `C5` / `D1`–`D3` 与 [L5](../遗留问题/L5-遗留问题.md) 册 `A1` 归属＝**人 / 人决**，不指向本任务。逐叶同结论。
 
 ## 假设与前提
 
-<④ 对齐时实填；每条 `A<n>` 含 前提内容 / 若错的影响 / 验证方式；确认无假设写 `无（<原因>）`>
+逐叶列于各自 `## 假设与前提`（[`.1`](T-UI-011.1-多面端口注入与各面门面装配.md) `A1`–`A5` · [`.2`](T-UI-011.2-全IA页面登记与导航收敛.md) `A1`–`A5`）。父级无独立假设——本叶范围即两子叶之并，判据不越出子叶。
 
 ## 涉及契约
 
@@ -65,7 +75,7 @@ verify:
 
 ## 参考
 
-- 决策：[D-103](../决策日志.md)（M6 起手式「先铺底座 + 骨架」）· [D-060](../../项目管理/决策日志.md)（表现层承载形态）· [D-063](../../项目管理/决策日志.md)（零构建前端）
+- 决策：[D-103](../决策日志.md)（M6 起手式「先铺底座 + 骨架」）· [D-106](../决策日志.md)（九叶立项）· [D-109](../决策日志.md)（本批：拆分与端口粒度）· [D-060](../../项目管理/决策日志.md)（表现层承载形态）· [D-063](../../项目管理/决策日志.md)（零构建前端）
 - 上游：[`T-UI-010`](T-UI-010-契约先行组件型补齐与页面集口径.md)（组件型与页面集口径）
 - 下游：七面功能叶 [`T-UI-012`](T-UI-012-Chat主界面对话流与生成式UI宿主.md) ~ [`T-UI-018`](T-UI-018-设置区与全局要素.md)
 - 先例：[`T-UI-004.1`](done/M4/T-UI-004.1-回环端点骨架、鸭子端口注入与前端页面壳.md)（回环端点骨架 + 鸭子端口注入 + 前端页面壳）
@@ -73,4 +83,4 @@ verify:
 
 ## 备注
 
-范围套件 `pytest tests/contracts tests/test_layering.py tests/test_tools.py tests/integration tests/ui`（本叶改 `src/st_agent/ui/**`、`src/st_agent/app.py`、`src/st_agent/__main__.py`）+ `verify_docs.py --strict`。**拆分触发**：端子面（多面端口注入）与页子面（全 IA 页面登记）跨不同契约小节、各自 GWT>5 时，本叶转分组节点拆 `.1`（端口与门面）/ `.2`（页面登记与探针）。
+拆分已落地（[D-109](../决策日志.md)）：交付由 [`.1`](T-UI-011.1-多面端口注入与各面门面装配.md)（端口与门面）与 [`.2`](T-UI-011.2-全IA页面登记与导航收敛.md)（页面登记与导航收敛）承接，两叶一批连做、④ 对齐对整批做一次。本父节点只汇总，本身无独立交付物。
