@@ -83,6 +83,23 @@ _GET_ROUTES: dict[str, Callable[[UiApp, str], dict]] = {
     # 记忆区（`T-UI-009.2`）：持仓 / 关注行情读面——两段各一条，面键由路径定
     "/api/memory/holdings": lambda app, _q: app.api_memory_positions("holdings"),
     "/api/memory/watchlist": lambda app, _q: app.api_memory_positions("watchlist"),
+    # 记忆区图谱面（[`T-UI-014.1`]）：三视图走**同一条**查询层、画像卡 ≤5 标签——两条**只读**
+    # 取数面；视图名由**查询串**给（[11-sitemap §2.2]：带标识的面走查询串，路径集不变）。
+    "/api/memory/browse": lambda app, q: app.api_memory_browse(
+        view=_query(q, "view") or "list",
+        topic=_query(q, "topic"),
+        task_type=_query(q, "task_type") or "chat",
+    ),
+    "/api/memory/profile": lambda app, _q: app.api_memory_profile(),
+    # 记忆中详情 / 修正历史（[`T-UI-014.2`]）：`?node=<id>` 与 `?node=<id>&view=revisions`——
+    # 带标识的面走**查询串**（[11-sitemap §2.2]：路径集仍是有限字面量集合，不引入动态段）。
+    "/api/memory/node": lambda app, q: app.api_memory_node(node_id=_query(q, "id")),
+    "/api/memory/node/revisions": lambda app, q: app.api_memory_node_revisions(
+        node_id=_query(q, "id")
+    ),
+    # 导入导出面板与 Onboarding（[`T-UI-014.3`]）：计划 / 状态两条**只读**。
+    "/api/memory/export/plan": lambda app, _q: app.api_memory_export_plan(),
+    "/api/memory/onboarding": lambda app, _q: app.api_memory_onboarding(),
     # Chat 主界面（[`T-UI-012.1`]）：上下文卡片与快捷指令清单——两条**只读**取数面，
     # 供首页常驻卡片与 `/` 补全菜单；未接端口即 `unavailable` + 点名（写面仍只 `/api/chat`）。
     "/api/chat/context": lambda app, _q: app.api_chat_context(),
@@ -114,6 +131,10 @@ _POST_ROUTES: dict[str, Callable[[UiApp, dict], dict]] = {
     "/api/eco/import/decide": lambda app, body: app.api_eco_import_decide(body),
     "/api/eco/import/install": lambda app, body: app.api_eco_import_install(body),
     "/api/eco/violations/disable": lambda app, body: app.api_eco_disable(body),
+    # 记忆区图谱面的写面（[`T-UI-014.3`]）：导出确认门 + Onboarding 提交——两条均为**显式
+    # 确认**后的写；未经确认（`confirmed_by != "user"`）即拒（[04 §8] 的强制三步）。
+    "/api/memory/export": lambda app, body: app.api_memory_export(body),
+    "/api/memory/onboarding": lambda app, body: app.api_memory_onboarding_submit(body),
 }
 """`POST` 数据面的路由表：路径 → `(UiApp, body)` → 载荷。**非本表内的 POST 一律 404**。
 
