@@ -48,11 +48,15 @@ function el(tag, className, text) {
   return node;
 }
 
-/** 未登记 / 未实现类型的降级占位：点名类型、说明原因、可展开原始描述。 */
+/** 未登记 / 未实现类型的降级占位：点名类型、说明原因、可展开原始描述。
+ *
+ * **中性降级呈现**（[01 §12] 降级口径 / [11-sitemap §2.1]）：虚线框 + 中性说明，**不**用错误红
+ * ——「本版本未实现该型」是**降级**而非**渲染失败**，两者不得混同（`state--error` 留给后者）。
+ */
 function degraded(description) {
   const box = el('section', 'component component--degraded');
-  box.append(el('p', 'state state--error', `未实现的组件类型：${description.component_type}`));
-  box.append(el('p', 'meta', '该类型已在 01 §12 登记，但本版本渲染器未实现它；原始描述如下。'));
+  box.append(el('p', 'component__degraded-title', `未实现的组件类型：${description.component_type}`));
+  box.append(el('p', 'meta', '该类型已在 01 §12 登记，但本版本渲染器未实现它；以下为降级占位，原始描述可展开。'));
   const details = document.createElement('details');
   const summary = document.createElement('summary');
   summary.textContent = '原始描述';
@@ -88,8 +92,13 @@ function renderPayload(data, mount) {
   mount.append(body);
 }
 
-/** 把一个信封渲染进 `mount`（替换其全部子节点）。 */
-export function renderEnvelope(envelope, mount) {
+/** 把一个信封渲染进 `mount`（替换其全部子节点）。
+ *
+ * `options.payload === false` 时**只出六态 chrome**、不渲染 `data` 载荷——对话流里的回复
+ * 载荷多为机器数据（确认卡条目 / 澄清问项等），其内容由**专用内联块**承载；再 dump 一次
+ * JSON 只会重复（[`pages/chat.js`]）。**chrome 恒显**——六态仍显式、不静默。
+ */
+export function renderEnvelope(envelope, mount, options = {}) {
   const render = envelope.render;
   if (!render || !render.presentation) {
     mount.replaceChildren(el('p', 'state state--error', '服务端未下发渲染语义（契约违规）'));
@@ -112,6 +121,7 @@ export function renderEnvelope(envelope, mount) {
   if (render.notice) nodes.push(el('p', 'notice', render.notice));
 
   mount.replaceChildren(...nodes);
-  if (!isBlank(envelope.data)) renderPayload(envelope.data, mount);
+  const includePayload = options.payload !== false;
+  if (includePayload && !isBlank(envelope.data)) renderPayload(envelope.data, mount);
 }
 
