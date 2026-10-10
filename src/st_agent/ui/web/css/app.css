@@ -210,6 +210,26 @@ main {
 .page__block { margin: 0 0 1.25rem; }
 .page__block-title { margin: 0 0 .35rem; font-size: var(--text-md); color: var(--fg-muted); }
 
+/* 记忆区（/memory）：同分区多面共用一条路径（11-sitemap §2.2 的页内视图切换）。
+   切换器是**页内**导航，不占 hash（令牌在 fragment，路由在 path——[D-063]）。 */
+.page__block-head { display: flex; align-items: baseline; gap: .75rem; flex-wrap: wrap; }
+.view-switch { display: flex; gap: .4rem; margin: 0 0 .5rem; }
+.view-switch__item {
+  padding: .15rem .55rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  text-decoration: none;
+}
+.view-switch__item:hover { border-color: var(--fg-muted); }
+.view-switch__item.is-active {
+  border-color: var(--fg);
+  color: var(--fg);
+  background: var(--card);
+}
+.page__subblock { margin: 0 0 .9rem; }
+.page__subblock-title { margin: 0 0 .25rem; font-size: var(--text-sm); color: var(--fg-muted); }
+
 /* feedback_capture（01 §12 / 08 §1）：五类动作并列，原因入口独立一行 */
 .component--feedback { padding: .75rem; border: 1px solid var(--line); border-radius: var(--radius-md); }
 .feedback__actions { display: flex; flex-wrap: wrap; gap: .4rem; margin: .5rem 0; }

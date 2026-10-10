@@ -43,10 +43,14 @@ _EXPECTED_POST_ROUTES = frozenset({
     "/api/eco/import/decide",
     "/api/eco/import/install",
     "/api/eco/violations/disable",
+    # 记忆区图谱面的写面（[`T-UI-014.3`]）：导出确认门 + Onboarding 提交。
+    "/api/memory/export",
+    "/api/memory/onboarding",
 })
-"""写面白名单的**副本**（`T-UI-011.1` 落下的 15 条）——枚举副本 + 测试钉住（既有做法）。
+"""写面白名单的**副本**——枚举副本 + 测试钉住（既有做法）。
 
-本叶**不新增**写面；后续七面功能叶在自己的交付里新增写端点时，同批把此处补上。
+`T-UI-011.1` 落下 15 条；[`T-UI-014.3`] 新增 2 条（记忆导出确认 / Onboarding 提交）。
+后续各面功能叶在自己的交付里新增写端点时，同批把此处补上。
 """
 
 
