@@ -16,6 +16,13 @@
 :data:`RESERVED_COMPONENT_TYPES` 移入 :data:`IMPLEMENTED_COMPONENT_TYPES`——§12 早已
 把它列入「已登记、本期不实现」，其理由即「使后续补这些形态属于**实现**而非改契约」，
 故本次不触 §12 的字段表与槽形状（登记与实现的界线见 [D-063] / [D-071]）。
+
+``heatmap`` / ``trend_chart`` 于 2026-10-10 由 ``T-UI-010.1`` 同样从
+:data:`RESERVED_COMPONENT_TYPES` 升为**实现**（story-01 的看板明列热力图与图表，属**实现**
+而非改契约）；同批 ``graph_view`` / ``timeline_view`` 由 ``T-UI-010.1`` **新增登记并实现**
+——前者是记忆区「图谱视图」的节点-边图（枚举面原无对应型），后者是**通用时序面**（既有三型
+皆不可复用：``change_timeline`` 的字段硬编码对位「演进变更」、``trace_timeline`` 对位
+「推理步骤」），两型均按 [铁律 8] 先改 [01 §12] 再改代码（[D-108]）。
 """
 
 from __future__ import annotations
@@ -69,9 +76,19 @@ ComponentType = Literal[
     # Studio 画布（T-UI-005.1）：story-06 主画布的载体——会话 + 节点 / 连线 / 分组 +
     # 校验违规 + 接受 / 否决；可视化微调经固定回环路由，不进描述（01 §12 动作不进描述）
     "studio_canvas",
-    # 已登记、本期不实现——提前登记使后续补这些形态属于「实现」而非「改契约」
+    # 由「已登记未实现」升为**本期实现**（T-UI-010.1）：01 §12 提前登记 `heatmap` /
+    # `trend_chart` 的用途即此——story-01 的看板明列热力图与图表，补该形态属**实现**而非改契约
     "heatmap",
     "trend_chart",
+    # **新登记并实现**（T-UI-010.1）：记忆区「图谱视图」的节点-边图在枚举面原无对应型
+    # （`divergence_map` 的 `network` 槽同形态但槽语义对位「分歧」且与 `matrix` 同为必填，
+    # 复用会混淆语义），故按铁律 8 先改 01 §12 再实现
+    "graph_view",
+    # **新登记并实现**（T-UI-010.1）：通用**时序视图**——既有三型皆不可复用（`change_timeline`
+    # 的字段硬编码对位「演进变更」、`trace_timeline` 对位「推理步骤」），故另立；承载记忆区
+    # 时间线视图 / 修正历史页与触达区推送历史时间线（跨两区，非某一页专属）
+    "timeline_view",
+    # 已登记、本期不实现——提前登记使后续补这些形态属于「实现」而非「改契约」
     "risk_badge",
     "pinned_board",
 ]
@@ -95,6 +112,10 @@ IMPLEMENTED_COMPONENT_TYPES: tuple[str, ...] = (
     "violation_alert",
     "divergence_map",
     "studio_canvas",
+    "heatmap",
+    "trend_chart",
+    "graph_view",
+    "timeline_view",
 )
 """**本期实现**的类型（渲染方有对应渲染件）；其余登记型一律走**显式降级占位**。"""
 

@@ -123,13 +123,18 @@ DESCRIPTION_KINDS: tuple[str, ...] = (
     "permission_approval_card",
     "divergence_map",
     "divergence_map_unanimous",
+    "heatmap",
+    "trend_chart",
+    "graph_view",
+    "timeline_view",
     "extra-slot",
     "reserved",
     "generated-violation",
     "data-violation",
 )
-"""组件面的走查路径（前十条正常渲染——含分歧图的两条分支：有冲突 / 全员一致；
-第十一条走「未识别槽」降级、第十二条走未实现类型降级、后两条验证中性分栏）。"""
+"""组件面的走查路径（前十四条正常渲染——含分歧图的两条分支：有冲突 / 全员一致，
+以及 M6 契约先行补的四型：热力块 / 趋势图 / 图谱视图 / 时序视图；第十五条走「未识别槽」
+降级、第十六条走未实现类型降级、后两条验证中性分栏）。"""
 
 
 def _descriptions() -> dict[str, UiDescription]:
@@ -193,10 +198,114 @@ def _handwritten() -> dict[str, UiDescription]:
         # 已登记、本期未实现 → 渲染面**显式降级**（01 §12），不猜测
         "reserved": UiDescription(
             description_id=new_description_id(),
+            component_type="pinned_board",
+            title="示例钉住看板（本期未实现）",
+            slots={"items": [{"ref": "desc_0123456789abcdef0123", "kind": "table"}]},
+            text_kinds={"items": "data"},
+            as_of=_NOW,
+        ),
+        # M6 契约先行补的四型（T-UI-010.1）——含「无数据不是 0」与「缺值留断口」两处边界
+        "heatmap": UiDescription(
+            description_id=new_description_id(),
             component_type="heatmap",
-            title="示例热力图（本期未实现）",
-            slots={"cells": [{"code": "sh.600000", "value": 0.12}]},
-            text_kinds={"cells": "data"},
+            title="示例热力块",
+            slots={
+                "cells": [
+                    {"row": "金融", "col": "今日", "value": 0.4},
+                    {"row": "金融", "col": "本周", "value": 1.2},
+                    {"row": "医药", "col": "今日", "value": -0.3},
+                    {"row": "医药", "col": "本周", "value": 0.8},
+                    {"row": "科技", "col": "今日", "value": 2.1},
+                    # 无数据 → 中性「—」占位，**不**冒充 0
+                    {"row": "科技", "col": "本周", "value": None},
+                ],
+                "labels": {
+                    "row_axis": "板块", "col_axis": "区间", "unit": "%", "legend": "涨跌幅度",
+                    "rows": {"金融": "金融", "医药": "医药", "科技": "科技"},
+                    "columns": {"今日": "今日", "本周": "本周"},
+                },
+            },
+            text_kinds={"cells": "data", "labels": "generated"},
+            as_of=_NOW,
+        ),
+        "trend_chart": UiDescription(
+            description_id=new_description_id(),
+            component_type="trend_chart",
+            title="示例趋势图",
+            slots={
+                "series": [
+                    {
+                        "key": "close",
+                        "points": [
+                            {"x": "T-4", "y": 7.2}, {"x": "T-3", "y": 7.35},
+                            {"x": "T-2", "y": 7.28}, {"x": "T-1", "y": 7.44},
+                            {"x": "T", "y": 7.53},
+                        ],
+                    },
+                    {
+                        "key": "volume",
+                        "points": [
+                            {"x": "T-4", "y": 120}, {"x": "T-3", "y": 135},
+                            # 缺值 → 留断口，**不**按 0 连线
+                            {"x": "T-2", "y": None}, {"x": "T-1", "y": 150},
+                            {"x": "T", "y": 142},
+                        ],
+                    },
+                ],
+                "labels": {
+                    "x_axis": "交易日", "y_axis": "数值", "legend": "逐条序列",
+                    "series": {"close": "收盘价", "volume": "成交量"},
+                },
+            },
+            text_kinds={"series": "data", "labels": "generated"},
+            as_of=_NOW,
+        ),
+        "graph_view": UiDescription(
+            description_id=new_description_id(),
+            component_type="graph_view",
+            title="示例图谱视图",
+            slots={
+                "nodes": [
+                    {"id": "n1", "type": "holding", "label": "sh.600000 浦发银行",
+                     "confidence": "high", "privacy": "personal"},
+                    {"id": "n2", "type": "thesis", "label": "利率下行利好银行",
+                     "confidence": "medium"},
+                    {"id": "n3", "type": "attention", "label": "关注：城商行",
+                     "confidence": "low", "privacy": "public"},
+                ],
+                "edges": [
+                    {"from": "n2", "to": "n1", "relation": "supports"},
+                    {"from": "n3", "to": "n1", "relation": "related"},
+                ],
+                "labels": {
+                    "types": {"holding": "持仓", "thesis": "观点", "attention": "关注"},
+                    "privacy": {"personal": "个人", "public": "公开"},
+                    "relations": {"supports": "支持", "related": "相关"},
+                },
+            },
+            text_kinds={"nodes": "data", "edges": "data", "labels": "generated"},
+            as_of=_NOW,
+        ),
+        "timeline_view": UiDescription(
+            description_id=new_description_id(),
+            component_type="timeline_view",
+            title="示例时序",
+            slots={
+                "entries": [
+                    {"id": "e1", "at": "2026-10-08", "kind": "thesis",
+                     "content": "建仓理由：估值处于历史低位", "state": "ok"},
+                    {"id": "e2", "at": "2026-10-09", "kind": "correction",
+                     "content": "修正：目标价由 9.5 改为 8.8", "state": "delayed",
+                     "trace_ref": "trace_0123456789abcdef0123"},
+                    {"id": "e3", "at": "2026-10-10", "kind": "attention",
+                     "content": "移除关注：城商行", "state": "ok"},
+                ],
+                "labels": {
+                    "kinds": {"thesis": "观点", "correction": "修正", "attention": "关注"},
+                    "states": {"ok": "生效", "delayed": "待复核", "failed": "失败"},
+                },
+            },
+            text_kinds={"entries": "data", "labels": "generated"},
             as_of=_NOW,
         ),
         # 生成文案命中第一人称 → **阻断渲染**（回 validation_failed）
