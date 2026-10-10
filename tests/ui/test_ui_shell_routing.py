@@ -144,3 +144,39 @@ def test_transport_guard_turns_escaped_internal_errors_into_failed() -> None:
 def test_transport_guard_passes_normal_payloads_through() -> None:
     sentinel = {"status": "ok"}
     assert _dispatch_guarded("probe", lambda: sentinel) is sentinel
+
+
+# ── 漂移：页面路径 ↔ 11-sitemap §2.2 的声明集（T-UI-010.2） ─────────────────────
+_SITEMAP = Path(__file__).resolve().parents[2] / "docs" / "PRD-v2-Agent" / "11-sitemap.md"
+
+
+def _declared_page_paths() -> set[str]:
+    """从 11-sitemap §2.2 的声明里取出页面路径字面量（反引号包裹的 `/…`）。
+
+    §2.2 是「哪些屏是页面、落在哪个路径」的**权威口径**（[`T-UI-010.2`]）；带标识的面走
+    查询串（如 ``/memory?node=<id>``），故先截断 `?` 再取路径部分。本组不跑 JS，纯静态解析。
+    """
+    text = _SITEMAP.read_text(encoding="utf-8")
+    block = text.split("### 2.2 屏 → 页面路径与导航模型", 1)[1].split("## 3 页面 Flow", 1)[0]
+    declared = set()
+    for candidate in re.findall(r"`([^`]+)`", block):
+        base = candidate.split("?", 1)[0]
+        if re.fullmatch(r"/[A-Za-z0-9/_-]*", base):
+            declared.add(base)
+    return declared
+
+
+def test_declared_page_paths_are_present() -> None:
+    """声明的路径集非空且含主入口——否则下面的包含断言会空跑。"""
+    declared = _declared_page_paths()
+    assert declared, "未从 11-sitemap §2.2 解析到任何页面路径（标题或写法变了会让本组空跑）"
+    assert "/" in declared
+
+
+def test_registered_paths_stay_within_the_declared_set() -> None:
+    """**已注册**的页面路径必须都在 §2.2 声明集内——新增路径不可能悄悄绕过 IA 口径。"""
+    declared = _declared_page_paths()
+    assert set(PAGE_PATHS) <= declared, (
+        "已注册的页面路径超出 11-sitemap §2.2 的声明集："
+        f"{sorted(set(PAGE_PATHS) - declared)}（先补 IA 口径，再登记页面）"
+    )

@@ -292,3 +292,69 @@ main {
 }
 .violation-actions__button:hover { background: var(--error); color: var(--card); }
 .violation-actions__button:disabled { opacity: .5; cursor: progress; }
+
+/* ── graph_view / heatmap / trend_chart（01 §12；11-sitemap §2 记忆 · 看板读面） ──
+   三型于 T-UI-010.1 落地：均为「结构 + 数值」件。共性——并列单元用 --card 底 + 1px --line +
+   --radius-md；任何并列结构都不产出「合并后」的块（规范 §5 的共性）。色阶与线色**只在这里**
+   定义一次，各页不自行造色（同 §5.1 涨跌编码归渲染面的取向）。 */
+
+/* graph_view：节点-边图 */
+.component--graph { padding: .75rem; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.graph__block { margin: .5rem 0; }
+.graph__block h4 { margin: .25rem 0; font-size: var(--text-sm); color: var(--fg-muted); }
+.graph__nodes, .graph__edges { margin: .25rem 0; padding-left: 1.1rem; }
+.graph__node { margin: .2rem 0; }
+.graph__label { margin-right: .4rem; }
+.badge--privacy { color: var(--fg-muted); }
+
+/* heatmap：五档色阶（由 --accent 与 --card 混出，故不新增令牌）。
+   无 color-mix 的引擎退化为纸底——数值文本恒在，可读性不依赖颜色（规范 §9）。 */
+.heat__grid { border-collapse: collapse; margin: .25rem 0; }
+.heat__grid th, .heat__cell {
+  border: 1px solid var(--line);
+  padding: .25rem .5rem;
+  font-size: var(--text-sm);
+  text-align: right;
+}
+.heat__grid th { color: var(--fg-muted); text-align: left; font-weight: 500; }
+.heat__cell { font-family: var(--font-num); }
+.heat--0 { background: var(--card); }
+.heat--1 { background: color-mix(in srgb, var(--accent) 12%, var(--card)); }
+.heat--2 { background: color-mix(in srgb, var(--accent) 26%, var(--card)); }
+.heat--3 { background: color-mix(in srgb, var(--accent) 42%, var(--card)); }
+.heat--4 { background: color-mix(in srgb, var(--accent) 58%, var(--card)); }
+.heat__legend { margin: .25rem 0; padding-left: 0; list-style: none; }
+.heat__legend-item { display: flex; align-items: center; gap: .4rem; margin: .15rem 0; }
+.heat__swatch { width: .9rem; height: .9rem; border: 1px solid var(--line); border-radius: var(--radius-sm); }
+
+/* trend_chart：折线 + 文字图例（颜色之外的第二路编码） */
+.component--trend { padding: .75rem; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.trend__canvas {
+  width: 100%;
+  height: 8rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+}
+.trend__line { stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.trend__line--0 { stroke: var(--accent); background: var(--accent); }
+.trend__line--1 { stroke: var(--notice); background: var(--notice); }
+.trend__line--2 { stroke: var(--delayed); background: var(--delayed); }
+.trend__line--3 { stroke: var(--fg-muted); background: var(--fg-muted); }
+.trend__block { margin: .5rem 0; }
+.trend__block h4 { margin: .25rem 0; font-size: var(--text-sm); color: var(--fg-muted); }
+.trend__legend { margin: .25rem 0; padding-left: 0; list-style: none; }
+.trend__legend-item { display: flex; align-items: baseline; gap: .4rem; margin: .15rem 0; flex-wrap: wrap; }
+.trend__swatch { width: .9rem; height: .2rem; border-radius: var(--radius-sm); }
+.trend__summary { display: flex; gap: .5rem; flex-wrap: wrap; }
+.trend__name { font-weight: 600; }
+
+/* timeline_view：通用时序（记忆时间线 / 修正历史 / 推送历史）。
+   逐条**并列**呈现，条间用 1px --line 与留白分层；状态一律「色 + 文字」双写（规范 §9）。 */
+.component--timeline { padding: .75rem; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.timeline__entries { margin: .5rem 0; padding-left: 1.2rem; }
+.timeline__entry { margin: .5rem 0; border-left: 2px solid var(--line); padding-left: .6rem; }
+.timeline__head { display: flex; align-items: baseline; gap: .4rem; flex-wrap: wrap; }
+.timeline__at { font-family: var(--font-num); font-size: var(--text-sm); color: var(--fg-muted); }
+.timeline__state { font-size: var(--text-sm); }
+.timeline__content { margin: .2rem 0; }

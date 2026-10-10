@@ -88,6 +88,11 @@ def test_frontend_renderers_exist_as_files() -> None:
         ("permission_approval_card", {"items": [], "labels": {}}),
         # 06 §5 两视图均实现 → 矩阵与网络图同为必填槽
         ("divergence_map", {"matrix": [], "network": {"nodes": [], "edges": []}}),
+        # T-UI-010.1 三型：图谱视图 / 热力块 / 趋势图（槽词汇见 ui/registry.py）
+        ("graph_view", {"nodes": [], "edges": [], "labels": {}}),
+        ("heatmap", {"cells": [], "labels": {}}),
+        ("trend_chart", {"series": [], "labels": {}}),
+        ("timeline_view", {"entries": [], "labels": {}}),
     ],
 )
 def test_complete_descriptions_have_no_slot_gaps(component_type: str, slots: dict) -> None:
@@ -100,11 +105,12 @@ def test_slot_gaps_reports_missing_required_slots() -> None:
     assert slot_gaps(_description("context_card", {"sections": []})) == ("labels",)
     assert slot_gaps(_description("config_draft_card", {"summary": "草稿"})) == ("target", "panels")
     assert slot_gaps(_description("divergence_map", {"matrix": []})) == ("network",)
+    assert slot_gaps(_description("graph_view", {"nodes": []})) == ("edges", "labels")
 
 
 def test_reserved_type_is_not_judged_here() -> None:
     """已登记未实现型交由**渲染面降级**，不该在服务端被判成「缺槽」。"""
-    assert slot_gaps(_description("heatmap", {})) == ()
+    assert slot_gaps(_description("pinned_board", {})) == ()
 
 
 def test_unknown_type_has_no_spec() -> None:

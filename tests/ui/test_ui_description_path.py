@@ -41,7 +41,7 @@ def test_reserved_type_passes_the_server_and_is_left_to_the_renderer(
     """已登记未实现型：服务端不该假装懂它，也不该判它非法——降级是**渲染面**的事。"""
     payload = _fetch(http_get, auth, ui_server_dev, "reserved").json()
     assert payload["status"] == "ok"
-    assert payload["data"]["component_type"] == "heatmap"
+    assert payload["data"]["component_type"] == "pinned_board"
 
 
 def test_generated_violation_is_blocked_before_it_leaves(ui_server_dev, http_get, auth) -> None:

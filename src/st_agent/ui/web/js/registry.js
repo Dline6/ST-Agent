@@ -13,8 +13,12 @@ import { renderConfigDraftCard } from './plugins/l3/config_draft_card.js';
 import { renderConflictAdjudicationCard } from './plugins/l3/conflict_adjudication_card.js';
 import { renderContextCard } from './plugins/l3/context_card.js';
 import { renderDivergenceMap } from './plugins/l3/divergence_map.js';
+import { renderGraphView } from './plugins/l3/graph_view.js';
+import { renderHeatmap } from './plugins/l3/heatmap.js';
 import { renderPermissionApprovalCard } from './plugins/l3/permission_approval_card.js';
 import { renderTraceTimeline } from './plugins/l3/trace_timeline.js';
+import { renderTrendChart } from './plugins/l3/trend_chart.js';
+import { renderTimelineView } from './plugins/l3/timeline_view.js';
 import { renderChangeTimeline } from './plugins/reflection/change_timeline.js';
 import { renderFeedbackCapture } from './plugins/reflection/feedback_capture.js';
 import { renderProposalCard } from './plugins/reflection/proposal_card.js';
@@ -37,6 +41,10 @@ export const RENDERERS = {
   violation_alert: renderViolationAlert,
   divergence_map: renderDivergenceMap,
   studio_canvas: renderStudioCanvas,
+  heatmap: renderHeatmap,
+  trend_chart: renderTrendChart,
+  graph_view: renderGraphView,
+  timeline_view: renderTimelineView,
 };
 
 /** 取一个类型的渲染件；未登记 / 未实现返回 null（由调度处显式降级）。 */
