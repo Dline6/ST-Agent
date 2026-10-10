@@ -15,6 +15,7 @@
 // 本表为 19 条（＝ §2.2 声明的 19 条路径），其中 8 条是分区根。未被 `render` 填上的页走
 // `main.js` 的**六态可用性探针**（只证「路由通、端口在不在」，不冒充业务内容）。
 
+import { renderChatPage } from './pages/chat.js';
 import { renderEcoPage, renderImportPage, renderImportsPage, renderIndexPage, renderSecurityPage } from './pages/eco.js';
 import { renderEvolutionPage, renderChangesPage } from './pages/evolution.js';
 import { renderMemoryPage } from './pages/memory.js';
@@ -23,7 +24,7 @@ import { renderStudioPage } from './pages/studio.js';
 
 export const PAGES = [
   // ── Chat 主界面 ────────────────────────────────────────────────────────
-  { path: '/', title: '总览', statusPath: '/api/health', root: true },
+  { path: '/', title: '总览', statusPath: '/api/health', render: renderChatPage, root: true },
   // ── 工作区 ────────────────────────────────────────────────────────────
   { path: '/workspace', title: '工作区', statusPath: '/api/workspace/status', root: true },
   // ── 记忆 ──────────────────────────────────────────────────────────────

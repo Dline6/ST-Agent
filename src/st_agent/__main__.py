@@ -619,6 +619,9 @@ def run_backend(
             deliberation=getattr(runtime, "deliberation", None),
             delivery=getattr(runtime, "delivery", None),
             settings=getattr(runtime, "settings", None),
+            # 快捷指令注册表（[`T-UI-012.1`]）：首页 `/` 补全清单经此口取真注册表；未带
+            # 该面的根传 `None` ⇒ `GET /api/chat/commands` 回 `unavailable` + 点名。
+            commands=getattr(runtime, "commands", None),
         )
     except Exception as exc:                     # noqa: BLE001 —— 入口须给出机器可读失败行
         traceback.print_exc()

@@ -194,6 +194,35 @@ def _now() -> datetime:
     return datetime.now().astimezone()
 
 
+def _clarification_payload(round_: Any) -> dict[str, Any] | None:
+    """澄清轮 → 可序列化字典（[05 §3.2]）；无问项也无方向候选时 ``None``（不摆空壳）。
+
+    问项逐条携 ``name`` / ``prompt`` / ``default`` / ``choices`` / ``skippable``——问句与取值域
+    均取自后端（[05 §3.2]：一问一参、取值域取自该 ``ParameterSpec``），表现层只呈现、不杜撰。
+    ``directions`` 是收敛失败时的方向候选（§3.2 的「3 个可能的方向」）。
+    """
+    if round_ is None:
+        return None
+    questions = [
+        {
+            "name": question.name,
+            "prompt": question.prompt,
+            "default": question.default,
+            "choices": list(question.choices),
+            "skippable": question.skippable,
+        }
+        for question in tuple(getattr(round_, "questions", ()) or ())
+    ]
+    directions = list(getattr(round_, "directions", ()) or ())
+    if not questions and not directions:
+        return None
+    return {
+        "questions": questions,
+        "directions": directions,
+        "deferred": list(getattr(round_, "deferred", ()) or ()),
+    }
+
+
 @dataclass(frozen=True)
 class TurnResult:
     """一次「输入 → 理解 → 澄清」往返的产出（确认卡**未确认**，等用户动作）。"""
@@ -407,7 +436,7 @@ class DialogFacade:
             )
             if isinstance(outcome, ResultEnvelope):  # 无待确认卡等前置失败
                 return {"reply": outcome, "session_id": sid, "needs_confirmation": False,
-                        "description": None}
+                        "description": None, "clarification": None}
             description = None
             if outcome.analysis is not None:  # analyze 去向：分歧图（06 §5）
                 view = getattr(outcome.analysis, "view", None)
@@ -425,17 +454,21 @@ class DialogFacade:
                 )
                 description = described.data if described.status == "ok" else None
             return {"reply": outcome.envelope, "session_id": sid,
-                    "needs_confirmation": False, "description": description}
+                    "needs_confirmation": False, "description": description,
+                    "clarification": None}
         # 默认：输入 → 理解 → 澄清 → 确认卡
         result = self.post(str(body.get("text") or ""), session_id=sid or None)
         if isinstance(result, ResultEnvelope):  # 理解失败 / 未落会话
             return {"reply": result, "session_id": sid, "needs_confirmation": False,
-                    "description": None}
+                    "description": None, "clarification": None}
+        clarification = _clarification_payload(result.clarification)
         if result.confirmation is None:  # 未收敛——回方向候选（clarification 的 empty 信封）
             return {"reply": result.clarification.envelope, "session_id": result.session_id,
-                    "needs_confirmation": False, "description": None}
+                    "needs_confirmation": False, "description": None,
+                    "clarification": clarification}
         return {"reply": result.confirmation.envelope, "session_id": result.session_id,
-                "needs_confirmation": True, "description": None}
+                "needs_confirmation": True, "description": None,
+                "clarification": clarification}
 
 
 @dataclass(frozen=True)
@@ -2905,6 +2938,15 @@ class M5Runtime:
     def settings(self) -> SettingsFacade:
         """L0 存储 / 配置面。"""
         return SettingsFacade(config_registry=self.m1.runtime.config_registry, store=self.store)
+
+    @property
+    def commands(self) -> CommandRegistry:
+        """快捷指令注册表（[05 §8]）——Chat 主界面 `/` 补全清单的取数口（[`T-UI-012.1`]）。
+
+        直接透出 L3 维持的 `CommandRegistry`（含官方 Pack 的 `command` kind 整组替换），
+        故前端经 `GET /api/chat/commands` 取真注册表、不另造一份枚举。
+        """
+        return self.m1.commands
 
     def tick(self, now: datetime | None = None) -> TickResult:
         """推进一轮主动服务与每周反思（同 :meth:`M4Runtime.tick`；M5 不新增节奏）。"""

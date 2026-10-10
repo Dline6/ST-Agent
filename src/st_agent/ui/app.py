@@ -327,6 +327,14 @@ class UiApp:
     settings: Any = None
     """L0 存储 / 配置面；缺省 ``None`` → fail-closed。"""
 
+    commands: Any = None
+    """快捷指令注册表（鸭子端口：``list() -> tuple[QuickCommand, ...]``）；缺省 ``None`` → fail-closed。
+
+    [05 §8](../../docs/技术架构-v2/05-L3-对话主入口.md) 的命令注册表由 L3 维持（含官方 Pack
+    的 `command` kind 整组替换），故首页的 `/` 补全清单**经此端口取真注册表**、不在前端另造
+    一份枚举。由组合根注入 `M1Runtime.commands`；`ui` 不 import `l3` 的类型。
+    """
+
     @property
     def dev_enabled(self) -> bool:
         """dev 面是否**在本进程内真实可用**（开关打开 **且** 子包在盘上）。"""
@@ -335,8 +343,9 @@ class UiApp:
     def api_chat(self, body: dict[str, Any]) -> dict[str, Any]:
         """对话端点：经注入的门面走一段反向流，出站点仍过**同一条**校验。
 
-        门面的返回含 `reply`（`ResultEnvelope`，附六态渲染语义）与可选
-        `description`（`UiDescription`，走 :meth:`api_description` 的中性化门与必填槽）。
+        门面的返回含 `reply`（`ResultEnvelope`，附六态渲染语义）、可选
+        `description`（`UiDescription`，走 :meth:`api_description` 的中性化门与必填槽）与可选
+        `clarification`（澄清轮：问项 / 方向候选 / 超预算默认项，[05 §3.2]，原样透传）。
         未注入门面 → `unavailable` + 点名（不伪造，同 `api_health` 之外的各 fail-closed 面）。
 
         **本方法不向上抛**（[00 §6] 失败显式化）：非法请求体（门面在构造契约对象时
@@ -374,6 +383,7 @@ class UiApp:
         }
         payload["session_id"] = result.get("session_id")
         payload["needs_confirmation"] = bool(result.get("needs_confirmation"))
+        payload["clarification"] = result.get("clarification")
         description = result.get("description")
         if description is not None:
             described = envelope_payload(ResultEnvelope.ok(description))
@@ -391,6 +401,52 @@ class UiApp:
             payload["description"] = None
         return payload
 
+    def api_chat_context(self) -> dict[str, Any]:
+        """首页上下文卡片（[05 §2]）：经注入的对话门面取卡片描述（`context_card`）。
+
+        门面缺席、或其未持 `context_card` 取数口 ⇒ `unavailable` + 点名（不伪造一张卡片）。
+        卡片六段与非 ok 段的「原因 + 生产方」由 L3 的 `describe_context_card` 给出，表现层
+        只转发（[01 §5] 六态不混用）。
+        """
+        face = self.chat
+        if face is None or not hasattr(face, "context_card"):
+            return envelope_payload(
+                ResultEnvelope.unavailable(
+                    "未接入上下文卡片面：对话门面或 context_card 取数口缺席"
+                    "（装配归组合根）",
+                    last_updated_at=_now(),
+                )
+            )
+        return self._call_face(
+            "chat-context", face, "上下文卡片面", lambda f: f.context_card(),
+        )
+
+    def api_chat_commands(self) -> dict[str, Any]:
+        """快捷指令清单（[05 §8]）：经注入的指令注册表取条目（名称 / 说明 / 意图 / 来源）。
+
+        注册表未接 ⇒ `unavailable` + 点名（不摆假清单、不前端硬编码）。指令名与说明在
+        注册时已过中性门（[01 §6] 执行点 1），故此处只转发、不复检。
+        """
+        return self._call_face(
+            "chat-commands", self.commands, "快捷指令注册表",
+            lambda face: self._commands_envelope(face),
+        )
+
+    def _commands_envelope(self, registry: Any) -> ResultEnvelope:
+        commands = tuple(registry.list())
+        if not commands:
+            return ResultEnvelope.empty("快捷指令注册表为空（无可用指令）")
+        return ResultEnvelope.ok(
+            [
+                {
+                    "name": command.name,
+                    "description": command.description,
+                    "intent": command.intent,
+                    "source": command.source,
+                }
+                for command in commands
+            ]
+        )
 
     def api_health(self) -> dict[str, Any]:
         """健康面：恒为 `ok`——本叶不接真实数据（任务假设 `A5`）。"""
@@ -1385,6 +1441,7 @@ def build_ui(
     deliberation: Any = None,
     delivery: Any = None,
     settings: Any = None,
+    commands: Any = None,
 ) -> UiApp:
     """按已绑定的 ``host`` / ``port`` 装配表现层。
 
@@ -1393,8 +1450,8 @@ def build_ui(
 
     ``chat`` / ``reflection`` / ``eco`` / ``memory``：M1–M4 的四个**鸭子端口**；``workspace`` /
     ``skills`` / ``mcp`` / ``graph`` / ``deliberation`` / ``delivery`` / ``settings``：M6 的
-    七个（[`T-UI-011.1`]）。全部缺省 ``None`` ⇒ 对应面 fail-closed（`ui` 不 import
-    `st_agent.app`，只经端口消费）。
+    七个（[`T-UI-011.1`]）；``commands``：快捷指令注册表（[`T-UI-012.1`]）。全部缺省
+    ``None`` ⇒ 对应面 fail-closed（`ui` 不 import `st_agent.app`，只经端口消费）。
     """
     dev_package = _load_dev() if dev else None
     if dev and dev_package is None:
@@ -1417,4 +1474,5 @@ def build_ui(
         deliberation=deliberation,
         delivery=delivery,
         settings=settings,
+        commands=commands,
     )

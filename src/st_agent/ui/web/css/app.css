@@ -358,3 +358,79 @@ main {
 .timeline__at { font-family: var(--font-num); font-size: var(--text-sm); color: var(--fg-muted); }
 .timeline__state { font-size: var(--text-sm); }
 .timeline__content { margin: .2rem 0; }
+
+/* ── Chat 主界面（首页 `/`；[T-UI-012] 三叶） ─────────────────────────────────
+   对话流 + 上下文卡片 + 澄清/确认 + 生成式 UI 宿主。层级仍靠线与留白（D-104 ①），
+   不用阴影；六态色一律「色 + 文字」双写。 */
+.page--chat { max-width: 46rem; }
+.chat__context-body { margin-top: .35rem; }
+.chat__stream { margin: 0 0 1rem; display: flex; flex-direction: column; gap: .75rem; }
+.chat__turn { border-left: 2px solid var(--line); padding-left: .75rem; }
+.chat__turn--user { border-left-color: var(--accent); }
+.chat__text { margin: 0; white-space: pre-wrap; }
+.chat__envelope .state { font-size: var(--text-xs); font-weight: 400; color: var(--fg-muted); }
+.chat__envelope .state--error { color: var(--error); font-weight: 600; }
+
+.chat__composer { display: flex; gap: .5rem; margin: .5rem 0 .25rem; }
+.chat__input {
+  flex: 1 1 auto; padding: .5rem .6rem; font: inherit;
+  color: var(--fg); background: var(--card);
+  border: 1px solid var(--line); border-radius: var(--radius-md);
+}
+.chat__input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chat__send {
+  padding: .5rem .9rem; font: inherit; cursor: pointer;
+  color: var(--card); background: var(--accent);
+  border: 1px solid var(--accent); border-radius: var(--radius-md);
+}
+
+.chat__commands {
+  margin: .25rem 0 1rem; padding: .25rem; list-style: none;
+  border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--card);
+}
+.chat__command-button {
+  display: flex; align-items: baseline; gap: .5rem; width: 100%;
+  padding: .35rem .5rem; font: inherit; text-align: left; cursor: pointer;
+  color: var(--fg); background: none; border: 0; border-radius: var(--radius-sm);
+}
+.chat__command-button:hover { background: var(--accent-weak); }
+.chat__command-name { font-weight: 600; }
+.chat__command-desc { flex: 1 1 auto; color: var(--fg-muted); font-size: var(--text-sm); }
+.chat__command-source { color: var(--fg-faint); font-size: var(--text-xs); }
+.chat__command--unavailable,
+.chat__command--empty { padding: .35rem .5rem; color: var(--delayed); font-size: var(--text-sm); }
+
+.chat__clarify { margin: .5rem 0; padding: .5rem .75rem; border: 1px dashed var(--line); border-radius: var(--radius-md); }
+.chat__clarify-title { margin: .2rem 0 .35rem; color: var(--fg-muted); font-size: var(--text-sm); }
+.chat__question { display: flex; align-items: baseline; gap: .5rem; margin: .25rem 0; }
+.chat__question-prompt { flex: 1 1 auto; }
+.chat__answer {
+  padding: .25rem .4rem; font: inherit; color: var(--fg); background: var(--card);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+}
+.chat__directions { margin: .2rem 0; padding-left: 1.2rem; }
+.chat__direction { margin: .15rem 0; }
+
+.chat__confirm { margin: .5rem 0; padding: .5rem .75rem; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.chat__confirm-title { margin: .2rem 0 .35rem; color: var(--fg-muted); font-size: var(--text-sm); }
+.chat__confirm-items { margin: 0 0 .5rem; padding-left: 1.2rem; }
+.chat__confirm-item { margin: .15rem 0; }
+.chat__confirm-go {
+  padding: .35rem .8rem; font: inherit; cursor: pointer;
+  color: var(--card); background: var(--accent);
+  border: 1px solid var(--accent); border-radius: var(--radius-md);
+}
+.chat__confirm-go:disabled { opacity: .5; cursor: default; }
+
+.chat__description { margin: .5rem 0; }
+.chat__description-title { margin: .2rem 0 .35rem; color: var(--fg-muted); font-size: var(--text-sm); }
+.chat__actions { display: flex; gap: .5rem; margin-top: .35rem; }
+.chat__action {
+  padding: .25rem .6rem; font: inherit; font-size: var(--text-sm); cursor: pointer;
+  color: var(--fg); background: var(--card);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+}
+.chat__action:hover { background: var(--accent-weak); }
+.chat__action-note { margin: .35rem 0 0; color: var(--delayed); font-size: var(--text-sm); }
+
+.component__degraded-title { margin: 0 0 .25rem; font-weight: 600; }
