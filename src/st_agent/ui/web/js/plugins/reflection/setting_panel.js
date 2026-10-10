@@ -17,6 +17,9 @@ export const KNOWN_SLOTS = ['entries', 'labels', 'surface'];
 const ROUTES = {
   evolution: '/api/evolution/authorization',
   import: '/api/eco/import/decide',
+  // 推理区阵容（[T-UI-016.1]，面键 `deliberation-lens`）：逐条启用 / 停用 / 删除——
+  // 内置视角只给停用（[06 §1] 只能停用不可删），删除对内置仍在后端显式拒。
+  'deliberation-lens': '/api/deliberation/lenses/update',
 };
 
 function optionSelect(entry, labels) {

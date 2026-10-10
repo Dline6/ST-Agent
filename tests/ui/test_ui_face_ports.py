@@ -46,10 +46,17 @@ _EXPECTED_POST_ROUTES = frozenset({
     # 记忆区图谱面的写面（[`T-UI-014.3`]）：导出确认门 + Onboarding 提交。
     "/api/memory/export",
     "/api/memory/onboarding",
+    # 推理区的写面（[`T-UI-016.1`] / [`T-UI-016.3`]）：页内触发一次编排 + 自定义视角的
+    # 增 / 删启停 + 决策沉淀。`analyze` 会真跑 Skill / 读记忆，故**不是**只读探针，进写表。
+    "/api/deliberation/analyze",
+    "/api/deliberation/lenses",
+    "/api/deliberation/lenses/update",
+    "/api/deliberation/decision",
 })
 """写面白名单的**副本**——枚举副本 + 测试钉住（既有做法）。
 
-`T-UI-011.1` 落下 15 条；[`T-UI-014.3`] 新增 2 条（记忆导出确认 / Onboarding 提交）。
+`T-UI-011.1` 落下 15 条；[`T-UI-014.3`] 新增 2 条（记忆导出确认 / Onboarding 提交）；
+[`T-UI-016.1`] 新增 2 条（推理触发 / 视角增改）、[`T-UI-016.3`] 新增 1 条（决策沉淀）。
 后续各面功能叶在自己的交付里新增写端点时，同批把此处补上。
 """
 
