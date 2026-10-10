@@ -162,7 +162,10 @@ from st_agent.l6 import (
 )
 
 __all__ = [
+    "DeliberationFacade",
+    "DeliveryFacade",
     "DialogFacade",
+    "GraphFacade",
     "InvestigationOutcome",
     "LlmPatternObserver",
     "LlmTrainingUnderstander",
@@ -171,7 +174,10 @@ __all__ = [
     "M3Runtime",
     "M4Runtime",
     "M5Runtime",
+    "McpFacade",
     "ReflectionFacade",
+    "SettingsFacade",
+    "SkillsFacade",
     "TickResult",
     "build_m1_runtime",
     "build_m2_runtime",
@@ -2725,6 +2731,71 @@ class _AgentInvestigator:
         )
 
 
+# ────────────── M6 各面门面（薄）：只持真句柄，业务读面归各功能叶 ──────────────
+# [`T-UI-011.1`](../../项目管理/tasks/T-UI-011.1-多面端口注入与各面门面装配.md) 的交付：
+# 组合根把各功能面的**取数口**造齐、经**同形鸭子端口**注入表现层（[铁律 7]）。这些门面是
+# **薄的**——只持有真句柄与「面在」这个事实，**不加业务读端点**（各页的具体读面 / 交互 /
+# 渲染归七面功能叶 [`T-UI-012`] ~ [`T-UI-018`]）。它们的价值是让表现层能把
+# **「面未接线」与「面在但无数据」分开**（[01 §5] 六态不可混用）：有门面 ⇒ 探针 `ok`，
+# 某一面不注入 ⇒ `unavailable` + 点名，而不是一律回空表。
+#
+# `workspace`（工作区 / 钉住物）**刻意不在此列**——钉住物的落盘与读面归 [`T-UI-013`]，
+# 本批不造空门面冒充它（同 [01 §5]：不拿空壳当「面在」）。
+
+
+@dataclass(frozen=True)
+class SkillsFacade:
+    """L1 能力（Skill）面：持 `SkillRegistry`（工具目录＝描述体投影的唯一来源）。"""
+
+    registry: Any
+
+
+@dataclass(frozen=True)
+class McpFacade:
+    """L1 能力（MCP）面：持 Server 注册表 / 权限簿 / Skill 映射 / Hub 状态机。"""
+
+    servers: Any
+    permissions: Any = None
+    mapper: Any = None
+    machine: Any = None
+
+
+@dataclass(frozen=True)
+class GraphFacade:
+    """L2 记忆图谱面：持图谱与读写口（图谱 / 列表 / 时间线三视图共享同一查询层）。"""
+
+    graph: Any
+    reader: Any = None
+    writer: Any = None
+
+
+@dataclass(frozen=True)
+class DeliberationFacade:
+    """L4 多视角推理面：持阵容 / 编排 / 分歧视图。"""
+
+    roster: Any
+    deliberation: Any = None
+    viewer: Any = None
+
+
+@dataclass(frozen=True)
+class DeliveryFacade:
+    """L5 主动触达面：持注意力预算 / 渠道策略 / 投递编排 / 日报面。"""
+
+    budget: Any
+    policies: Any = None
+    delivery: Any = None
+    reports: Any = None
+
+
+@dataclass(frozen=True)
+class SettingsFacade:
+    """L0 存储 / 配置面：持 01 §7 配置注册表门面与本地存储句柄。"""
+
+    config_registry: Any
+    store: Any = None
+
+
 @dataclass(frozen=True)
 class M5Runtime:
     """一次 M5 装配的全部句柄（M4 全套 + 循环端口；由 :func:`build_m5_runtime` 构造）。
@@ -2784,6 +2855,56 @@ class M5Runtime:
     @property
     def ecosystem(self):
         return self.m4.ecosystem
+
+    # ── M6 各面门面（薄；[`T-UI-011.1`]） ────────────────────────────────
+    # 表现层经**同形鸭子端口**（`skills` / `mcp` / `graph` / `deliberation` / `delivery` /
+    # `settings`）消费；`ui` 不 import 本模块，只按端口名取值。
+
+    @property
+    def skills(self) -> SkillsFacade:
+        """L1 能力（Skill）面。"""
+        return SkillsFacade(registry=self.m1.runtime.skills)
+
+    @property
+    def mcp(self) -> McpFacade:
+        """L1 能力（MCP）面。"""
+        runtime = self.m1.runtime
+        return McpFacade(
+            servers=runtime.mcp_servers,
+            permissions=runtime.mcp_permissions,
+            mapper=runtime.mcp_mapper,
+            machine=runtime.mcp_machine,
+        )
+
+    @property
+    def graph(self) -> GraphFacade:
+        """L2 记忆图谱面。"""
+        return GraphFacade(graph=self.m1.graph, reader=self.m1.reader, writer=self.m1.writer)
+
+    @property
+    def deliberation(self) -> DeliberationFacade:
+        """L4 多视角推理面。"""
+        return DeliberationFacade(
+            roster=self.m2.roster,
+            deliberation=self.m2.deliberation,
+            viewer=self.m2.viewer,
+        )
+
+    @property
+    def delivery(self) -> DeliveryFacade:
+        """L5 主动触达面。"""
+        l5 = self.m3.l5
+        return DeliveryFacade(
+            budget=l5.budget,
+            policies=l5.policies,
+            delivery=l5.delivery,
+            reports=l5.reports,
+        )
+
+    @property
+    def settings(self) -> SettingsFacade:
+        """L0 存储 / 配置面。"""
+        return SettingsFacade(config_registry=self.m1.runtime.config_registry, store=self.store)
 
     def tick(self, now: datetime | None = None) -> TickResult:
         """推进一轮主动服务与每周反思（同 :meth:`M4Runtime.tick`；M5 不新增节奏）。"""

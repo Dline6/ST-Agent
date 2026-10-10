@@ -45,6 +45,16 @@ _GET_ROUTES: dict[str, Callable[[UiApp, str], dict]] = {
     "/api/reflection/status": lambda app, _q: app.api_face_status("reflection"),
     "/api/evolution/status": lambda app, _q: app.api_face_status("reflection"),
     "/api/eco/status": lambda app, _q: app.api_face_status("eco"),
+    # M6 各面探针（[`T-UI-011.1`]）：与新端口**逐名对应**（端口名＝面名），故都是同一条
+    # `api_face_status`——未接线即 `unavailable` + 点名，不 500、不装空表。
+    # `workspace` 面本批刻意不装配门面（钉住物归 [`T-UI-013`]），故它恒回 `unavailable`。
+    "/api/workspace/status": lambda app, _q: app.api_face_status("workspace"),
+    "/api/skills/status": lambda app, _q: app.api_face_status("skills"),
+    "/api/mcp/status": lambda app, _q: app.api_face_status("mcp"),
+    "/api/graph/status": lambda app, _q: app.api_face_status("graph"),
+    "/api/deliberation/status": lambda app, _q: app.api_face_status("deliberation"),
+    "/api/delivery/status": lambda app, _q: app.api_face_status("delivery"),
+    "/api/settings/status": lambda app, _q: app.api_face_status("settings"),
     # 反思中心（`T-UI-004.2`）
     "/api/reflection/reports": lambda app, q: app.api_reflection_report(week=_query(q, "week")),
     "/api/reflection/reports/trace": lambda app, q: app.api_reflection_trace(
@@ -302,12 +312,20 @@ def serve(
     reflection: object = None,
     eco: object = None,
     memory: object = None,
+    workspace: object = None,
+    skills: object = None,
+    mcp: object = None,
+    graph: object = None,
+    deliberation: object = None,
+    delivery: object = None,
+    settings: object = None,
 ) -> RunningUi:
     """绑定 → 按**实际端口**装配 → 起服务线程 → 返回句柄。
 
     端口取 ``0`` 时由 OS 分配；守卫必须拿到真实端口才能校验 ``Host`` / ``Origin``，
-    故顺序是「先绑、后装配」。``chat`` / ``reflection`` / ``eco`` / ``memory`` 透传给
-    :func:`build_ui`（组合根注入四个鸭子端口；缺省全 ``None`` ⇒ 各面 fail-closed）。
+    故顺序是「先绑、后装配」。前四个端口（``chat`` / ``reflection`` / ``eco`` / ``memory``）
+    与 M6 的七个（[`T-UI-011.1`]）均透传给 :func:`build_ui`（组合根注入薄门面；缺省全
+    ``None`` ⇒ 各面 fail-closed）。
     """
     resolved_token = token or new_token()
     server = UiServer((host, port), UiRequestHandler)
@@ -320,6 +338,13 @@ def serve(
         reflection=reflection,
         eco=eco,
         memory=memory,
+        workspace=workspace,
+        skills=skills,
+        mcp=mcp,
+        graph=graph,
+        deliberation=deliberation,
+        delivery=delivery,
+        settings=settings,
     )
     server.RequestHandlerClass = type("BoundUiRequestHandler", (UiRequestHandler,), {"app": app})
     threading.Thread(target=server.serve_forever, name="st-agent-ui", daemon=True).start()

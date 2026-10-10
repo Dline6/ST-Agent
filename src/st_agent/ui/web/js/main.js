@@ -33,7 +33,10 @@ function pageHref(path) {
 function buildNav(active) {
   if (!nav) return;
   const list = el('ul', 'nav__list');
-  for (const page of PAGES) {
+  // **只列各分区的页面根**（11-sitemap §2.2 的导航模型口径）：`nav` 是 §1「全局入口」的
+  // 可视化——一层平铺、不分级，顶层项按分区根聚合；子面（`/studio`、`/eco/**`、
+  // `/reflection/changes` 等）不占顶层项，由所在页内的导航与结果组件进入。
+  for (const page of PAGES.filter((entry) => entry.root)) {
     const link = el('a', 'nav__link', page.title);
     link.href = pageHref(page.path);
     if (page.path === active.path) link.setAttribute('aria-current', 'page');

@@ -608,6 +608,17 @@ def run_backend(
             # L0 行情面装配成 `MemoryPositionsFacade`；表现层不 import 任何层类型。
             # 未带该面的根（M1–M4）传 `None` ⇒ 记忆区端点回 `unavailable` + 点名。
             memory=getattr(runtime, "memory", None),
+            # M6 各面（[`T-UI-011.1`]）：七个同形鸭子端口，各自对应一条 `/api/<面>/status`
+            # 探针。`workspace` 面组合根**刻意不提供**（钉住物归 [`T-UI-013`]），故
+            # `getattr` 取到 `None` ⇒ 该面探针如实回 `unavailable` + 点名——这正是
+            # 「未接线」与「接线了但无数据」在表现层可分的地方（[01 §5] 六态不可混用）。
+            workspace=getattr(runtime, "workspace", None),
+            skills=getattr(runtime, "skills", None),
+            mcp=getattr(runtime, "mcp", None),
+            graph=getattr(runtime, "graph", None),
+            deliberation=getattr(runtime, "deliberation", None),
+            delivery=getattr(runtime, "delivery", None),
+            settings=getattr(runtime, "settings", None),
         )
     except Exception as exc:                     # noqa: BLE001 —— 入口须给出机器可读失败行
         traceback.print_exc()

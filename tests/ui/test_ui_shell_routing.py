@@ -10,6 +10,11 @@
 
 另有一条**漂移断言**：前端页面登记表（`web/js/pages.js`）与 Python 侧 `PAGE_PATHS` 相等
 （同 `tests/ui/test_ui_registry.py` 对组件类型两侧一致的取向）。
+
+页面集的**覆盖**与**导航收敛**（[`T-UI-011.2`]）另有一组忠实于 [11-sitemap §2.2] 的守卫：
+① 声明集须被两端**全覆盖**（不只是「不超出」）；② `nav` 顶层项 ＝ 各**分区根**（从 §2.2
+表格逐分区取首行路径，非硬编码期望集）；③ 六条新页面本叶**不挂 `render`**（首屏走六态
+可用性探针）；④ 每条登记的 `statusPath` 都在路由表里**真实存在**（探针不落空）。
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ from pathlib import Path
 import pytest
 
 from st_agent.ui.app import PAGE_PATHS
-from st_agent.ui.server import _dispatch_guarded, serve
+from st_agent.ui.server import _GET_ROUTES, _dispatch_guarded, serve
 
 _UI = Path(__file__).resolve().parents[2] / "src" / "st_agent" / "ui"
 _PAGES_JS = _UI / "web" / "js" / "pages.js"
@@ -180,3 +185,108 @@ def test_registered_paths_stay_within_the_declared_set() -> None:
         "已注册的页面路径超出 11-sitemap §2.2 的声明集："
         f"{sorted(set(PAGE_PATHS) - declared)}（先补 IA 口径，再登记页面）"
     )
+
+
+# ── 页面集覆盖与导航收敛（T-UI-011.2） ───────────────────────────────────────
+
+
+def _frontend_entries() -> list[tuple[str, str]]:
+    """从 `pages.js` 取每条登记的 `(路径, 该登记项的源码块)`——块内可查 `root` / `render` / `statusPath`。
+
+    登记项是**扁平对象字面量**（无嵌套花括号），故按 `{…}` 切块即可；与 `_frontend_page_paths()`
+    同法——静态解析，不跑 JS（本包不引运行时）。
+    """
+    text = _PAGES_JS.read_text(encoding="utf-8")
+    entries: list[tuple[str, str]] = []
+    for block in re.findall(r"\{([^{}]*)\}", text):
+        match = re.search(r"path:\s*'([^']+)'", block)
+        if match:
+            entries.append((match.group(1), block))
+    return entries
+
+
+def _declared_partition_roots() -> set[str]:
+    """从 [11-sitemap §2.2] 的表格**逐分区取首行路径**——即该分区在 `nav` 里的顶层项。
+
+    取表格而非硬编码期望集：口径改了、而 `pages.js` 的 `root` 标记没跟着改，本守卫就红。
+    **跨分区的行**（分区列写成 `反思 → 设置` 一类，屏归前者、路径取后者前缀）按定义**不是**
+    任何分区的根，故跳过——它是「屏的归属」与「路径的归属」不一致的显式标注。
+    """
+    text = _SITEMAP.read_text(encoding="utf-8")
+    block = text.split("### 2.2 屏 → 页面路径与导航模型", 1)[1].split("## 3 页面 Flow", 1)[0]
+    roots: dict[str, str] = {}
+    for line in block.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 3 or "→" in cells[0]:
+            continue
+        match = re.search(r"`([^`]+)`", cells[1])          # 第二列 = 页面路径
+        if match:
+            roots.setdefault(cells[0], match.group(1).split("?", 1)[0])
+    return set(roots.values())
+
+
+def test_declared_partition_roots_are_parsed() -> None:
+    """解析出的分区根非空且含主入口——否则下面的相等断言会空跑。"""
+    roots = _declared_partition_roots()
+    assert roots, "未从 11-sitemap §2.2 解析到任何分区根（表格写法变了会让本组空跑）"
+    assert "/" in roots
+
+
+def test_declared_partition_roots_are_top_level() -> None:
+    """分区根须真的是**顶层**：没有任何声明路径是它的严格祖先（否则它其实是子面）。"""
+    declared = _declared_page_paths()
+    for root in sorted(_declared_partition_roots()):
+        ancestors = {
+            path for path in declared
+            if path != root and root.startswith(path + "/")     # `/` 不是谁的目录祖先，故不特判
+        }
+        assert not ancestors, f"{root} 有已声明的祖先路径 {sorted(ancestors)}——它不该是分区根"
+
+
+def test_registered_paths_cover_every_declared_path() -> None:
+    """GWT-1：声明集被两端**全覆盖**——每条声明的屏都有宿主路径，**无屏无家可归**。
+
+    既有断言只保证「不超出」（`PAGE_PATHS ⊆ 声明集`）；本条补**另一个方向**，
+    两者合起来才是「两端同源且覆盖全集」。
+    """
+    declared = _declared_page_paths()
+    registered = _frontend_page_paths()
+    assert declared <= registered, (
+        "11-sitemap §2.2 声明了、但页面登记表里没有宿主路径的屏："
+        f"{sorted(declared - registered)}（每条声明的屏都须有家）"
+    )
+    assert set(PAGE_PATHS) == registered - {"/"}, "Python 侧与前端登记表不一致"
+
+
+def test_nav_lists_exactly_the_partition_roots() -> None:
+    """GWT-3：`nav` 顶层项 ＝ 各分区根（子面不占顶层项）——与 §2.2 表格逐项对位。"""
+    expected = _declared_partition_roots()
+    actual = {
+        path for path, block in _frontend_entries()
+        if re.search(r"\broot:\s*true\b", block)
+    }
+    assert actual == expected, (
+        "`nav` 顶层项与 11-sitemap §2.2 的分区根不一致："
+        f"多出 {sorted(actual - expected)} / 缺少 {sorted(expected - actual)}"
+    )
+
+
+def test_new_pages_have_no_render_yet() -> None:
+    """GWT-2：六条新页面本叶**不挂 `render`**——首屏因此走六态可用性探针（不冒充业务内容）。"""
+    blocks = dict(_frontend_entries())
+    assert len(blocks) == len(_frontend_entries()), "登记表里有重复路径"
+    new_paths = {"/workspace", "/skills", "/mcp", "/deliberation", "/delivery", "/settings"}
+    assert new_paths <= set(blocks), f"未登记的声明路径：{sorted(new_paths - set(blocks))}"
+    for path in sorted(new_paths):
+        assert "render:" not in blocks[path], f"{path} 本叶不应挂 render（内容归七面功能叶）"
+
+
+def test_every_registered_status_path_resolves_to_a_route() -> None:
+    """GWT-4：每条登记的 `statusPath` 都在路由表里**真实存在**——探针不落空。"""
+    for path, block in _frontend_entries():
+        match = re.search(r"statusPath:\s*'([^']+)'", block)
+        assert match, f"{path} 未点名可用性探针路径"
+        probe = match.group(1)
+        assert probe in _GET_ROUTES, f"{path} 的探针 {probe} 不在路由表里（首屏会拿不到信封）"
