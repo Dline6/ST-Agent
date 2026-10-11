@@ -28,8 +28,9 @@ const DRILL_DOWN = {
   // 推理链 → 推理区（[`T-UI-016`] 已交付）：视角阵容 / 分歧图 / 推理链面板都在那条路径上。
   trace_timeline: { label: '推理链', href: '/deliberation' },
   divergence_map: { label: '分歧图', href: '/deliberation' },
-  // Skill 执行结果的表格 → Skill 详情页（[`T-UI-015`] 的能力区页尚未落地）。
-  table: { label: 'Skill 详情', pending: 'T-UI-015' },
+  // 生成物里的表格 → Skill 库（[`T-UI-015.1`] 已交付 `/skills`：清单 + 详情 + 参数 + 执行日志）。
+  // 下钻不带标识——表格本身不承载「这条是哪条 Skill」（[01 §12]：动作不进描述），故落到清单页。
+  table: { label: 'Skill 库', href: '/skills' },
   // 记忆面（[`T-UI-014`] 已交付）。
   graph_view: { label: '记忆图谱', href: '/memory' },
   timeline_view: { label: '时序详情', href: '/memory' },

@@ -20,8 +20,10 @@ import { renderDeliberationPage } from './pages/deliberation.js';
 import { renderEcoPage, renderImportPage, renderImportsPage, renderIndexPage, renderSecurityPage } from './pages/eco.js';
 import { renderEvolutionPage, renderChangesPage } from './pages/evolution.js';
 import { renderMemoryPage } from './pages/memory.js';
+import { renderMcpPage } from './pages/mcp.js';
 import { renderReflectionPage, singleBlockPage } from './pages/reflection.js';
 import { renderSettingsPage } from './pages/settings.js';
+import { renderSkillsPage } from './pages/skills.js';
 import { renderStudioPage } from './pages/studio.js';
 import { renderWorkspacePage } from './pages/workspace.js';
 
@@ -39,14 +41,14 @@ export const PAGES = [
     root: true,
   },
   // ── 能力 ──────────────────────────────────────────────────────────────
-  { path: '/skills', title: 'Skill 库', statusPath: '/api/skills/status', root: true },
+  { path: '/skills', title: 'Skill 库', statusPath: '/api/skills/status', render: renderSkillsPage, root: true },
   {
     path: '/studio',
     title: 'Studio 画布',
     statusPath: '/api/studio/sessions',
     render: renderStudioPage,
   },
-  { path: '/mcp', title: 'MCP Hub', statusPath: '/api/mcp/status' },
+  { path: '/mcp', title: 'MCP Hub', statusPath: '/api/mcp/status', render: renderMcpPage },
   { path: '/eco', title: '导入导出', statusPath: '/api/eco/status', render: renderEcoPage },
   { path: '/eco/import', title: '导入校验', statusPath: '/api/eco/status', render: renderImportPage },
   { path: '/eco/index', title: '官方索引', statusPath: '/api/eco/status', render: renderIndexPage },

@@ -127,6 +127,38 @@ _GET_ROUTES: dict[str, Callable[[UiApp, str], dict]] = {
     "/api/settings/maintenance": lambda app, _q: app.api_settings_maintenance(),
     "/api/settings/network": lambda app, q: app.api_settings_network(hours=_query(q, "hours")),
     "/api/settings/offline": lambda app, _q: app.api_settings_offline(),
+    # 能力区 · Skill 库（[`T-UI-015.1`]）：清单 / 详情 / 参数面板 / 执行日志——四条**只读**。
+    # 带标识的面走**查询串**（[11-sitemap §2.2]：路径集仍是有限字面量集合，不引入动态段）；
+    # 参数落值那条是**显式动作**，在下面 `_POST_ROUTES`。
+    "/api/skills/catalog": lambda app, _q: app.api_skills_catalog(),
+    "/api/skills/detail": lambda app, q: app.api_skills_detail(skill_id=_query(q, "skill")),
+    "/api/skills/params": lambda app, q: app.api_skills_params(skill_id=_query(q, "skill")),
+    "/api/skills/logs": lambda app, q: app.api_skills_logs(
+        skill_id=_query(q, "skill"), limit=_query(q, "limit")
+    ),
+    # 能力区 · MCP Hub（[`T-UI-015.2`]）：清单 / 详情 / tool 浏览器 / 权限面四读。
+    # 带标识的面一律走**查询串**（[11-sitemap §2.2]）；三条写面在下面 `_POST_ROUTES`。
+    "/api/mcp/servers": lambda app, _q: app.api_mcp_servers(),
+    "/api/mcp/server": lambda app, q: app.api_mcp_server(server_id=_query(q, "id")),
+    "/api/mcp/tools": lambda app, q: app.api_mcp_tools(server_id=_query(q, "id")),
+    "/api/mcp/permissions": lambda app, q: app.api_mcp_permissions(server_id=_query(q, "id")),
+    # 能力区 · Studio 附加面（[`T-UI-015.3`]）：自建工作流 / 属性 / 版本历史 / 模板库 /
+    # 模板预览 / 试跑历史——六条**只读**（带标识的面一律走查询串，[11-sitemap §2.2]）；
+    # 版本动作、模板 fork 与试跑驱动三条是**显式动作**，在下面 `_POST_ROUTES`。
+    "/api/studio/workflows": lambda app, _q: app.api_studio_workflows(),
+    "/api/studio/workflow": lambda app, q: app.api_studio_workflow(
+        flow_id=_query(q, "flow")
+    ),
+    "/api/studio/versions": lambda app, q: app.api_studio_versions(
+        flow_id=_query(q, "flow"), a=_query(q, "a"), b=_query(q, "b")
+    ),
+    "/api/studio/templates": lambda app, _q: app.api_studio_templates(),
+    "/api/studio/template": lambda app, q: app.api_studio_template(
+        template_id=_query(q, "id")
+    ),
+    "/api/studio/trials": lambda app, q: app.api_studio_trials(
+        flow_id=_query(q, "flow"), a=_query(q, "a"), b=_query(q, "b")
+    ),
 }
 """`GET` 数据面的路由表：路径 → `(UiApp, 查询串)` → 载荷。**只此一处**判定「某路径存在与否」
 ——散落的 `if path == …` 分支会随着端点增多而漂移（[`T-UI-003`] 的同型取向）。"""
@@ -183,6 +215,19 @@ _POST_ROUTES: dict[str, Callable[[UiApp, dict], dict]] = {
     "/api/settings/credential": lambda app, body: app.api_settings_credential(body),
     "/api/settings/online": lambda app, body: app.api_settings_online(body),
     "/api/settings/network/export": lambda app, body: app.api_settings_network_export(body),
+    # 能力区 · Skill 库（[`T-UI-015.1`]）：参数落值——经 `SkillRegistry.set_parameters`
+    # （[03 §1.1] 的唯一写口），超范围即拒不保存，故是**显式动作**而非读面。
+    "/api/skills/params": lambda app, body: app.api_skills_params_set(body),
+    # 能力区 · MCP Hub（[`T-UI-015.2`]）：挂载一台 Server / 启停移除与连接测试 / 逐项批准。
+    # 三条都是**显式动作**——挂载会真连一次（失败不落盘），移除走整条回收序列。
+    "/api/mcp/servers": lambda app, body: app.api_mcp_server_create(body),
+    "/api/mcp/servers/update": lambda app, body: app.api_mcp_server_update(body),
+    "/api/mcp/permissions": lambda app, body: app.api_mcp_permission_decide(body),
+    # 能力区 · Studio 附加面（[`T-UI-015.3`]）：版本激活 / 回滚、模板 fork 交画布会话、
+    # 试跑驱动（起跑 / 单步 / 跑到结束 / 暂停 / 继续 / 中止）——三条都是显式动作。
+    "/api/studio/workflow/version": lambda app, body: app.api_studio_version_set(body),
+    "/api/studio/template/fork": lambda app, body: app.api_studio_template_fork(body),
+    "/api/studio/trial": lambda app, body: app.api_studio_trial(body),
 }
 """`POST` 数据面的路由表：路径 → `(UiApp, body)` → 载荷。**非本表内的 POST 一律 404**。
 
@@ -415,13 +460,14 @@ def serve(
     deliberation: object = None,
     delivery: object = None,
     settings: object = None,
+    studio: object = None,
     commands: object = None,
 ) -> RunningUi:
     """绑定 → 按**实际端口**装配 → 起服务线程 → 返回句柄。
 
     端口取 ``0`` 时由 OS 分配；守卫必须拿到真实端口才能校验 ``Host`` / ``Origin``，
     故顺序是「先绑、后装配」。前四个端口（``chat`` / ``reflection`` / ``eco`` / ``memory``）
-    与 M6 的七个（[`T-UI-011.1`]）、``commands``（[`T-UI-012.1`]）均透传给 :func:`build_ui`
+    与 M6 的七个（[`T-UI-011.1`]）、``studio``（[`T-UI-015.3`]）、``commands``（[`T-UI-012.1`]）均透传给 :func:`build_ui`
     （组合根注入薄门面；缺省全 ``None`` ⇒ 各面 fail-closed）。
     """
     resolved_token = token or new_token()
@@ -442,6 +488,7 @@ def serve(
         deliberation=deliberation,
         delivery=delivery,
         settings=settings,
+        studio=studio,
         commands=commands,
     )
     server.RequestHandlerClass = type("BoundUiRequestHandler", (UiRequestHandler,), {"app": app})

@@ -43,7 +43,7 @@ from st_agent.l1.studio.errors import (
 )
 from st_agent.l1.studio.ids import workflow_base
 from st_agent.l1.workflow.errors import WorkflowValidationError
-from st_agent.l1.workflow.ids import flow_id_for
+from st_agent.l1.workflow.ids import flow_id_for, registration_name
 from st_agent.l1.workflow.models import WorkflowDAG, checked_dag
 from st_agent.l1.workflow.store import WorkflowStore
 from st_agent.l1.workflow.validate import WorkflowValidation
@@ -56,6 +56,7 @@ __all__ = [
     "DraftStatus",
     "RejectResult",
     "WorkflowDraft",
+    "draft_from_dag",
 ]
 
 WORKFLOW_CHANGE_PREFIX = "workflow-change/"
@@ -98,6 +99,40 @@ class WorkflowDraft(BaseModel):
     workflow_draft: dict[str, Any] | None = None
     """工作流专用子对象（``name`` / ``description`` / ``nodes`` / ``edges`` /
     ``groups`` / ``schedule``，可含 ASCII ``flow_name``）；``None`` 即非工作流草稿。"""
+
+
+def draft_from_dag(dag: WorkflowDAG, *, understanding: str = "") -> WorkflowDraft:
+    """把一个 ``WorkflowDAG`` 包成草稿载体（**非提案来源**的草稿走同一条接收口）。
+
+    用途是 story-06 的**模板 fork**：``TemplateLibrary.fork`` 产出的是 ``WorkflowDAG``，
+    而交编辑面要经 :meth:`DraftIntake.receive`——它认的是 ``WorkflowDraft``。若为 fork
+    另开一条旁路，就会出现「两套落画布方式」，且「接受」是唯一落盘点这条边界会在旁路上
+    失守。
+
+    口径与 :func:`st_agent.l6.studio_adapter.to_workflow_draft` 同构（那是提案来源的翻译）：
+    身份字段 ``flow_id`` / ``version`` **不入**（接收方派生）；**空者不携**（不落空键）。
+    差别只有一处——``flow_name`` 取 ``dag.flow_id`` 的**注册名**（`registration_name`），故副本在接收方得到与
+    ``fork`` 相同的 base（``fork`` 已做过重名去重，此处不重复去重）。
+    """
+    payload: dict[str, Any] = {
+        "name": dag.name,
+        "description": dag.description,
+        "nodes": [node.model_dump(mode="json") for node in dag.nodes],
+        "flow_name": registration_name(dag.flow_id),
+    }
+    if dag.edges:
+        payload["edges"] = [edge.model_dump(mode="json") for edge in dag.edges]
+    if dag.groups:
+        payload["groups"] = [group.model_dump(mode="json") for group in dag.groups]
+    if dag.schedule.mode != "manual":
+        payload["schedule"] = dag.schedule.model_dump(mode="json")
+    return WorkflowDraft(
+        target=dag.name,
+        parameter_draft={},
+        understanding_summary=understanding or dag.description,
+        open_questions=(),
+        workflow_draft=payload,
+    )
 
 
 class AcceptResult(BaseModel):
