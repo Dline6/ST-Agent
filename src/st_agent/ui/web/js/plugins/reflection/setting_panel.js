@@ -30,6 +30,14 @@ const ROUTES = {
   // 留存与审计 / 提供方主机映射三处都是「逐条设置 + 应用」的同形，且落值走**同一条**
   // [01 §7] 统一落值面（`set` / `enable` / `disable` 三个动作）。
   'settings-config': '/api/settings/apply',
+  // 能力区 Skill 参数配置（[T-UI-015.1]，面键 `skill-params`）：逐条参数 + 应用动作——
+  // 落值走 `SkillRegistry.set_parameters`（[03 §1.1] 的唯一写口），超范围即拒不保存。
+  // [`T-UI-015.3`] 的「Studio Skill 参数面板」**复用本键**（同一屏语义两处宿主）。
+  'skill-params': '/api/skills/params',
+  // 能力区 MCP Hub（[T-UI-015.2]，面键 `mcp-permissions`）：逐条权限批准 / 拒绝——[01 §10]
+  // 逐项、不合并。**声明面**（「这个 Server 想做什么」）另由 `permission_approval_card` 承载
+  // （该渲染件只渲染不落账），本键只管动作。
+  'mcp-permissions': '/api/mcp/permissions',
 };
 
 function optionSelect(entry, labels) {
@@ -82,6 +90,11 @@ function entryNode(entry, labels, route) {
               status.textContent = '取值未变，未落盘未留痕';
             } else if (data.decision) {
               status.textContent = `已${labels[action] || action}：${data.permission}`;
+            } else if (data.applied) {
+              // `applied`：动作已落值**但不产生变更留痕**（如 Skill 参数——描述体的写入
+              // 不留 `ChangeRecord`，留痕只随版本发布）。与 `changed` 分开，免得把
+              // 「留痕已记」这句话说在没留痕的地方。
+              status.textContent = '已应用。';
             } else if (data.changed) {
               status.textContent = '已应用（留痕已记）';
             } else {

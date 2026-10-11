@@ -22,6 +22,7 @@ __all__ = [
     "check_flow_id",
     "flow_id_for",
     "parse_flow_id",
+    "registration_name",
 ]
 
 _PREFIX = "wf"
@@ -51,6 +52,15 @@ def base_of(flow_id: str) -> str:
     """取 flow_id 的 base（版本号剥离；激活指针与版本列表按 base 归集）。"""
     base, _ = parse_flow_id(flow_id)
     return base
+
+
+def registration_name(flow_id: str) -> str:
+    """取 flow_id 的**注册名**（base 去掉 ``wf_`` 前缀）。
+
+    `workflow_base(name, flow_name)` 吃的正是这一形态（它自己拼回 ``wf_`` 前缀），故凡
+    「由既有 flow_id 反推一个可再派生 base 的名字」的场合都该经这里，别手写字符串切片。
+    """
+    return base_of(flow_id)[len(_PREFIX) + 1:]
 
 
 def flow_id_for(base: str, version: SemVer | str) -> str:

@@ -140,6 +140,22 @@ class StudioHandoff:
         """该提案的画布会话（未交过 ⇒ ``None``）。"""
         return self._sessions.get(proposal_id)
 
+    def open_draft(self, key: str, draft: WorkflowDraft) -> StudioDraftView:
+        """按**任意键**开一个画布会话（非提案来源的草稿用，如 story-06 的模板 fork）。
+
+        与 :meth:`handoff` 同一条落画布路径（`DraftIntake.receive`），**只少**「读提案」那一步
+        ——故「编辑期不落盘、接受是唯一落盘点」这条边界在两条来源上一致，不出现第二套。
+
+        幂等同 `handoff`：已有**未闭**会话 ⇒ 返回同一视图（不新开、不重置）。
+        """
+        intake = self._require_intake()
+        existing = self._sessions.get(key)
+        if existing is not None and existing.status == "editing":
+            return self._view(key, existing)
+        session = intake.receive(draft)
+        self._sessions[key] = session
+        return self._view(key, session)
+
     def opened(self) -> tuple[str, ...]:
         """仍在编辑中的会话所属 ``proposal_id``（升序）——「交过 Studio 但未处置」的面。"""
         return tuple(sorted(

@@ -147,6 +147,23 @@ class SkillRunner:
             raise RunnerValidationError(f"执行器须为 callable：{skill_id!r}")
         self._executors[skill_id] = fn
 
+    def for_trials(self) -> "SkillRunner":
+        """造一个**不带输出复用登记**的同配置执行面（试跑用）。
+
+        `TrialRunner` 的构造期有一道硬门：带 `outputs` 的执行面**不得**接试跑（03 §4 的
+        「试跑不登记输出复用」——彩排产物不进生产复用面，正式执行不会取到试跑结果）。
+        而试跑又必须跑**真执行器**（同节：逐节点经完整流水线），故执行器表随原样带过去，
+        与生产的唯一差别就是 `outputs=None`；`llm` / `gateway` / `sandbox` / `freshness`
+        一并带过——**权限与沙箱口径不因调试而放宽**。
+        """
+        sibling = SkillRunner(
+            self._store, self._registry,
+            llm=self._llm, gateway=self._gateway, outputs=None,
+            freshness=self._freshness, sandbox=self._sandbox,
+        )
+        sibling._executors.update(self._executors)
+        return sibling
+
     # ───────────────────────── 解析与参数确认（GWT-2） ───────────────────
 
     def match(self, query: str) -> Any | None:

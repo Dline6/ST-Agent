@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from st_agent import __version__
+from st_agent.contracts.permissions import DECISION_LABELS, describe_permission
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.ui_description import UiDescription, checked_description, new_description_id
 from st_agent.l0.backup.errors import (
@@ -34,6 +35,17 @@ from st_agent.l0.storage.errors import (
     StorageCorruptionError,
     StorageOpenError,
 )
+from st_agent.l1.mcp.errors import (
+    McpCancelledError,
+    McpConnectionError,
+    McpError,
+    McpServerNotFoundError,
+)
+from st_agent.l1.runner.models import RUN_PREFIX
+from st_agent.l1.skills.errors import SkillNotFoundError
+from st_agent.l1.studio.errors import StudioError
+from st_agent.l1.workflow.errors import TrialError, WorkflowNotFoundError
+from st_agent.l1.workflow.ids import base_of
 from st_agent.l3.render.describe import STANCE_LABELS, describe_divergence_map, describe_trace
 from st_agent.l4.errors import BuiltinLensError, LensNotFoundError
 
@@ -118,6 +130,487 @@ def _skill_bundle(value: Any) -> tuple[str, ...]:
     if isinstance(value, str) or not isinstance(value, (list, tuple)):
         raise ValueError("skill_bundle 须为 skill_id 列表（06 §1）")
     return tuple(str(item) for item in value)
+
+
+# ───────────────────── 能力区取数装配（[T-UI-015.1]） ─────────────────────
+# 都做**纯函数**：只把 L1 的模型摆成描述槽的形状，不落盘、不引第二套语义。系统文案
+# （来源 / 离线档 / 版本策略 / 六态）经本地生成文案表解析，Skill 自述与被呈现的值一律
+# 按 `data` 原样（[D-053] / [D-064] 的分流）。
+
+
+def _skill_row(descriptor: Any) -> dict[str, Any]:
+    """一行 Skill 摘要（清单用）。"""
+    return {
+        "name": descriptor.name,
+        "skill_id": descriptor.skill_id,
+        "source": _SKILL_SOURCE_LABELS.get(descriptor.source, descriptor.source),
+        "offline_level": _SKILL_OFFLINE_LABELS.get(
+            descriptor.offline_level, descriptor.offline_level
+        ),
+        "version_policy": _SKILL_VERSION_POLICY_LABELS.get(
+            descriptor.version_policy, descriptor.version_policy
+        ),
+        "parameter_count": len(descriptor.parameters),
+        "dependencies": "、".join(descriptor.dependencies) or "（无）",
+    }
+
+
+def _skill_detail_sections(descriptor: Any) -> list[dict[str, Any]]:
+    """详情页的五段（[11-sitemap §2.1]：`report_card` 多段式陈述）。"""
+    return [
+        {"title": "基本信息", "lines": [
+            f"名称：{descriptor.name}",
+            f"标识：{descriptor.skill_id}",
+            f"来源：{_SKILL_SOURCE_LABELS.get(descriptor.source, descriptor.source)}",
+            f"离线档：{_SKILL_OFFLINE_LABELS.get(descriptor.offline_level, descriptor.offline_level)}",
+            f"版本策略：{_SKILL_VERSION_POLICY_LABELS.get(descriptor.version_policy, descriptor.version_policy)}",
+            f"说明：{descriptor.description}",
+        ]},
+        {"title": "可配参数", "lines": [
+            _skill_param_description(spec) for spec in descriptor.parameters
+        ] or ["（无参数）"]},
+        {"title": "依赖", "lines": list(descriptor.dependencies) or ["（无依赖）"]},
+        # 官方 Pack 的 12 个 Skill 一律 `permissions=()`（03 §1.5 / §2：它们只经**注入的
+        # 取数面**消费数据，自身不发文件 / 网络 / 命令行为）——故出厂态这一段就是「无声明」，
+        # **如实出**而不是隐藏该段（隐藏会让「无声明」与「面缺失」不可分）。
+        {"title": "权限声明", "lines": list(descriptor.permissions) or ["（无权限声明）"]},
+        {"title": "输入 / 输出契约", "lines": [
+            "输入：" + _contract_keys(descriptor.input_schema),
+            "输出：" + _contract_keys(descriptor.output_schema),
+        ]},
+    ]
+
+
+def _contract_keys(schema: Any) -> str:
+    """schema 的顶层键清单（键是字段名，不算展示文本，故直接列）。"""
+    if not isinstance(schema, Mapping) or not schema:
+        return "（未声明）"
+    properties = schema.get("properties")
+    keys = list(properties) if isinstance(properties, Mapping) else list(schema)
+    return "、".join(str(key) for key in keys) or "（未声明）"
+
+
+def _skill_param_description(spec: Any) -> str:
+    """一条参数的说明（名称 + 说明 + 类型 + 取值面 / 范围）。"""
+    bits = [f"{spec.name}：{spec.description}", f"类型 {spec.type}"]
+    if spec.type == "enum":
+        bits.append("取值 " + "、".join(spec.choices))
+    elif spec.type in ("number", "integer") and (
+        spec.min_value is not None or spec.max_value is not None
+    ):
+        low = "—" if spec.min_value is None else f"{spec.min_value:g}"
+        high = "—" if spec.max_value is None else f"{spec.max_value:g}"
+        bits.append(f"范围 {low} ~ {high}")
+    if spec.default is not None:
+        bits.append(f"默认 {spec.default}")
+    return "；".join(bits)
+
+
+def _skill_param_entry(skill_id: str, spec: Any) -> dict[str, Any]:
+    """一个 `ParameterSpec` → `setting_panel` 的一条（取值面按 `type` 三态选）。
+
+    三态口径见渲染件头注：`enum` / `boolean` 给 `options` 走下拉（布尔**刻意不走**
+    `<select>` 之外的路——本件没有独立的布尔控件，两个候选取值是同一件事的最短表达），
+    其余（string / number / integer）给 `input: "text"` 走自由文本，**值域仍由后端**
+    `validate_param_values` 把关，前端不替它枚举也不替它判合法性。
+    """
+    default = spec.default
+    if spec.type == "boolean":
+        current = "—" if default is None else ("true" if default else "false")
+        options = [{"value": "true"}, {"value": "false"}]
+    elif spec.type == "enum":
+        current = "—" if default is None else str(default)
+        options = [{"value": str(choice)} for choice in spec.choices]
+    else:
+        current = "—" if default is None else str(default)
+        options = []
+    entry: dict[str, Any] = {
+        "identifier": spec.name,
+        "description": _skill_param_description(spec),
+        "current": current,
+        "options": options,
+        "actions": ["apply"],
+        "params": {"skill_id": skill_id, "name": spec.name},
+    }
+    if not options:
+        entry["input"] = "text"
+    return entry
+
+
+def _coerce_param_value(spec: Any, raw: Any) -> Any:
+    """表单值（恒为字符串）按 `ParameterSpec.type` **还原成声明类型**。
+
+    类型还原是本层的（HTML 表单只给字符串），**值域校验不是**——超范围 / 类型不符由
+    `validate_param_values` 拒。不还原则 `type=integer` 的参数会把 `"30"` 当字符串判非法
+    （同 `_coerce_value` 在设置区的作用）。
+    """
+    if raw is None or (isinstance(raw, str) and not raw.strip()):
+        raise ValueError(f"缺少参数 {spec.name!r} 的取值")
+    if spec.type == "boolean":
+        if isinstance(raw, bool):
+            return raw
+        text = str(raw).strip().lower()
+        if text in ("true", "1", "是"):
+            return True
+        if text in ("false", "0", "否"):
+            return False
+        raise ValueError(f"参数 {spec.name!r} 是布尔型，取值须为 true / false（得到 {raw!r}）")
+    if spec.type == "enum":
+        return str(raw)
+    if spec.type in ("number", "integer"):
+        try:
+            return int(str(raw)) if spec.type == "integer" else float(str(raw))
+        except ValueError as exc:
+            raise ValueError(f"参数 {spec.name!r} 是数值型，取值须为数（得到 {raw!r}）") from exc
+    return str(raw)
+
+
+def _skill_log_limit(raw: str) -> int:
+    """执行日志的条数上限（缺省 :data:`_SKILL_LOG_LIMIT`；非法即拒**不夹取**）。
+
+    上限之上再夹一层是**读取成本**的护栏而非语义——被夹时表格标题会写明「共 N 条、
+    显示最近 M 条」，不静默截断。
+    """
+    text = (raw or "").strip()
+    if not text:
+        return _SKILL_LOG_LIMIT
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise ValueError(f"limit 须为整数（得到 {raw!r}）") from exc
+    if value < 1:
+        raise ValueError(f"limit 须为正整数（得到 {raw!r}）")
+    return min(value, _SKILL_LOG_LIMIT)
+
+
+def _skill_run_rows(
+    store: Any, skill_id: str, cap: int
+) -> tuple[list[dict[str, Any]], int, int]:
+    """`execution_log` 分区 `skill-run/` 下的记录 → 该 Skill 的日志行（新在前）。
+
+    返回 `(行, 命中总数, 无法解析条数)`。无法解析的**计数并显式披露**，不当成「没有」
+    （[01 §5]：不谎报为 0）。
+    """
+    rows: list[dict[str, Any]] = []
+    unreadable = 0
+    for name in store.list_files("execution_log"):
+        if not (name.startswith(RUN_PREFIX) and name.endswith(".json")):
+            continue
+        try:
+            payload = json.loads(store.get("execution_log", name).decode("utf-8"))
+        except (KeyError, ValueError, UnicodeDecodeError):
+            unreadable += 1
+            continue
+        if not isinstance(payload, Mapping):
+            unreadable += 1
+            continue
+        if str(payload.get("skill_id", "")) != skill_id:
+            continue
+        rows.append(_skill_run_row(payload))
+    rows.sort(key=lambda row: str(row.get("started_at", "")), reverse=True)
+    return rows[:cap], len(rows), unreadable
+
+
+def _skill_run_row(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """一条 `SkillRun` 记录 → 表格行（[03 §1.2] 步骤 5 的留痕字段）。"""
+    envelope = payload.get("envelope")
+    status = str(envelope.get("status", "")) if isinstance(envelope, Mapping) else ""
+    upstream = payload.get("upstream") or ()
+    return {
+        "started_at": str(payload.get("started_at", "") or "—"),
+        "skill_run_id": str(payload.get("skill_run_id", "") or "—"),
+        "status": _ENVELOPE_STATE_LABELS.get(status, status or "—"),
+        "duration_ms": payload.get("duration_ms") or 0,
+        "upstream": "、".join(str(item) for item in upstream) or "（无）",
+        "params": _brief_json(payload.get("params")),
+    }
+
+
+def _brief_json(value: Any, *, limit: int = 60) -> str:
+    """一份 JSON 可序列化值的**一行摘要**（超长即截断并标注，不静默丢内容）。"""
+    try:
+        text = json.dumps(value if value is not None else {}, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        return "（无法序列化）"
+    return text if len(text) <= limit else text[:limit] + "…"
+
+
+# ───────────────────── 能力区取数装配：MCP Hub（[T-UI-015.2]） ─────────────────────
+
+
+def _mcp_error_envelope(exc: Exception) -> ResultEnvelope:
+    """MCP 层异常 → 六态（**必须显式翻译**，[00 §6] 失败显式化）。
+
+    - **未注册**（`McpServerNotFoundError`）⇒ `unavailable` ＋ 点名——与「请求不合契约」
+      互不冒充；
+    - **连不上 / 调用被中止**（`McpConnectionError` / `McpCancelledError`）⇒ `unavailable`
+      ＋ 原因——目标不可达不是「工具坏了」，也不是用户的输入问题；
+    - 其余（声明非法 / 重名 / 权限未声明 / 状态或映射非法）⇒ `validation_failed`。
+    """
+    if isinstance(exc, McpServerNotFoundError):
+        return ResultEnvelope.unavailable(
+            f"{exc}——该标识未注册（不是请求不合契约）", last_updated_at=_now()
+        )
+    if isinstance(exc, (McpConnectionError, McpCancelledError)):
+        return ResultEnvelope.unavailable(f"{exc}", last_updated_at=_now())
+    return ResultEnvelope.validation_failed(str(exc) or "MCP 请求不合契约")
+
+
+def _optional_text(value: Any) -> str | None:
+    """可选文本项：空白视同未给（`None`），不把 `""` 当命令 / URL 传下去。"""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _skill_descriptor_or_none(registry: Any, skill_id: str) -> Any:
+    """取派生 Skill 的描述体；取不到给 `None`。
+
+    一行取不到**不能**让整张表失败——映射记录仍如实列出，参数面那一格显式写「描述体不在」。
+    """
+    if registry is None:
+        return None
+    try:
+        return registry.get(skill_id)
+    except (SkillNotFoundError, ValueError, KeyError):
+        return None
+
+
+def _mcp_server_row(face: Any, record: Any) -> dict[str, Any]:
+    """一行 Server 摘要（状态由 `state_of` **纯读**推导，不产生副作用）。"""
+    machine = face.machine
+    state = machine.state_of(record.server_id) if machine is not None else ""
+    return {
+        "display_name": record.display_name,
+        "server_id": record.server_id,
+        "transport": _MCP_TRANSPORT_LABELS.get(record.transport, record.transport),
+        "enabled": "启用" if record.enabled else "停用",
+        "state": _MCP_STATE_LABELS.get(state, "—"),
+        "permissions": len(record.permissions),
+    }
+
+
+def _mcp_tool_row(face: Any, mapping: Any) -> dict[str, Any]:
+    """一行 tool 映射：状态 + 变化说明 + **派生描述体**的参数面（schema 已随派生落到 Skill）。"""
+    descriptor = _skill_descriptor_or_none(face.skills, mapping.skill_id)
+    return {
+        "tool": mapping.tool,
+        "skill_id": mapping.skill_id,
+        "status": _MCP_MAPPING_LABELS.get(mapping.status, mapping.status),
+        "version": mapping.mapping_version,
+        "inputs": (
+            _contract_keys(descriptor.input_schema) if descriptor is not None
+            else "（描述体不在）"
+        ),
+        "change_note": mapping.change_note or "—",
+    }
+
+
+def _mcp_approval_slots(record: Any, approvals: tuple[Any, ...]) -> dict[str, Any]:
+    """`permission_approval_card` 的槽（[01 §10]：逐条「这个 Server 想做什么」＋ 当前态）。
+
+    措辞取**契约级**的唯一真相源 `describe_permission` / `DECISION_LABELS`，本层不另写词表。
+    """
+    return {
+        "key": record.server_id,
+        "source": f"MCP Server · {record.display_name}",
+        "items": [
+            {
+                "permission": approval.permission,
+                "state": approval.decision,
+                "decided_at": approval.decided_at.isoformat() if approval.decided_at else None,
+                "panel_field": {"widget": "逐项批准 / 拒绝"},
+            }
+            for approval in approvals
+        ],
+        "labels": {
+            approval.permission: {
+                "description": describe_permission(approval.permission),
+                "chat_text": DECISION_LABELS.get(approval.decision, approval.decision),
+            }
+            for approval in approvals
+        },
+    }
+
+
+def _mcp_approval_entries(record: Any, approvals: tuple[Any, ...]) -> list[dict[str, Any]]:
+    """逐项批准 / 拒绝的处置条目（`setting_panel`：动作即取值，故只给两个动作按钮）。"""
+    return [
+        {
+            "identifier": approval.permission,
+            "description": describe_permission(approval.permission),
+            "current": DECISION_LABELS.get(approval.decision, approval.decision),
+            "options": [],
+            "actions": ["approve", "reject"],
+            "params": {"server_id": record.server_id, "permission": approval.permission},
+        }
+        for approval in approvals
+    ]
+
+
+# ───────────────────── 能力区取数装配：Studio 附加面（[T-UI-015.3]） ─────────────────────
+
+
+def _drive_trial(trial: Any, action: str) -> None:
+    """按动作推进试跑会话（未知动作即拒，**不静默 no-op**）。
+
+    暂停只拦「自动跑到尾」，故暂停态**仍可单步**（[03 §4] 的调试语义）；中止与暂停都生效
+    在**节点边界**上。`start` 不在本函数内——它要先造会话、再登记进会话表。
+    """
+    drivers = {
+        "step": trial.step,
+        "run_to_end": trial.run_to_end,
+        "pause": trial.pause,
+        "resume": trial.resume,
+        "abort": trial.abort,
+    }
+    driver = drivers.get(action)
+    if driver is None:
+        raise ValueError(
+            f"未知动作 {action!r}（可选：start / step / run_to_end / pause / resume / abort）"
+        )
+    driver()
+
+
+def _workflow_row(
+    face: Any, dag: Any, checks: Mapping[tuple[str, str], Any]
+) -> dict[str, Any]:
+    """一行工作流摘要（清单用；`生效` 看激活指针是否指向本版本）。"""
+    base = base_of(dag.flow_id)
+    active = face.workflows.active(base)
+    pending = [item for (item_base, _), item in checks.items() if item_base == base]
+    return {
+        "name": dag.name,
+        "flow_id": dag.flow_id,
+        "version": f"v{dag.version.major}.{dag.version.minor}",
+        "node_count": len(dag.nodes),
+        "active": "生效" if active is not None and active.flow_id == dag.flow_id else "—",
+        "pending": f"{len(pending)} 项" if pending else "—",
+    }
+
+
+def _schedule_text(schedule: Any) -> str:
+    """调度的一句话（[03 §3.1] `schedule` 四种 mode）。"""
+    return {
+        "manual": "手动",
+        "interval": f"每 {schedule.interval_minutes} 分钟",
+        "cron": f"cron：{schedule.cron}",
+        "event": f"事件：{schedule.event}",
+    }.get(schedule.mode, schedule.mode)
+
+
+def _workflow_sections(
+    dag: Any, base: str, active: Any, checks: tuple[Any, ...]
+) -> list[dict[str, Any]]:
+    """属性面板的五段（[11-sitemap §2.1]：`report_card` 多段式陈述）。"""
+    return [
+        {"title": "基本信息", "lines": [
+            f"名称：{dag.name}",
+            f"说明：{dag.description}",
+            f"注册名：{base}",
+            f"版本：v{dag.version.major}.{dag.version.minor}",
+            f"节点 / 连线 / 分组：{len(dag.nodes)} / {len(dag.edges)} / {len(dag.groups)}",
+            "当前生效：" + (active.flow_id if active is not None else "（无激活版本）"),
+        ]},
+        {"title": "调度", "lines": [_schedule_text(dag.schedule)]},
+        {"title": "节点", "lines": [
+            f"{node.node_id} → {node.skill_id}" for node in dag.nodes
+        ] or ["（无节点）"]},
+        {"title": "连线", "lines": [
+            f"{edge.edge_id}：{edge.from_node} → {edge.to_node}" for edge in dag.edges
+        ] or ["（无连线）"]},
+        # 引用方待检查（[01 §9]：主版本变更不自动破坏下游）——逐条给 changelog 与影响范围。
+        {"title": "引用方待检查", "lines": [
+            f"{item.node_id} 引用的 {item.skill_id} 已有新主版本 {item.to_version}"
+            f"（变更日志：{item.changelog}；影响：{item.impact}）"
+            for item in checks
+        ] or ["（无）"]},
+    ]
+
+
+def _version_entries(versions: tuple[Any, ...], active: Any) -> list[dict[str, Any]]:
+    """版本历史的时间线条目。
+
+    `at` 槽给的是**版本号**而非日期——`WorkflowDAG` 不携创建时刻，而版本号本身即排序依据；
+    摆一个编出来的日期才是失真。当前生效的那版在 `content` 里显式标注。
+    """
+    current = active.flow_id if active is not None else ""
+    return [
+        {
+            "id": dag.flow_id,
+            "at": f"v{dag.version.major}.{dag.version.minor}",
+            "kind": "version",
+            "content": (
+                f"{dag.name} · 节点 {len(dag.nodes)} · 连线 {len(dag.edges)}"
+                + ("（当前生效）" if dag.flow_id == current else "")
+            ),
+            "state": "ok",
+        }
+        for dag in versions
+    ]
+
+
+def _template_row(summary: Any) -> dict[str, Any]:
+    """一行模板摘要（[03 §4] 浏览面：名称 / 说明 / 节点数 / 引用 Skill / **缺失 Skill**）。"""
+    return {
+        "name": summary.name,
+        "template_id": summary.template_id,
+        "description": summary.description,
+        "node_count": summary.node_count,
+        "skills": "、".join(summary.skill_ids) or "（无）",
+        "missing": "、".join(summary.missing_skill_ids) or "—",
+    }
+
+
+def _trial_row(record: Any) -> dict[str, Any]:
+    """一行试跑摘要。"""
+    return {
+        "trial_id": record.trial_id,
+        "flow_id": record.flow_id,
+        "status": _TRIAL_STATUS_LABELS.get(record.status, record.status),
+        "steps": len(record.steps),
+        "started_at": record.started_at.isoformat(),
+        "finished_at": record.finished_at.isoformat() if record.finished_at else "—",
+    }
+
+
+def _trial_sections(record: Any) -> list[dict[str, Any]]:
+    """试跑小结（状态 / 步数 / 已批准权限 / 注入）——**并列**，不含「建议」。"""
+    return [
+        {"title": "试跑", "lines": [
+            f"标识：{record.trial_id}",
+            f"工作流：{record.flow_id}",
+            f"状态：{_TRIAL_STATUS_LABELS.get(record.status, record.status)}",
+            f"已推进：{len(record.steps)} 步",
+            f"起跑：{record.started_at.isoformat()}",
+            "结束：" + (record.finished_at.isoformat() if record.finished_at else "（未结束）"),
+        ]},
+        # 试跑不放宽权限口径（[03 §4]）——实际携带的已批准权限如实列出。
+        {"title": "本次携带的已批准权限",
+         "lines": list(record.approved_permissions) or ["（无）"]},
+        {"title": "输入注入", "lines": [
+            f"{node_id}：{_fmt_value(values)}"
+            for node_id, values in record.injections.items()
+        ] or ["（无注入）"]},
+    ]
+
+
+def _trial_step_row(step: Any) -> dict[str, Any]:
+    """一个节点的试跑快照（[03 §4]：逐参数标注值来源）。"""
+    sources = "、".join(
+        f"{name}={_VALUE_SOURCE_LABELS.get(source, source)}"
+        for name, source in step.value_sources.items()
+    )
+    return {
+        "order": step.order,
+        "node_id": step.node_id,
+        "skill_id": step.skill_id,
+        "status": _ENVELOPE_STATE_LABELS.get(step.status, step.status),
+        "duration_ms": step.duration_ms,
+        "sources": sources or "—",
+        "params": _brief_json(step.params),
+    }
 
 
 def _mapping(value: Any, field: str, *, allow_none: bool = False) -> Any:
@@ -330,6 +823,118 @@ _LENS_KIND_LABELS: dict[str, str] = {
     "custom": "自定义",
 }
 """视角来源的中文名（[06 §1] 的 `kind`；系统文案）。"""
+
+SKILL_PARAMS_SURFACE = "skill-params"
+"""Skill 参数配置面板的面键（`setting_panel` 的 `surface` 槽；[`T-UI-015.1`]）。
+
+与 :data:`LENS_SURFACE` 同理：路由由**枚举键**在渲染件的固定表里解析（[01 §12]「动作不进描述」）。
+[`T-UI-015.3`] 的「Studio Skill 参数面板」**复用本键**（同一屏语义两处宿主，不造第二套）。
+"""
+
+_SKILL_PARAM_LABELS: dict[str, str] = {
+    "apply": "应用",
+    "true": "是",
+    "false": "否",
+}
+"""参数面板的标签表（生成文案槽 `labels`，过 [01 §6]）——**动作与候选值共用一张**
+（渲染件头注：`labels` 同时按动作键与 `option.value` 取值）。布尔参数的候选取「是 / 否」
+而不取「启用 / 停用」：参数语义由各 Skill 自述，此处只是取值面的中性词。"""
+
+_SKILL_SOURCE_LABELS: dict[str, str] = {
+    "official": "官方预置",
+    "user-built": "自建",
+    "mcp-mapped": "MCP 映射",
+    "imported": "导入",
+}
+"""Skill 来源的中文名（系统文案；`SkillDescriptor.source` 的四个取值）。"""
+
+_SKILL_OFFLINE_LABELS: dict[str, str] = {
+    "full": "完全离线可用",
+    "degraded": "降级可用",
+    "none": "须联网",
+}
+"""Skill 离线档的中文名（系统文案；[02 §7] 的 `OfflineLevel` 三个取值）。"""
+
+_SKILL_VERSION_POLICY_LABELS: dict[str, str] = {
+    "follow-latest": "跟随最新",
+    "locked": "锁定当前",
+}
+"""Skill 版本策略的中文名（系统文案；[01 §9] 的 `VersionPolicy` 两个取值）。"""
+
+_ENVELOPE_STATE_LABELS: dict[str, str] = {
+    "ok": "完成",
+    "empty": "空结果",
+    "delayed": "延后",
+    "unavailable": "不可用",
+    "failed": "失败",
+    "validation_failed": "不合契约",
+}
+"""[01 §5] 六态的中文名（系统文案）——执行日志按原值取此表，**不合并**（六态互不冒充）。"""
+
+_SKILL_LOG_LIMIT = 50
+"""Skill 执行日志页单次列出的上限（超出即如实标注「只显示最近 N 条」，不静默截断）。"""
+
+MCP_APPROVAL_SURFACE = "mcp-permissions"
+"""MCP 权限逐项批准面的面键（`setting_panel` 的 `surface` 槽；[`T-UI-015.2`]）。
+
+与 `skill-params` / `LENS_SURFACE` 同为**枚举键**：路由在渲染件的固定表里解析，描述
+不接受 URL / 方法（[01 §12]）。
+"""
+
+_MCP_APPROVAL_LABELS: dict[str, str] = {"approve": "批准", "reject": "拒绝"}
+"""权限处置面的动作标签（生成文案槽 `labels`，过 [01 §6]）。"""
+
+_MCP_ACTION_LABELS: dict[str, str] = {
+    "enable": "启用",
+    "disable": "停用",
+    "remove": "移除",
+    "test": "连接测试",
+}
+"""Hub 面板的 Server 动作标签（生成文案槽 `labels`）。`remove` 在界面上只对**本地 stdio**
+之外一概可用——回收语义对两种传输一致（[03 §5.2]）。"""
+
+_MCP_TRANSPORT_LABELS: dict[str, str] = {
+    "stdio": "本地 stdio（子进程）",
+    "remote": "远程 HTTP/SSE",
+}
+"""MCP 传输的中文名（系统文案；[03 §5.1] 两种传输）。"""
+
+_MCP_STATE_LABELS: dict[str, str] = {
+    "connected": "已连接",
+    "disconnected": "未连接",
+    "reconnecting": "重连中",
+    "permission_pending": "待批准权限",
+    "disabled": "已停用",
+}
+"""MCP Server 生命周期状态的中文名（系统文案；[03 §5.3] 五个状态）。"""
+
+_MCP_MAPPING_LABELS: dict[str, str] = {
+    "active": "生效",
+    "pending-remap": "待重新映射",
+    "vanished": "已失效",
+}
+"""tool → Skill 映射状态的中文名（系统文案；[03 §5.2] 三个状态）。`vanished` 追加一句
+「tool 从 Server 消失」在行内说明——**不删记录**、可自愈，故措辞不带「已删除」。"""
+
+_MCP_NOTICE_LIMIT = 20
+"""Server 详情页单次列出的状态留痕条数上限（超出如实标注）。"""
+
+_TRIAL_STATUS_LABELS: dict[str, str] = {
+    "running": "运行中",
+    "paused": "已暂停",
+    "completed": "已完成",
+    "failed": "已失败",
+    "aborted": "已中止",
+}
+"""试跑会话状态的中文名（[03 §4] 步进式状态机的五个状态）。"""
+
+_VALUE_SOURCE_LABELS: dict[str, str] = {
+    "injected": "注入",
+    "upstream": "上游引用",
+    "literal": "字面量",
+    "default": "Skill 默认值",
+}
+"""逐参数**值来源**的中文名（[03 §4]：每个节点输入快照逐参数标注来源）。"""
 
 _MEMORY_LIST_COLUMNS = (
     Column("label", "记忆"),
@@ -835,6 +1440,14 @@ class UiApp:
 
     settings: Any = None
     """L0 存储 / 配置面；缺省 ``None`` → fail-closed。"""
+
+    studio: Any = None
+    """L1 Studio 面（工作流 / 模板库 / 试跑；[`T-UI-015.3`]）；缺省 ``None`` → fail-closed。
+
+    与 `reflection` 那个 Studio 面**不是同一件事**：后者是 L6 主动提案的**画布会话**交接面
+    （`proposal_id` 寻址），本端口是 L1 的**自建工作流**面（版本 / 模板 / 试跑）。同一页面
+    `/studio` 上两块各走各的口。
+    """
 
     restart_gate: RestartGate = field(default_factory=RestartGate)
     """破坏性操作后的进程级闸门（见 :class:`RestartGate`）。
@@ -3238,6 +3851,936 @@ class UiApp:
             raise ValueError(verdict.reason)
         return description
 
+    # ───────────────────── 能力区：Skill 库（[T-UI-015.1]） ─────────────────────
+    # story-02 的四条屏（[11-sitemap §2 能力]）。三处取数口各司其职：清单 / 详情走
+    # `SkillRegistry`；参数落值走 `set_parameters`（[03 §1.1]：Skill **无状态**，用户状态
+    # 只存 L2 记忆与配置注册表，故描述体即参数的唯一真相源）；执行日志读 `execution_log`
+    # 分区 `skill-run/`——那是 [03 §1.2] 步骤 5 的**既有**落盘，本层只新增一条**只读列表**，
+    # 不新开分区、不改 L1 口径。
+    #
+    # 三种缺口互不冒充（[01 §5]）：缺查询串 ⇒ `validation_failed`；标识**形态**非法 ⇒
+    # `validation_failed`（`check_skill_id` 抛的 `SkillValidationError` 是 `ValueError`）；
+    # 形态合法但**未注册** ⇒ `unavailable` + 点名。最后一档在此**就地**翻译——`SkillNotFoundError`
+    # 是 `KeyError`，落到 `_call_face` 会被说成「请求不合契约」，那是把「没有这个能力」误报成
+    # 「你请求错了」（同 `T-UI-016.2` 的三种缺口分流）。
+
+    def api_skills_catalog(self) -> dict[str, Any]:
+        """Skill 清单 → `table`（逐条并列；含**全部已注册版本**，如实不折叠）。"""
+        return self._call_face(
+            "skills-catalog", self.skills, "L1 能力（Skill）面", self._skill_catalog_envelope
+        )
+
+    def api_skills_detail(self, *, skill_id: str) -> dict[str, Any]:
+        """单 Skill 详情 → `report_card`（元数据 / 参数 / 依赖 / 权限声明 / 输入输出契约）。"""
+        if not skill_id:
+            return envelope_payload(ResultEnvelope.validation_failed("缺少 Skill 标识（skill）"))
+        return self._call_face(
+            "skills-detail", self.skills, "L1 能力（Skill）面",
+            lambda face: self._skill_detail_envelope(face, skill_id),
+        )
+
+    def api_skills_params(self, *, skill_id: str) -> dict[str, Any]:
+        """参数配置面板 → `setting_panel`（**带动作**；面键 `skill-params`）。"""
+        if not skill_id:
+            return envelope_payload(ResultEnvelope.validation_failed("缺少 Skill 标识（skill）"))
+        return self._call_face(
+            "skills-params", self.skills, "L1 能力（Skill）面",
+            lambda face: self._skill_params_envelope(face, skill_id),
+        )
+
+    def api_skills_params_set(self, body: dict[str, Any]) -> dict[str, Any]:
+        """参数落值——经 `SkillRegistry.set_parameters`（[03 §1.1] 的唯一写口）。
+
+        超范围 / 类型不符由 `validate_param_values` 拒（`SkillValidationError` →
+        `validation_failed`），**不允许保存**（story-02 边缘情况）。回 `applied` 而**不回**
+        `changed`：描述体的写入**不产生 `ChangeRecord`**（版本变更才留痕，见
+        `publish_version`），故不能让渲染件打出「留痕已记」那句假话（同 `T-UI-016.1` 对
+        `set_enabled` 的处理）。
+        """
+        return self._call_face(
+            "skills-params-set", self.skills, "L1 能力（Skill）面",
+            lambda face: self._skill_params_set_envelope(face, body),
+        )
+
+    def api_skills_logs(self, *, skill_id: str, limit: str = "") -> dict[str, Any]:
+        """执行日志 → `table`（`skill-run/` 前缀的只读列表；[03 §1.2] 步骤 5 的既落盘）。"""
+        if not skill_id:
+            return envelope_payload(ResultEnvelope.validation_failed("缺少 Skill 标识（skill）"))
+        return self._call_face(
+            "skills-logs", self.skills, "L1 能力（Skill）面",
+            lambda face: self._skill_logs_envelope(face, skill_id, limit),
+        )
+
+    def _skill_unavailable(self, exc: Any) -> ResultEnvelope:
+        """「标识合法但未注册」的如实降级（与「参数非法」互不冒充）。"""
+        return ResultEnvelope.unavailable(
+            f"{exc}——标识形态合法但该 Skill 未注册（不是请求不合契约）", last_updated_at=_now()
+        )
+
+    def _skill_catalog_envelope(self, face: Any) -> ResultEnvelope:
+        skills = tuple(face.registry.list_all())
+        if not skills:
+            return ResultEnvelope.empty(
+                "能力池为空：尚未注册任何 Skill（03 §2 的官方 Pack 未装载）"
+            )
+        return ResultEnvelope.ok(self._gated_description(
+            "table",
+            slots=table_slots(
+                (
+                    Column("name", "名称"),
+                    Column("skill_id", "标识"),
+                    Column("source", "来源"),
+                    Column("offline_level", "离线档"),
+                    Column("version_policy", "版本策略"),
+                    Column("parameter_count", "参数数", "number", digits=0),
+                    Column("dependencies", "依赖"),
+                ),
+                [_skill_row(descriptor) for descriptor in skills],
+            ),
+            text_kinds=table_text_kinds(),
+            title="Skill 库",
+        ))
+
+    def _skill_detail_envelope(self, face: Any, skill_id: str) -> ResultEnvelope:
+        try:
+            descriptor = face.registry.get(skill_id)
+        except SkillNotFoundError as exc:
+            return self._skill_unavailable(exc)
+        return ResultEnvelope.ok(self._gated_description(
+            "report_card",
+            slots={"sections": _skill_detail_sections(descriptor)},
+            text_kinds={"sections": "data"},
+            title=f"{descriptor.name} · 详情",
+        ))
+
+    def _skill_params_envelope(self, face: Any, skill_id: str) -> ResultEnvelope:
+        try:
+            descriptor = face.registry.get(skill_id)
+        except SkillNotFoundError as exc:
+            return self._skill_unavailable(exc)
+        if not descriptor.parameters:
+            return ResultEnvelope.empty(
+                f"「{descriptor.name}」未声明可配参数（03 §1.2：parameters 可为空，"
+                "该 Skill 无参数可配）"
+            )
+        entries = [_skill_param_entry(descriptor.skill_id, spec) for spec in descriptor.parameters]
+        return ResultEnvelope.ok(self._gated_description(
+            "setting_panel",
+            slots={
+                "entries": entries,
+                "labels": dict(_SKILL_PARAM_LABELS),
+                "surface": SKILL_PARAMS_SURFACE,
+            },
+            text_kinds={"entries": "data", "surface": "data", "labels": "generated"},
+            title=f"{descriptor.name} · 参数",
+        ))
+
+    def _skill_params_set_envelope(self, face: Any, body: dict[str, Any]) -> ResultEnvelope:
+        skill_id = str(_required(body, "skill_id"))
+        name = str(_required(body, "name"))
+        try:
+            descriptor = face.registry.get(skill_id)
+        except SkillNotFoundError as exc:
+            return self._skill_unavailable(exc)
+        spec = next((item for item in descriptor.parameters if item.name == name), None)
+        if spec is None:
+            return ResultEnvelope.validation_failed(
+                f"「{descriptor.name}」未声明参数 {name!r}，不允许保存（03 §1.2：未知参数名即拒）"
+            )
+        face.registry.set_parameters(skill_id, {name: _coerce_param_value(spec, body.get("value"))})
+        return ResultEnvelope.ok({"applied": True})
+
+    def _skill_logs_envelope(self, face: Any, skill_id: str, limit: str) -> ResultEnvelope:
+        try:
+            descriptor = face.registry.get(skill_id)
+        except SkillNotFoundError as exc:
+            return self._skill_unavailable(exc)
+        if face.store is None:
+            return ResultEnvelope.unavailable(
+                "未接入存储面，Skill 执行日志不可读（装配归生产入口）", last_updated_at=_now()
+            )
+        rows, total, unreadable = _skill_run_rows(face.store, skill_id, _skill_log_limit(limit))
+        if not rows:
+            reason = (
+                f"「{descriptor.name}」尚无执行留痕——执行日志是 03 §1.2 步骤 5 的落盘，"
+                "该 Skill 未执行过即为空"
+            )
+            if unreadable:
+                reason += f"（另 {unreadable} 条留痕无法解析，未计入）"
+            return ResultEnvelope.empty(reason)
+        title = f"{descriptor.name} · 执行日志"
+        if total > len(rows):
+            title += f"（共 {total} 条，显示最近 {len(rows)} 条）"
+        if unreadable:
+            title += f"（另 {unreadable} 条无法解析）"
+        return ResultEnvelope.ok(self._gated_description(
+            "table",
+            slots=table_slots(
+                (
+                    Column("started_at", "时刻"),
+                    Column("skill_run_id", "留痕标识"),
+                    Column("status", "状态"),
+                    Column("duration_ms", "耗时(ms)", "number", digits=0),
+                    Column("upstream", "依赖链"),
+                    Column("params", "参数快照"),
+                ),
+                rows,
+            ),
+            text_kinds=table_text_kinds(),
+            title=title,
+        ))
+
+    # ───────────────────── 能力区：MCP Hub（[T-UI-015.2]） ─────────────────────
+    # story-08 的五条屏（[11-sitemap §2 能力]）＋ 添加 Server 表单。四支读面：清单 / 详情 /
+    # tool 浏览器 / 权限面（声明 ＋ 处置两段）。两处刻意：
+    #
+    # - **移除必须走 `L1Runtime.remove_mcp_server`**（经门面的 `remove_server` 引用）——
+    #   它先 `disable` 再 `remove_server`，后者触发**组合根接的回收回调**（删映射记录 +
+    #   反注册派生 Skill + 清生命周期当前态）。表现层自行拼两步会把回收落掉，派生 Skill
+    #   与映射记录成孤儿（[03 §5.2] 回收落地口径）。
+    # - **连接测试失败不是「工具坏了」**——`add_server` / `test_connection` 以 `ok=False`
+    #   如实回结论且**不落盘**（[03 §5.1]），故翻成 `unavailable` ＋ 原因，而不是 `failed`。
+
+    def api_mcp_servers(self) -> dict[str, Any]:
+        """Server 清单 → `table`（逐条并列，含各自的生命周期状态）。"""
+        return self._mcp_call(
+            "mcp-servers", self._mcp_servers_envelope
+        )
+
+    def api_mcp_server(self, *, server_id: str) -> dict[str, Any]:
+        """Server 详情 → `report_card`（记录 / 状态 / 留痕 / 降级候选 / 数据外发风险五段）。"""
+        if not server_id:
+            return envelope_payload(ResultEnvelope.validation_failed("缺少 Server 标识（id）"))
+        return self._mcp_call(
+            "mcp-server",
+            lambda face: self._mcp_server_envelope(face, server_id),
+        )
+
+    def api_mcp_tools(self, *, server_id: str) -> dict[str, Any]:
+        """tool schema 浏览器 → `table`（逐 tool 的映射状态与**派生描述体**的参数面）。"""
+        if not server_id:
+            return envelope_payload(ResultEnvelope.validation_failed("缺少 Server 标识（id）"))
+        return self._mcp_call(
+            "mcp-tools",
+            lambda face: self._mcp_tools_envelope(face, server_id),
+        )
+
+    def api_mcp_permissions(self, *, server_id: str) -> dict[str, Any]:
+        """权限面 → 两段：`declaration`（`permission_approval_card`，只读声明）＋
+        `decisions`（`setting_panel`，逐项批准 / 拒绝）。
+
+        两段同出于一条端点：声明面讲「这个 Server 想做什么」（[01 §10]），处置面才是动作。
+        `permission_approval_card` 渲染件**只渲染不落账**（其头注明写），故动作面另走
+        `setting_panel`——同 `T-UI-004.4` 对导入审批的处理（声明 `report_card` ＋ 处置
+        `setting_panel`）。
+        """
+        if not server_id:
+            return envelope_payload(ResultEnvelope.validation_failed("缺少 Server 标识（id）"))
+        return self._mcp_parts(
+            "mcp-permissions", ("declaration", "decisions"),
+            lambda face: self._mcp_permissions_parts(face, server_id),
+        )
+
+    def api_mcp_server_create(self, body: dict[str, Any]) -> dict[str, Any]:
+        """添加一台 Server（GWT-1）：保存即**自动连接测试**，成功才落盘（[03 §5.1]）。"""
+        return self._mcp_call(
+            "mcp-server-create",
+            lambda face: self._mcp_server_create_envelope(face, body),
+        )
+
+    def api_mcp_server_update(self, body: dict[str, Any]) -> dict[str, Any]:
+        """一台 Server 的动作（启用 / 停用 / 移除 / 连接测试）——四者皆显式动作。"""
+        return self._mcp_call(
+            "mcp-server-update",
+            lambda face: self._mcp_server_update_envelope(face, body),
+        )
+
+    def api_mcp_permission_decide(self, body: dict[str, Any]) -> dict[str, Any]:
+        """逐项批准 / 拒绝一条权限（[01 §10]：逐项、不合并）。"""
+        return self._mcp_call(
+            "mcp-permission-decide",
+            lambda face: self._mcp_permission_decide_envelope(face, body),
+        )
+
+    def _mcp_call(self, where: str, fn: Callable[[Any], Any]) -> dict[str, Any]:
+        """调一次 MCP 面操作：**先按 MCP 异常族翻成六态**，再交 `_call_face` 出信封。
+
+        MCP 错误全部继承 ``Exception`` 而非 ``ValueError`` / ``KeyError``（见
+        [`l1/mcp/errors.py`] 的模块取向），故 `_call_face` 的输入类分流**覆盖不到**——不翻译
+        则「该 Server 未注册」「权限未声明」会被报成 `failed`，读起来是「工具坏了」（同
+        [`T-UI-018.2`] 对 L0 备份族异常的处理）。
+        """
+
+        def guarded(face: Any) -> Any:
+            try:
+                return fn(face)
+            except McpError as exc:
+                return _mcp_error_envelope(exc)
+
+        return self._call_face(where, self.mcp, "L1 能力（MCP）面", guarded)
+
+    def _mcp_parts(
+        self, where: str, keys: tuple[str, ...], fn: Callable[[Any], dict[str, Any]]
+    ) -> dict[str, Any]:
+        """多段 MCP 端点：**任一失败，各段都是同一支错误信封**（同 `_settings_parts` 口径）。
+
+        分段端点**不能**经 `_call_face`——后者会把非信封的返回值包成 `ok`，于是
+        `{declaration, decisions}` 会变成 `data` 里的一层，页面逐段找键就找不到了。
+        """
+        def blank(envelope: ResultEnvelope) -> dict[str, Any]:
+            payload = envelope_payload(envelope)
+            return {key: payload for key in keys}
+
+        if self.restart_gate.reason:
+            return blank(ResultEnvelope.unavailable(
+                self.restart_gate.reason, last_updated_at=_now()
+            ))
+        face = self.mcp
+        if face is None:
+            return blank(ResultEnvelope.unavailable(
+                "未接入 L1 能力（MCP）面，该端点不可用（装配归生产入口）",
+                last_updated_at=_now(),
+            ))
+        try:
+            return fn(face)
+        except McpError as exc:
+            return blank(_mcp_error_envelope(exc))
+        except (ValueError, KeyError) as exc:
+            _LOG.info("表现层端点 %s 拒绝请求（%s）：%s", where, type(exc).__name__, exc)
+            return blank(ResultEnvelope.validation_failed(str(exc) or "请求不合契约"))
+        except Exception as exc:  # noqa: BLE001 —— 内部失败：不吞，落日志 + 显式 failed
+            log_ref = f"ui/{where}-{uuid.uuid4().hex[:12]}"
+            _LOG.exception("表现层端点 %s 未预期失败（log_ref=%s）：%s", where, log_ref, exc)
+            return blank(ResultEnvelope.failed("该端点未预期失败，详见服务端日志", log_ref=log_ref))
+
+    def _mcp_server_record(self, face: Any, server_id: str) -> Any:
+        """读一台 Server 的注册记录（不存在即抛，由 `_call_face` 归 `validation_failed`）。"""
+        return face.servers.get_server(server_id)
+
+    def _mcp_servers_envelope(self, face: Any) -> ResultEnvelope:
+        servers = tuple(face.servers.list_servers())
+        if not servers:
+            return ResultEnvelope.empty(
+                "尚未挂载任何 MCP Server——在上方「添加 Server」填入命令或 URL 即可挂载"
+                "（03 §5.1）"
+            )
+        return ResultEnvelope.ok(self._gated_description(
+            "table",
+            slots=table_slots(
+                (
+                    Column("display_name", "名称"),
+                    Column("server_id", "标识"),
+                    Column("transport", "传输"),
+                    Column("enabled", "开关"),
+                    Column("state", "状态"),
+                    Column("permissions", "权限数", "number", digits=0),
+                ),
+                [_mcp_server_row(face, record) for record in servers],
+            ),
+            text_kinds=table_text_kinds(),
+            title="MCP Server 清单",
+        ))
+
+    def _mcp_server_envelope(self, face: Any, server_id: str) -> ResultEnvelope:
+        record = self._mcp_server_record(face, server_id)
+        machine = face.machine
+        sections: list[dict[str, Any]] = [
+            {"title": "基本信息", "lines": [
+                f"名称：{record.display_name}",
+                f"标识：{record.server_id}",
+                f"传输：{_MCP_TRANSPORT_LABELS.get(record.transport, record.transport)}",
+                f"开关：{'启用' if record.enabled else '停用'}",
+                f"声明权限：{len(record.permissions)} 条",
+                f"挂载时刻：{record.created_at.isoformat()}",
+            ]},
+        ]
+        if machine is not None:
+            sections.append({"title": "生命周期状态", "lines": [
+                f"当前：{_MCP_STATE_LABELS.get(machine.state_of(record.server_id), '—')}",
+            ]})
+            transitions = tuple(machine.transitions(record.server_id))[-_MCP_NOTICE_LIMIT:]
+            sections.append({"title": "状态转移留痕", "lines": [
+                f"{item.occurred_at.isoformat()} "
+                f"{_MCP_STATE_LABELS.get(item.from_state, item.from_state)} → "
+                f"{_MCP_STATE_LABELS.get(item.to_state, item.to_state)}"
+                f"（{item.reason}）"
+                for item in transitions
+            ] or ["（无转移留痕）"]})
+            notices = tuple(machine.notices(record.server_id))[-_MCP_NOTICE_LIMIT:]
+            sections.append({"title": "提示留痕", "lines": [
+                f"{item.occurred_at.isoformat()} [{item.kind}] {item.message}"
+                for item in notices
+            ] or ["（无提示）"]})
+            # 降级候选**并列陈列**：不带排序位、不带推荐语（[03 §5.3] GWT-3）。
+            candidates = tuple(machine.degrade_candidates(record.server_id))
+            sections.append({"title": "降级候选（并列，不排序）", "lines": [
+                f"{candidate.name}（{candidate.skill_id}）· "
+                f"{'可用' if candidate.available else '不可用'}：{candidate.detail}"
+                for candidate in candidates
+            ] or ["（无候选）"]})
+        if record.data_egress_risk:
+            sections.append({"title": "数据外发风险", "lines": [record.data_egress_risk]})
+        return ResultEnvelope.ok(self._gated_description(
+            "report_card",
+            slots={"sections": sections},
+            text_kinds={"sections": "data"},
+            title=f"{record.display_name} · 详情",
+        ))
+
+    def _mcp_tools_envelope(self, face: Any, server_id: str) -> ResultEnvelope:
+        record = self._mcp_server_record(face, server_id)
+        if face.mapper is None:
+            return ResultEnvelope.unavailable(
+                "未接入 tool 映射面，tool 浏览器不可读（装配归生产入口）", last_updated_at=_now()
+            )
+        mappings = tuple(face.mapper.mappings(record.server_id))
+        if not mappings:
+            return ResultEnvelope.empty(
+                f"「{record.display_name}」还没有 tool 映射——权限全部批准后同步 tool 列表"
+                "才会产生（03 §5.2）"
+            )
+        return ResultEnvelope.ok(self._gated_description(
+            "table",
+            slots=table_slots(
+                (
+                    Column("tool", "tool"),
+                    Column("skill_id", "派生 Skill"),
+                    Column("status", "映射状态"),
+                    Column("version", "映射版本"),
+                    Column("inputs", "参数面（派生的输入契约）"),
+                    Column("change_note", "变化说明"),
+                ),
+                [_mcp_tool_row(face, mapping) for mapping in mappings],
+            ),
+            text_kinds=table_text_kinds(),
+            title=f"{record.display_name} · tool 与映射",
+        ))
+
+    def _mcp_permissions_parts(self, face: Any, server_id: str) -> dict[str, Any]:
+        """权限面的两段（**不做异常处理**——那归 `_mcp_parts` 的统一分流）。"""
+        record = self._mcp_server_record(face, server_id)
+        approvals = tuple(face.permissions.approvals(record.server_id))
+        declaration = envelope_payload(ResultEnvelope.ok(self._gated_description(
+            "permission_approval_card",
+            slots=_mcp_approval_slots(record, approvals),
+            text_kinds={"key": "data", "source": "data", "items": "data",
+                        "labels": "generated"},
+            title=f"{record.display_name} · 权限申请",
+        )))
+        if not approvals:
+            # 没声明权限 ⇒ **没有可批准项**，不是「面读不到」（[01 §5] 六态不混用）。
+            return {
+                "declaration": declaration,
+                "decisions": envelope_payload(ResultEnvelope.empty(
+                    f"「{record.display_name}」未声明任何权限，无可批准项（01 §10 逐项批准）"
+                )),
+            }
+        return {
+            "declaration": declaration,
+            "decisions": envelope_payload(ResultEnvelope.ok(self._gated_description(
+                "setting_panel",
+                slots={
+                    "entries": _mcp_approval_entries(record, approvals),
+                    "labels": dict(_MCP_APPROVAL_LABELS),
+                    "surface": MCP_APPROVAL_SURFACE,
+                },
+                text_kinds={"entries": "data", "surface": "data", "labels": "generated"},
+                title=f"{record.display_name} · 逐项批准",
+            ))),
+        }
+
+    def _mcp_server_create_envelope(self, face: Any, body: dict[str, Any]) -> ResultEnvelope:
+        result = face.servers.add_server(
+            str(_required(body, "server_id")),
+            display_name=str(_required(body, "display_name")),
+            transport=str(body.get("transport") or "stdio"),
+            command=_optional_text(body.get("command")),
+            args=tuple(str(item) for item in (body.get("args") or ())),
+            env_refs=tuple(str(item) for item in (body.get("env_refs") or ())),
+            url=_optional_text(body.get("url")),
+            remote_acknowledged=bool(body.get("remote_acknowledged")),
+            permissions=tuple(str(item) for item in (body.get("permissions") or ())),
+        )
+        if not result.ok:
+            # 连接测试失败**不落盘**——如实回不可用 ＋ 原因（不是「工具坏了」）。
+            return ResultEnvelope.unavailable(
+                f"连接测试未通过，Server 未挂载：{result.reason}", last_updated_at=_now()
+            )
+        return ResultEnvelope.ok({
+            "server_id": result.server_id,
+            "connected": True,
+            "protocol_version": result.protocol_version,
+            "permissions": list(result.permissions),
+            "tool_count": len(result.tools),
+        })
+
+    def _mcp_server_update_envelope(self, face: Any, body: dict[str, Any]) -> ResultEnvelope:
+        server_id = str(_required(body, "server_id"))
+        action = str(_required(body, "action"))
+        record = self._mcp_server_record(face, server_id)
+        if action == "enable":
+            if face.machine is None:
+                return ResultEnvelope.unavailable(
+                    "未接入 Hub 状态机，启停不可执行（装配归生产入口）", last_updated_at=_now()
+                )
+            face.machine.enable(record.server_id)
+            return ResultEnvelope.ok({"server_id": record.server_id, "enabled": True})
+        if action == "disable":
+            if face.machine is None:
+                return ResultEnvelope.unavailable(
+                    "未接入 Hub 状态机，启停不可执行（装配归生产入口）", last_updated_at=_now()
+                )
+            face.machine.disable(record.server_id)
+            return ResultEnvelope.ok({"server_id": record.server_id, "enabled": False})
+        if action == "remove":
+            if face.remove_server is None:
+                return ResultEnvelope.unavailable(
+                    "未接入移除序列，无法回收该 Server（装配归生产入口）", last_updated_at=_now()
+                )
+            # 走整条序列（disable → remove_server → 回收回调），不自行拼两步。
+            face.remove_server(record.server_id)
+            return ResultEnvelope.ok({"server_id": record.server_id, "removed": True})
+        if action == "test":
+            result = face.servers.test_connection(record.server_id)
+            if not result.ok:
+                return ResultEnvelope.unavailable(
+                    f"连接测试未通过：{result.reason}", last_updated_at=_now()
+                )
+            return ResultEnvelope.ok({
+                "server_id": result.server_id,
+                "connected": True,
+                "protocol_version": result.protocol_version,
+                "tool_count": len(result.tools),
+            })
+        return ResultEnvelope.validation_failed(
+            f"未知动作 {action!r}（可选：enable / disable / remove / test）"
+        )
+
+    def _mcp_permission_decide_envelope(self, face: Any, body: dict[str, Any]) -> ResultEnvelope:
+        server_id = str(_required(body, "server_id"))
+        permission = str(_required(body, "permission"))
+        decision = str(_required(body, "decision"))
+        if decision not in ("approve", "reject"):
+            return ResultEnvelope.validation_failed(
+                f"未知处置 {decision!r}（可选：approve / reject）"
+            )
+        record = self._mcp_server_record(face, server_id)
+        approval = (
+            face.permissions.approve(record.server_id, permission)
+            if decision == "approve"
+            else face.permissions.reject(record.server_id, permission)
+        )
+        return ResultEnvelope.ok({
+            "server_id": record.server_id,
+            "permission": approval.permission,
+            "decision": approval.decision,
+            "decided_at": approval.decided_at.isoformat() if approval.decided_at else None,
+        })
+
+    # ───────────────────── 能力区：Studio 附加面（[T-UI-015.3]） ─────────────────────
+    # story-06 除主画布外的五条屏（[11-sitemap §2 能力]；主画布与导入导出已交付，见
+    # [`T-UI-005`] / [`T-UI-004.4`]）。**零新造型**：参数面板复用 `skill-params` 面键与
+    # `/api/skills/params`（[`.1`] 已落地），属性面板走 `report_card`、版本历史走
+    # `timeline_view`、模板库走 `table` / `report_card`、调试控制台走 `report_card` +
+    # `table` + `trace_timeline`——全是已实现型。
+    #
+    # 一处结构事实：**试跑是进程内的活会话**。`start` 把 `WorkflowTrial` 存进门面的会话表，
+    # 后续 `step` / `pause` / `resume` / `abort` 都按 `trial_id` 取回**同一个对象**——
+    # 试跑的步进态作用在节点边界上，无法只靠落盘还原（见 [`TrialSessions`]）。会话不在
+    # 本进程 ⇒ `unavailable` ＋ 说明（重启后须重新起跑），**不冒充**「没有这次试跑」。
+
+    def api_studio_workflows(self) -> dict[str, Any]:
+        """自建工作流清单 → `table`（逐版本一行；含「引用方待检查」标记）。"""
+        return self._studio_call("studio-workflows", self._studio_workflows_envelope)
+
+    def api_studio_workflow(self, *, flow_id: str) -> dict[str, Any]:
+        """工作流属性面板 → `report_card`（基本信息 / 调度 / 节点 / 连线 / 激活 / 待检查）。"""
+        if not flow_id:
+            return envelope_payload(ResultEnvelope.validation_failed("缺少工作流标识（flow）"))
+        return self._studio_call(
+            "studio-workflow", lambda face: self._studio_workflow_envelope(face, flow_id)
+        )
+
+    def api_studio_versions(self, *, flow_id: str, a: str = "", b: str = "") -> dict[str, Any]:
+        """版本历史 → 两段：`versions`（`timeline_view`，按版本序）＋ `diff`（`report_card`）。"""
+        if not flow_id:
+            return envelope_payload(ResultEnvelope.validation_failed("缺少工作流标识（flow）"))
+        return self._studio_parts(
+            "studio-versions", ("versions", "diff"),
+            lambda face: self._studio_versions_parts(face, flow_id, a, b),
+        )
+
+    def api_studio_version_set(self, body: dict[str, Any]) -> dict[str, Any]:
+        """版本动作（激活 / 回滚）——经 `WorkflowStore` 真落值并产生变更留痕。"""
+        return self._studio_call(
+            "studio-version-set", lambda face: self._studio_version_set_envelope(face, body)
+        )
+
+    def api_studio_templates(self) -> dict[str, Any]:
+        """模板库 → 两段：`home`（空状态与一句话入口）＋ `templates`（逐条模板）。"""
+        return self._studio_parts(
+            "studio-templates", ("home", "templates"), self._studio_templates_parts
+        )
+
+    def api_studio_template(self, *, template_id: str) -> dict[str, Any]:
+        """模板只读预览 → `report_card`（身份取临时位 `v0.0`，表「未发布」，[03 §4]）。"""
+        if not template_id:
+            return envelope_payload(ResultEnvelope.validation_failed("缺少模板标识（id）"))
+        return self._studio_call(
+            "studio-template", lambda face: self._studio_template_envelope(face, template_id)
+        )
+
+    def api_studio_template_fork(self, body: dict[str, Any]) -> dict[str, Any]:
+        """模板 fork → 交**既有画布会话**（不落盘；「接受」才是落盘点，[03 §4]）。"""
+        return self._studio_call(
+            "studio-template-fork", lambda face: self._studio_template_fork_envelope(face, body)
+        )
+
+    def api_studio_trials(self, *, flow_id: str, a: str = "", b: str = "") -> dict[str, Any]:
+        """试跑历史 → 两段：`trials`（`table`）＋ `diff`（`report_card`，逐节点输出差异）。"""
+        return self._studio_parts(
+            "studio-trials", ("trials", "diff"),
+            lambda face: self._studio_trials_parts(face, flow_id, a, b),
+        )
+
+    def api_studio_trial(self, body: dict[str, Any]) -> dict[str, Any]:
+        """调试控制台的一次动作（起跑 / 单步 / 跑到结束 / 暂停 / 继续 / 中止）。"""
+        return self._studio_parts(
+            "studio-trial", ("summary", "steps", "trace"),
+            lambda face: self._studio_trial_parts(face, body),
+        )
+
+    def _studio_call(self, where: str, fn: Callable[[Any], Any]) -> dict[str, Any]:
+        """调一次 Studio 面操作（先翻 Studio / 试跑异常族，再出信封，同 `_mcp_call`）。"""
+
+        def guarded(face: Any) -> Any:
+            try:
+                return fn(face)
+            except (TrialError, StudioError) as exc:
+                return ResultEnvelope.validation_failed(str(exc) or "Studio 请求不合契约")
+
+        return self._call_face(where, self.studio, "L1 Studio 面", guarded)
+
+    def _studio_parts(
+        self, where: str, keys: tuple[str, ...], fn: Callable[[Any], dict[str, Any]]
+    ) -> dict[str, Any]:
+        """多段 Studio 端点：**任一失败，各段都是同一支错误信封**（同 `_settings_parts`）。"""
+        def blank(envelope: ResultEnvelope) -> dict[str, Any]:
+            payload = envelope_payload(envelope)
+            return {key: payload for key in keys}
+
+        if self.restart_gate.reason:
+            return blank(ResultEnvelope.unavailable(
+                self.restart_gate.reason, last_updated_at=_now()
+            ))
+        face = self.studio
+        if face is None:
+            return blank(ResultEnvelope.unavailable(
+                "未接入 L1 Studio 面，该端点不可用（装配归生产入口）", last_updated_at=_now()
+            ))
+        try:
+            return fn(face)
+        except (TrialError, StudioError) as exc:
+            return blank(ResultEnvelope.validation_failed(str(exc) or "Studio 请求不合契约"))
+        except (ValueError, KeyError) as exc:
+            _LOG.info("表现层端点 %s 拒绝请求（%s）：%s", where, type(exc).__name__, exc)
+            return blank(ResultEnvelope.validation_failed(str(exc) or "请求不合契约"))
+        except Exception as exc:  # noqa: BLE001 —— 内部失败：不吞，落日志 + 显式 failed
+            log_ref = f"ui/{where}-{uuid.uuid4().hex[:12]}"
+            _LOG.exception("表现层端点 %s 未预期失败（log_ref=%s）：%s", where, log_ref, exc)
+            return blank(ResultEnvelope.failed("该端点未预期失败，详见服务端日志", log_ref=log_ref))
+
+    def _studio_workflows_envelope(self, face: Any) -> ResultEnvelope:
+        flows = tuple(face.workflows.list_all())
+        if not flows:
+            return ResultEnvelope.empty(
+                "尚未创建任何工作流——在上方「模板库」段 fork 一份，或从对话里用一句话"
+                "描述你想要的工作流（[03 §4] 空状态）"
+            )
+        checks = {
+            (item.base, item.node_id): item for item in tuple(face.workflows.pending_checks())
+        }
+        return ResultEnvelope.ok(self._gated_description(
+            "table",
+            slots=table_slots(
+                (
+                    Column("name", "名称"),
+                    Column("flow_id", "版本标识"),
+                    Column("version", "版本"),
+                    Column("node_count", "节点数", "number", digits=0),
+                    Column("active", "生效"),
+                    Column("pending", "引用方待检查"),
+                ),
+                [_workflow_row(face, flow, checks) for flow in flows],
+            ),
+            text_kinds=table_text_kinds(),
+            title="自建工作流",
+        ))
+
+    def _studio_workflow_envelope(self, face: Any, flow_id: str) -> ResultEnvelope:
+        dag = face.workflows.get(flow_id)
+        base = base_of(flow_id)
+        active = face.workflows.active(base)
+        checks = tuple(
+            item for item in tuple(face.workflows.pending_checks()) if item.base == base
+        )
+        return ResultEnvelope.ok(self._gated_description(
+            "report_card",
+            slots={"sections": _workflow_sections(dag, base, active, checks)},
+            text_kinds={"sections": "data"},
+            title=f"{dag.name} · 属性",
+        ))
+
+    def _studio_versions_parts(self, face: Any, flow_id: str, a: str, b: str) -> dict[str, Any]:
+        base = base_of(flow_id)
+        versions = tuple(face.workflows.list_versions(base))
+        if not versions:
+            raise WorkflowNotFoundError(f"工作流 base {base!r} 无任何版本")
+        active = face.workflows.active(base)
+        return {
+            "versions": envelope_payload(ResultEnvelope.ok(self._gated_description(
+                "timeline_view",
+                slots={
+                    "entries": _version_entries(versions, active),
+                    "labels": {"kinds": {"version": "版本"}, "states": dict(_TIMELINE_STATE_LABELS)},
+                    "empty_hint": "该工作流没有版本记录",
+                },
+                text_kinds={"entries": "data", "labels": "generated",
+                            "empty_hint": "generated"},
+                title=f"{base} · 版本历史",
+            ))),
+            "diff": self._diff_segment(
+                None if not (a and b) else face.workflows.diff(a, b)
+            ),
+        }
+
+    def _studio_version_set_envelope(self, face: Any, body: dict[str, Any]) -> ResultEnvelope:
+        flow_id = str(_required(body, "flow_id"))
+        action = str(_required(body, "action"))
+        base = base_of(flow_id)
+        if action == "activate":
+            dag = face.workflows.activate(base, flow_id)
+            return ResultEnvelope.ok({"flow_id": dag.flow_id, "active": True})
+        if action == "rollback":
+            change = face.workflows.rollback(base, flow_id)
+            return ResultEnvelope.ok({
+                "flow_id": flow_id, "change_id": change.change_id,
+                "changelog": getattr(change, "changelog", ""),
+            })
+        return ResultEnvelope.validation_failed(
+            f"未知动作 {action!r}（可选：activate / rollback）"
+        )
+
+    def _studio_templates_parts(self, face: Any) -> dict[str, Any]:
+        templates = tuple(face.templates.list())
+        home = face.home
+        return {
+            "home": envelope_payload(ResultEnvelope.ok(self._gated_description(
+                "report_card",
+                slots={"sections": [
+                    {"title": "工作流", "lines": [
+                        "尚未创建任何工作流" if home.is_empty else "已有自建工作流",
+                    ]},
+                    {"title": "一句话入口", "lines": [home.one_line_entry]},
+                ]},
+                text_kinds={"sections": "data"},
+                title="Studio 首页",
+            ))),
+            "templates": envelope_payload(ResultEnvelope.ok(self._gated_description(
+                "table",
+                slots=table_slots(
+                    (
+                        Column("name", "名称"),
+                        Column("template_id", "标识"),
+                        Column("description", "说明"),
+                        Column("node_count", "节点数", "number", digits=0),
+                        Column("skills", "引用 Skill"),
+                        Column("missing", "缺失 Skill"),
+                    ),
+                    [_template_row(item) for item in templates],
+                ),
+                text_kinds=table_text_kinds(),
+                title="官方模板库",
+            ))),
+        }
+
+    def _studio_template_envelope(self, face: Any, template_id: str) -> ResultEnvelope:
+        summary = face.templates.get(template_id)
+        dag = face.templates.load(template_id)
+        return ResultEnvelope.ok(self._gated_description(
+            "report_card",
+            slots={"sections": [
+                {"title": "基本信息", "lines": [
+                    f"名称：{summary.name}",
+                    f"标识：{summary.template_id}",
+                    f"说明：{summary.description}",
+                    f"节点数：{summary.node_count}",
+                    f"临时身份：{dag.flow_id}（0.0 表未发布，[03 §4] 只读预览）",
+                ]},
+                {"title": "引用 Skill", "lines": list(summary.skill_ids) or ["（无）"]},
+                {"title": "缺失 Skill", "lines": list(summary.missing_skill_ids) or ["（无缺失）"]},
+                {"title": "节点", "lines": [
+                    f"{node.node_id} → {node.skill_id}" for node in dag.nodes
+                ] or ["（无节点）"]},
+                {"title": "连线", "lines": [
+                    f"{edge.edge_id}：{edge.from_node} → {edge.to_node}" for edge in dag.edges
+                ] or ["（无连线）"]},
+            ]},
+            text_kinds={"sections": "data"},
+            title=f"{summary.name} · 模板预览",
+        ))
+
+    def _studio_template_fork_envelope(self, face: Any, body: dict[str, Any]) -> ResultEnvelope:
+        template_id = str(_required(body, "template_id"))
+        if face.open_template is None:
+            return ResultEnvelope.unavailable(
+                "未接入画布会话面，fork 后无法开画布（装配归生产入口）", last_updated_at=_now()
+            )
+        view = face.open_template(template_id)
+        return ResultEnvelope.ok({
+            "session_key": view.proposal_id,
+            "base": view.base,
+            "flow_id": view.flow_id,
+            "node_count": view.node_count,
+            "violations": list(view.violations),
+        })
+
+    def _studio_trials_parts(self, face: Any, flow_id: str, a: str, b: str) -> dict[str, Any]:
+        history = face.trials.history
+        records = (
+            tuple(history.list_for_flow(flow_id)) if flow_id else tuple(history.list_all())
+        )
+        diff = None
+        if a and b:
+            diff = history.compare(a, b)
+        return {
+            "trials": envelope_payload(
+                ResultEnvelope.empty(
+                    f"工作流 {flow_id!r} 还没有试跑记录——在调试控制台起跑一次即留痕"
+                    if flow_id else "还没有任何试跑记录"
+                ) if not records else ResultEnvelope.ok(self._gated_description(
+                    "table",
+                    slots=table_slots(
+                        (
+                            Column("trial_id", "试跑标识"),
+                            Column("flow_id", "工作流"),
+                            Column("status", "状态"),
+                            Column("steps", "步数", "number", digits=0),
+                            Column("started_at", "起跑时刻"),
+                            Column("finished_at", "结束时刻"),
+                        ),
+                        [_trial_row(record) for record in records],
+                    ),
+                    text_kinds=table_text_kinds(),
+                    title="试跑历史",
+                )),
+            ),
+            "diff": self._trial_diff_segment(diff),
+        }
+
+    def _studio_trial_parts(self, face: Any, body: dict[str, Any]) -> dict[str, Any]:
+        action = str(_required(body, "action"))
+        if action == "start":
+            flow_id = str(_required(body, "flow_id"))
+            dag = face.workflows.get(flow_id)
+            trial = face.trials.start(dag, _mapping(body.get("values"), "values", allow_none=True))
+            face.sessions.put(trial)
+        else:
+            trial_id = str(_required(body, "trial_id"))
+            if not face.sessions.has(trial_id):
+                # 会话表是**进程内**的：重启后旧 id 已无可续跑的活对象——如实说，不冒充。
+                reason = (
+                    f"试跑 {trial_id!r} 不在本进程的会话表里（进程重启后试跑会话不保留，"
+                    "须重新起跑；已跑过的留痕仍在试跑历史里）"
+                )
+                return {key: envelope_payload(ResultEnvelope.unavailable(
+                    reason, last_updated_at=_now()
+                )) for key in ("summary", "steps", "trace")}
+            trial = face.sessions.get(trial_id)
+            _drive_trial(trial, action)
+        record = trial.record()
+        return {
+            # 平键（不是描述）：页面要拿它续跑后续动作，靠解析描述文本取 id 是脆的。
+            "trial_id": record.trial_id,
+            "summary": envelope_payload(ResultEnvelope.ok(self._gated_description(
+                "report_card",
+                slots={"sections": _trial_sections(record)},
+                text_kinds={"sections": "data"},
+                title=f"试跑 · {record.trial_id}",
+            ))),
+            "steps": envelope_payload(
+                ResultEnvelope.ok(self._gated_description(
+                    "table",
+                    slots=table_slots(
+                        (
+                            Column("order", "序", "number", digits=0),
+                            Column("node_id", "节点"),
+                            Column("skill_id", "Skill"),
+                            Column("status", "状态"),
+                            Column("duration_ms", "耗时(ms)", "number", digits=0),
+                            Column("sources", "值来源"),
+                            Column("params", "输入快照"),
+                        ),
+                        [_trial_step_row(step) for step in record.steps],
+                    ),
+                    text_kinds=table_text_kinds(),
+                    title="逐节点快照",
+                ))
+            ),
+            "trace": self._described_part(describe_trace(trial.trace, now=_now())),
+        }
+
+    def _diff_segment(self, diff: Any) -> dict[str, Any]:
+        """版本差异一段：未给两版 / 两版一致，都**如实**说明，不摆一张空表。"""
+        if diff is None:
+            return envelope_payload(ResultEnvelope.empty(
+                "未指定对比的两版（`a` 与 `b`），未计算差异"
+            ))
+        if diff.is_empty():
+            return envelope_payload(ResultEnvelope.empty(
+                f"{diff.flow_id_a} 与 {diff.flow_id_b} 逐字段一致（无差异）"
+            ))
+        return envelope_payload(ResultEnvelope.ok(self._gated_description(
+            "report_card",
+            slots={"sections": [
+                {"title": f"差异 · {diff.flow_id_a} → {diff.flow_id_b}", "lines": [
+                    f"新增节点：{'、'.join(diff.added_nodes) or '（无）'}",
+                    f"移除节点：{'、'.join(diff.removed_nodes) or '（无）'}",
+                    f"变化节点：{'、'.join(diff.changed_nodes) or '（无）'}",
+                    f"新增连线：{'、'.join(diff.added_edges) or '（无）'}",
+                    f"移除连线：{'、'.join(diff.removed_edges) or '（无）'}",
+                    f"名称变更：{'是' if diff.name_changed else '否'}",
+                    f"说明变更：{'是' if diff.description_changed else '否'}",
+                    f"调度变更：{'是' if diff.schedule_changed else '否'}",
+                ]},
+            ]},
+            text_kinds={"sections": "data"},
+            title="版本差异",
+        )))
+
+    def _trial_diff_segment(self, diff: Any) -> dict[str, Any]:
+        """两次试跑的逐节点输出差异（[03 §4]「历史对比」）；未给两次即如实说明。"""
+        if diff is None:
+            return envelope_payload(ResultEnvelope.empty(
+                "未指定对比的两次试跑（`a` 与 `b`），未计算差异"
+            ))
+        if diff.is_empty():
+            return envelope_payload(ResultEnvelope.empty(
+                f"{diff.trial_id_a} 与 {diff.trial_id_b} 逐节点输出一致（无差异）"
+            ))
+        return envelope_payload(ResultEnvelope.ok(self._gated_description(
+            "report_card",
+            slots={"sections": [
+                {"title": f"差异 · {diff.trial_id_a} → {diff.trial_id_b}", "lines": [
+                    f"新增节点：{'、'.join(diff.added_nodes) or '（无）'}",
+                    f"消失节点：{'、'.join(diff.removed_nodes) or '（无）'}",
+                    f"输出不同：{'、'.join(diff.changed_nodes) or '（无）'}",
+                ]},
+            ]},
+            text_kinds={"sections": "data"},
+            title="试跑对比",
+        )))
+
     # ───────────────────── 工作区（[T-UI-013]） ─────────────────────
     # 钉住物的持久承载面（[05 §6]）。读面回的是**描述序列**——[01 §5] 允许工作区的 `data`
     # 为描述序列，[01 §12] 同批写明「工作区是**承载页**、钉住物按其**自身型**渲染」，
@@ -3405,6 +4948,7 @@ def build_ui(
     deliberation: Any = None,
     delivery: Any = None,
     settings: Any = None,
+    studio: Any = None,
     commands: Any = None,
     restart_gate: RestartGate | None = None,
 ) -> UiApp:
@@ -3415,7 +4959,7 @@ def build_ui(
 
     ``chat`` / ``reflection`` / ``eco`` / ``memory``：M1–M4 的四个**鸭子端口**；``workspace`` /
     ``skills`` / ``mcp`` / ``graph`` / ``deliberation`` / ``delivery`` / ``settings``：M6 的
-    七个（[`T-UI-011.1`]）；``commands``：快捷指令注册表（[`T-UI-012.1`]）。全部缺省
+    七个（[`T-UI-011.1`]）；``studio``：L1 Studio 面（[`T-UI-015.3`]）；``commands``：快捷指令注册表（[`T-UI-012.1`]）。全部缺省
     ``None`` ⇒ 对应面 fail-closed（`ui` 不 import `st_agent.app`，只经端口消费）。
 
     ``restart_gate``：见 :class:`RestartGate`；缺省新建一枚。集成套件可注入同一实例，
@@ -3442,6 +4986,7 @@ def build_ui(
         deliberation=deliberation,
         delivery=delivery,
         settings=settings,
+        studio=studio,
         commands=commands,
         restart_gate=restart_gate if restart_gate is not None else RestartGate(),
     )

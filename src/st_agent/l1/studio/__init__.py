@@ -28,6 +28,7 @@ from st_agent.l1.studio.draft import (
     DraftStatus,
     RejectResult,
     WorkflowDraft,
+    draft_from_dag,
 )
 from st_agent.l1.studio.empty_state import (
     STUDIO_ONE_LINE_ENTRY,
@@ -69,6 +70,7 @@ __all__ = [
     "TemplateLibrary",
     "TemplateSummary",
     "WorkflowDraft",
+    "draft_from_dag",
     "slugify",
     "studio_empty_state",
     "workflow_base",

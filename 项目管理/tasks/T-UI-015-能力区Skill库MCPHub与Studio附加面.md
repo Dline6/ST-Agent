@@ -7,13 +7,15 @@ arch: ../../docs/技术架构-v2/03-L1-能力底座-Skills与MCP.md
 arch_link: "[03 L1 能力底座](../../docs/技术架构-v2/03-L1-能力底座-Skills与MCP.md)"
 priority: P1
 milestone: M6
-depends_on: [T-UI-011]
-status: todo
-decisions: [D-103]
+depends_on: [T-UI-005, T-UI-011]
+status: done
+decisions: [D-103, D-117]
 verify:
 ---
 
 # T-UI-015 · 能力区：Skill 库、MCP Hub 与 Studio 附加面
+
+> **分组节点**（[D-117](../决策日志.md) ①，2026-10-11 拆分）：交付由 [`.1`](T-UI-015.1-Skill库浏览详情参数与执行日志.md)（Skill 库浏览 / 详情 / 参数配置 / 执行日志）· [`.2`](T-UI-015.2-MCPHub服务器与权限确认.md)（MCP Hub）· [`.3`](T-UI-015.3-Studio附加面与工作流调试.md)（Studio 附加面）三叶承接——本文件保留原立项的屏清单与验收，供父节点状态派生（[检查 7](../tools/verify_docs.py)）。
 
 > **M6 七面功能叶之一**（[D-103](../决策日志.md)）。补上 [11-sitemap §2 能力](../../docs/PRD-v2-Agent/11-sitemap.md)——四 story 归并的能力区是 IA 里**最大的一区**（22 条屏），现前端只覆盖 Studio 主画布（[`T-UI-005`](done/M5/T-UI-005-Studio画布页.md)）与 ECO 四页（导入校验 / 官方索引 / 来源追溯 / 越界警示）。
 
@@ -72,4 +74,4 @@ verify:
 
 ## 备注
 
-范围套件同 [`T-UI-012`](T-UI-012-Chat主界面对话流与生成式UI宿主.md)。**拆分触发**：本叶跨 story-02 / 06 / 08 三个契约面、屏数约 15 条，**必然触发**——④ 对齐时按「Skill 库与详情 / MCP Hub / Studio 附加面」转分组节点拆三叶。
+范围套件同 [`T-UI-012`](T-UI-012-Chat主界面对话流与生成式UI宿主.md)。**拆分已落地**（[D-117](../决策日志.md) ①，2026-10-11 经负责人拍定）——本叶跨 story-02 / 06 / 08 三个契约面、屏数约 15 条，GWT 远超 5，已按「Skill 库与详情 / MCP Hub / Studio 附加面」拆为 [`.1`](T-UI-015.1-Skill库浏览详情参数与执行日志.md) / [`.2`](T-UI-015.2-MCPHub服务器与权限确认.md) / [`.3`](T-UI-015.3-Studio附加面与工作流调试.md) 三叶**同批连做**。另三处拍定：② **Studio 调试控制台做真试跑**（`WorkflowTrial` 步进 + `TrialHistory` 对比，满足 story-06 GWT-5 全文）；③ **Skill 执行日志取数口＝新增 `execution_log` 分区 `skill-run/` 前缀的列表读面**（不改 L1 落盘口径、不新开分区）；④ **story-06 的「导入导出对话框」视为 `/eco` 已交付**（[`T-UI-004.4`](done/M4/T-UI-004.4-生态面表现层入口.md) 含 `.stskill` / `.stflow` 导出与隐私过滤），本批不重造。
