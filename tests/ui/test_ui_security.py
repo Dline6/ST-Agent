@@ -41,6 +41,44 @@ def test_rejects_foreign_host() -> None:
     assert verdict.status == 403
 
 
+def test_accepts_localhost_as_the_other_loopback_spelling() -> None:
+    """回环有两种写法（[D-113]）：用户敲 `localhost` 与内部拼 `127.0.0.1` 是同一件事。"""
+    headers = {
+        "Host": f"localhost:{_PORT}",
+        TOKEN_HEADER: _TOKEN,
+        "Origin": f"http://localhost:{_PORT}",
+    }
+    assert _guard().check(headers).allowed
+    assert _guard().check(headers, require_token=False).allowed
+
+
+def test_binding_localhost_admits_the_numeric_loopback() -> None:
+    """反向亦然：绑 `localhost` 时 `127.0.0.1` 同属该回环面。"""
+    guard = RequestGuard(token=_TOKEN, host="localhost", port=_PORT)
+    assert guard.check({"Host": f"{_HOST}:{_PORT}", TOKEN_HEADER: _TOKEN}).allowed
+
+
+def test_rejects_loopback_alias_with_a_wrong_port() -> None:
+    """端口仍是判据的一部分——别名配错端口不得放行。"""
+    assert _guard().check({"Host": f"localhost:{_PORT + 1}", TOKEN_HEADER: _TOKEN}).status == 403
+    assert _guard().check(
+        {"Host": f"{_HOST}:{_PORT}", TOKEN_HEADER: _TOKEN, "Origin": f"http://localhost:{_PORT + 1}"}
+    ).status == 403
+
+
+def test_rejects_host_that_merely_starts_with_a_loopback_name() -> None:
+    """允许集是**整串精确匹配**，不是前缀——攻击者可控的 `localhost.evil.example` 不得溜过。"""
+    for host in (f"localhost.evil.example:{_PORT}", f"127.0.0.1.evil.example:{_PORT}"):
+        assert _guard().check({"Host": host, TOKEN_HEADER: _TOKEN}).status == 403
+
+
+def test_non_loopback_binding_does_not_admit_localhost() -> None:
+    """绑 LAN 地址时 `localhost` 不得被自动放行——允许集的扩张以「绑定名本身是回环」为前提。"""
+    guard = RequestGuard(token=_TOKEN, host="192.168.1.5", port=_PORT)
+    assert guard.check({"Host": f"192.168.1.5:{_PORT}", TOKEN_HEADER: _TOKEN}).allowed
+    assert guard.check({"Host": f"localhost:{_PORT}", TOKEN_HEADER: _TOKEN}).status == 403
+
+
 def test_rejects_foreign_origin() -> None:
     headers = {
         "Host": f"{_HOST}:{_PORT}",
