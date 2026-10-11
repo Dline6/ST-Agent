@@ -12,7 +12,10 @@
 [01 §6](../../../docs/技术架构-v2/01-平台共享契约.md) 执行点 2，或方向判定端口异常）；
 ``AgentRuntimeValidationError`` 收自主查证循环的被拒入参（上界取值非法 / 工作上下文
 预算非法 / 工具条目或步骤形态坏）；``AgentRunNotFoundError`` 收留痕寻址失败
-（按 ``agent_run_id`` 取不到循环记录）。
+（按 ``agent_run_id`` 取不到循环记录）；``WorkspaceValidationError`` 收钉住请求被拒
+（描述不合 [01 §12](../../../docs/技术架构-v2/01-平台共享契约.md)，或重解析来源面键
+不在枚举内）；``WorkspacePinNotFoundError`` 收钉住物寻址失败
+（按 ``description_id`` 取不到钉住项，[05 §6](../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
 """
 
 __all__ = [
@@ -25,6 +28,8 @@ __all__ = [
     "L3Error",
     "SessionNotFoundError",
     "SessionValidationError",
+    "WorkspacePinNotFoundError",
+    "WorkspaceValidationError",
 ]
 
 
@@ -107,4 +112,17 @@ class AgentRuntimeValidationError(L3Error, ValueError):
 
 class AgentRunNotFoundError(L3Error, KeyError):
     """按 ``agent_run_id`` 取不到循环留痕（寻址失败）。"""
+
+
+class WorkspaceValidationError(L3Error, ValueError):
+    """钉住请求被拒（[05 §6](../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+
+    两类来源：① 请求里的描述不合 [01 §12](../../../docs/技术架构-v2/01-平台共享契约.md)
+    （形态 / 槽值 / `text_kinds` 逐槽标注）；② 重解析来源面键不在枚举内——**键是枚举值
+    不是 URL**（[01 §12](../../../docs/技术架构-v2/01-平台共享契约.md) 的「动作不进描述」）。
+    """
+
+
+class WorkspacePinNotFoundError(L3Error, KeyError):
+    """按 ``description_id`` 取不到钉住项（寻址失败；[01 §1] 的该 id 即钉住后的寻址单位）。"""
 

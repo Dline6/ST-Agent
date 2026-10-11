@@ -274,19 +274,23 @@ def test_nav_lists_exactly_the_partition_roots() -> None:
 
 
 def test_new_pages_have_no_render_yet() -> None:
-    """六条新页面里**尚未交付内容者不挂 `render`**——其首屏走六态可用性探针（不冒充业务内容）。
+    """新页面里**尚未交付内容者不挂 `render`**——其首屏走六态可用性探针（不冒充业务内容）。
 
     [`T-UI-016.1`] 起 `/deliberation` 已挂上 `render`（推理区页面交付），[`T-UI-018.1`] 起
-    `/settings` 亦已挂上（设置区交付），故本断言由六条收为四条；余下四条（`/workspace` ·
-    `/skills` · `/mcp` · `/delivery`）在各自功能叶落地时同批移出本集合。
+    `/settings` 亦已挂上（设置区交付），[`T-UI-013`] 起 `/workspace` 亦已挂上（工作区交付），
+    故本断言由六条收为三条；余下三条（`/skills` · `/mcp` · `/delivery`）在各自功能叶落地时
+    同批移出本集合。
     """
     blocks = dict(_frontend_entries())
     assert len(blocks) == len(_frontend_entries()), "登记表里有重复路径"
-    pending_paths = {"/workspace", "/skills", "/mcp", "/delivery"}
+    pending_paths = {"/skills", "/mcp", "/delivery"}
     declared = {"/workspace", "/skills", "/mcp", "/deliberation", "/delivery", "/settings"}
     assert declared <= set(blocks), f"未登记的声明路径：{sorted(declared - set(blocks))}"
     for path in sorted(pending_paths):
         assert "render:" not in blocks[path], f"{path} 本批不应挂 render（内容归七面功能叶）"
+    assert "render:" in blocks["/workspace"], (
+        "/workspace 已由 T-UI-013 交付页面（挂 render）；若回退成探针页，本断言会拦住"
+    )
     assert "render:" in blocks["/deliberation"], (
         "/deliberation 已由 T-UI-016.1 交付页面（挂 render）；若回退成探针页，本断言会拦住"
     )

@@ -3,13 +3,17 @@
 // 四件事（[T-UI-012.1] / [.2] / [.3]）：
 //   ① 对话流：输入走 `POST /api/chat`，回复信封经**既有** `renderEnvelope`（六态 chrome +
 //      组件注册表）进流；`session_id` 在页面生命周期内保持，后续轮续同一会话（05 §1）。
-//   ② 上下文卡片：经 `GET /api/chat/context` 取 `context_card` 描述，交既有渲染件（05 §2）。
+//   ② 上下文卡片：经 `GET /api/chat/context` 取 `context_card` 描述，交既有渲染件（05 §2）；
+//      卡片旁挂**同一枚**「钉到工作区」动作——它是本期唯一有只读重解析来源的型，故工作区的
+//      「刷新」由这条路真跑通（见 [`T-UI-013`]）。
 //   ③ 澄清追问 / 意图确认卡：都是「对话流内面」（11-sitemap §2.1：持 ResultEnvelope 而无
 //      component_type），故按 `clarification` / `reply.data` 内含的契约对象**内联**呈现，
 //      **不走**组件注册表；问句文本与理解条目一律取自后端，本页不杜撰。
 //   ④ 生成式 UI 宿主：回复里的 `description` 信封（UiDescription）交 `renderEnvelope` 按注册表
 //      渲染；未登记 / 未实现型由 `render.js` 走**显式降级**（不执行描述、不猜测、不静默丢弃）。
-//      「钉」入口是**容器动作**（01 §12：动作不进描述），本页只出入口、落点归 [`T-UI-013`]；
+//      「钉」入口是**容器动作**（01 §12：动作不进描述）——本页只出入口，**落点**（落盘 +
+//      读面 + 刷新 / 下钻 / 取消钉住）归 [`T-UI-013`] 的 `/workspace`，故点击即发
+//      `POST /api/workspace/pin` 并把结果**如实**回给用户（不伪造、不静默 no-op）；
 //      「推理链」入口由 [`T-UI-016.3`] 接通——链随 `/api/chat` 响应内联（`traces` 键），
 //      展开面板复用 `trace_timeline`（[11-sitemap §3.3] 的跨页复用件）。
 //
@@ -18,10 +22,6 @@
 
 import { getJson, postJson } from '../api.js';
 import { renderEnvelope } from '../render.js';
-
-// 「钉」的落点归属（本页只出入口，落点归 [`T-UI-013`]）——点击即**显式**告知未接入 + 点名，
-// **不**伪造执行、**不**静默 no-op（铁律：不静默失败）。
-const PIN_OWNER = 'T-UI-013';
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -161,14 +161,27 @@ export async function renderChatPage(page, mount) {
   await loadCommands(state);
 }
 
+/** ② 上下文卡片：取 `context_card` 描述交既有渲染件（[05 §2]）。
+ *
+ * 卡片旁挂**同一枚**「钉到工作区」动作（同一回环路由、同一落点）。理由：上下文卡片本身
+ * 就是一份经注册表渲染的 UI 描述，且它是本期**唯一**有只读重解析来源（`chat.context`）的
+ * 型——「钉」在这里，「刷新」才真能跑通，而不只是「钉得住但刷不动」。
+ */
 async function loadContext(body) {
+  let payload;
   try {
-    renderEnvelope(await getJson('/api/chat/context'), body);
+    payload = await getJson('/api/chat/context');
   } catch (error) {
     body.replaceChildren(
       el('p', 'state state--error', `无法取上下文卡片：${error.message}`),
     );
+    return;
   }
+  renderEnvelope(payload, body);
+  if (payload.status !== 'ok') return;
+  const actions = el('div', 'chat__actions');
+  actions.append(pinButton(payload));
+  body.append(actions);
 }
 
 async function loadCommands(state) {
@@ -294,11 +307,11 @@ function descriptionNode(envelope, traces) {
   return box;
 }
 
-/** 容器动作：钉住入口（落点归 `T-UI-013`）与推理链入口（[T-UI-016.3] 已接通）。 */
+/** 容器动作：钉住入口（[`T-UI-013`] 的落点，本页只出入口）与推理链入口（[`T-UI-016.3`] 已接通）。 */
 function containerActions(envelope, traces) {
   const wrapper = el('div', 'chat__container-actions');
   const bar = el('div', 'chat__actions');
-  bar.append(actionButton('钉到工作区', PIN_OWNER));
+  bar.append(pinButton(envelope));
 
   const panel = el('div', 'chat__trace-panel');
   panel.hidden = true;
@@ -359,17 +372,37 @@ function lensNameMap(envelope) {
   return map;
 }
 
-function actionButton(label, owner) {
-  const button = el('button', 'chat__action', label);
+/** 「钉到工作区」入口（[`T-UI-013`]）：把这一轮的生成式 UI 描述原样交给工作区落盘。
+ *
+ * **动作不进描述**（[01 §12]）——按钮由本渲染件发固定回环路由的写请求，描述里既没有 URL
+ * 也没有方法。结果**如实**回给用户：没可钉的生成物、服务端拒收、服务不可达，三态各说各话。
+ */
+function pinButton(envelope) {
+  const button = el('button', 'chat__action', '钉到工作区');
   button.type = 'button';
-  button.addEventListener('click', () => {
+  button.addEventListener('click', async () => {
     const bar = button.parentElement;
     let note = bar.querySelector('.chat__action-note');
     if (!note) {
       note = el('p', 'chat__action-note');
       bar.append(note);
     }
-    note.textContent = `尚未接入：该动作归 ${owner} 落地。`;
+    if (!envelope || envelope.status !== 'ok' || !envelope.data) {
+      note.textContent = '本回复不含生成式 UI 描述，没有可钉住的组件。';
+      return;
+    }
+    button.disabled = true;
+    note.textContent = '正在钉到工作区…';
+    try {
+      const payload = await postJson('/api/workspace/pin', { description: envelope.data });
+      note.textContent = payload.status === 'ok'
+        ? '已钉到工作区：在「工作区」页可刷新 / 下钻 / 取消钉住。'
+        : `钉住未完成：${payload.reason || payload.status}`;
+    } catch (error) {
+      note.textContent = `钉住失败：${error.message}`;
+    } finally {
+      button.disabled = false;
+    }
   });
   return button;
 }

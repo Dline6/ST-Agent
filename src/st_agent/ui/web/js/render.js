@@ -67,29 +67,52 @@ function degraded(description) {
   return box;
 }
 
-/** 渲染 `ok` 载荷：是 UI 描述就查注册表，否则按普通数据展示。 */
-function renderPayload(data, mount) {
-  if (data === null || typeof data !== 'object' || !data.component_type) {
-    const pre = el('pre', 'payload');
-    pre.textContent = JSON.stringify(data, null, 2);
-    mount.append(pre);
-    return;
-  }
+function isDescription(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Boolean(value.component_type);
+}
 
-  const renderer = rendererFor(data.component_type);
+/** 渲染**一份**描述：查注册表取渲染件；未登记 / 未实现型走显式降级。
+ *
+ * 导出给「一页多件」的承载面用（工作区：钉住物各按其自身型渲染，且每件要挂自己的
+ * 动作行）——`renderPayload` 与它是**同一条**渲染路径，不另造第二条。
+ */
+export function renderDescription(description, mount) {
+  const renderer = rendererFor(description.component_type);
   if (!renderer) {
-    mount.append(degraded(data));
+    mount.append(degraded(description));
     return;
   }
 
   const body = el('div', 'component');
   try {
-    renderer(data, body);
+    renderer(description, body);
   } catch (error) {
     mount.append(el('p', 'state state--error', `组件渲染失败：${error.message}`));
     return;
   }
   mount.append(body);
+}
+
+/** 渲染 `ok` 载荷：一份描述 / **描述序列**（[01 §5]：工作区的 `data` 可为序列）/
+ *  都不是时按普通数据展示。
+ *
+ * 序列的判据是「**每一项**都是描述」——[01 §5] 只对工作区那类承载页说了「可为描述序列」，
+ * 别的数组载荷（如 dev 示例的 lens id 列表）仍按数据直陈，免得把普通数组硬说成坏描述。
+ */
+function renderPayload(data, mount) {
+  if (Array.isArray(data) && data.length && data.every(isDescription)) {
+    for (const item of data) renderDescription(item, mount);
+    return;
+  }
+
+  if (!isDescription(data)) {
+    const pre = el('pre', 'payload');
+    pre.textContent = JSON.stringify(data, null, 2);
+    mount.append(pre);
+    return;
+  }
+  renderDescription(data, mount);
 }
 
 /** 把一个信封渲染进 `mount`（替换其全部子节点）。
