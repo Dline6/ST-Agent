@@ -15,13 +15,25 @@ import logging
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 from st_agent import __version__
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.ui_description import UiDescription, checked_description, new_description_id
+from st_agent.l0.backup.errors import (
+    BackupAuthError,
+    BackupCorruptedError,
+    BackupVersionError,
+    RetentionError,
+    WipeConfirmationError,
+)
+from st_agent.l0.storage.errors import (
+    CryptoError,
+    StorageCorruptionError,
+    StorageOpenError,
+)
 from st_agent.l3.render.describe import STANCE_LABELS, describe_divergence_map, describe_trace
 from st_agent.l4.errors import BuiltinLensError, LensNotFoundError
 
@@ -402,6 +414,362 @@ def _fmt_value(value: Any) -> str:
     return str(value)
 
 
+# ───────────────────── 设置区的纯函数（[T-UI-018]） ─────────────────────
+
+_STATE_LABELS = {
+    "ok": "正常", "corrupted": "损坏", "missing": "缺失", "locked": "未解锁",
+}
+"""分区状态 → 中性中文（`StorageState.state` 的取值面）。"""
+
+_KIND_LABELS = {
+    "cloud": "云端", "local": "本地推理",
+    "llm": "LLM 调用", "market_fetch": "行情抓取", "info_fetch": "信息面抓取",
+    "channel_delivery": "渠道投递", "mcp_remote": "远程 MCP", "index_browse": "官方索引浏览",
+    "cancelled": "已取消",
+}
+"""两份取值面共用一张表：端点 `kind`（cloud / local）与出网请求类目（`NetworkRequestKind`）。"""
+
+_STATUS_LABELS = {
+    "ok": "完成", "unavailable": "不可用", "failed": "失败", "cancelled": "已取消",
+}
+"""出网结果 / 六态 → 中性中文。"""
+
+_RETENTION_OPTIONS = {
+    "retention.chat_history_days": (30, 90, 180, 365, 730),
+    "retention.execution_log_days": (7, 30, 90, 180, 365),
+}
+"""留存两旋钮的候选值（页面给的是**预设档位**，不是任意整数——[02 §9] 未定默认值以外
+的自由度，故页面上以档位选取、避免手输造成的口径漂移）。"""
+
+_MAX_WINDOW_HOURS = 24 * 30
+"""网络活动窗口的防跑飞上限（30 天）。"""
+
+
+def _retention_option_labels() -> dict[str, str]:
+    """候选值 → 展示文案（`setting_panel` 的 `labels` 槽按值键取）。"""
+    return {str(days): f"{days} 天" for days in _RETENTION_OPTIONS["retention.chat_history_days"]} | {
+        str(days): f"{days} 天" for days in _RETENTION_OPTIONS["retention.execution_log_days"]
+    }
+
+
+def _switch_entries(registry: Any, prefix: str) -> list[dict[str, Any]]:
+    """把 ``prefix`` 下的布尔条目摆成 `setting_panel` 的 entries（**动作即取值**）。
+
+    布尔条目不走 `options`：`<select>` 的值**恒为字符串**（`"true"` / `"false"`），
+    落值面要求的是布尔——用两个动作（`enable` / `disable`）表达取值，字符串这层绕开。
+    当前值取条目的 `default`（各族的 `entries()` 已把**当前值**放在该字段）。
+    """
+    entries = [entry for entry in registry.list() if entry.config_id.startswith(prefix)]
+    out: list[dict[str, Any]] = []
+    for entry in sorted(entries, key=lambda e: e.config_id):
+        enabled = bool(entry.default)
+        out.append({
+            "config_id": entry.config_id,
+            "params": {"config_id": entry.config_id},
+            "identifier": entry.display_name,
+            "current": "启用" if enabled else "停用",
+            "options": [],
+            "actions": ["enable", "disable"],
+            "description": entry.panel_form_spec.help_text,
+        })
+    return out
+
+
+def _privacy_entries(registry: Any) -> list[dict[str, Any]]:
+    """隐私页的两条族（留存策略 + 出网审计）摆成同一张 entries 表。"""
+    out: list[dict[str, Any]] = []
+    for config_id, options in _RETENTION_OPTIONS.items():
+        entry = registry.entry(config_id)
+        if entry is None:
+            continue
+        out.append({
+            "config_id": config_id,
+            "params": {"config_id": config_id},
+            "identifier": entry.display_name,
+            "current": entry.default,
+            "options": [{"value": value} for value in options],
+            "actions": ["set"],
+            "description": entry.panel_form_spec.help_text,
+        })
+    audit = registry.entry("net-audit/enabled")
+    if audit is not None:
+        enabled = bool(audit.default)
+        out.append({
+            "config_id": audit.config_id,
+            "params": {"config_id": audit.config_id},
+            "identifier": audit.display_name,
+            "current": "已开启" if enabled else "已关闭",
+            "options": [],
+            "actions": ["enable", "disable"],
+            "description": audit.panel_form_spec.help_text,
+            "note": "关闭时仍有旧记录可查；「待补发」一类查询走显式不可用，不静默返回空集",
+        })
+    return out
+
+
+def _provider_entries(registry: Any) -> list[dict[str, Any]]:
+    """`llm-provider-host/` 的逐提供方主机映射。
+
+    该族的 `panel_form_spec.widget` 是 **`text`**（主机名不预先枚举），故条目给
+    `input: "text"`——`setting_panel` 据此出**自由文本输入**。值域仍由 owner
+    （:class:`~st_agent.l1.sandbox.provider_hosts.ProviderHostRegistry`）校验，
+    前端不替它枚举候选，也不替它判合法性。
+    """
+    entries = [
+        entry for entry in registry.list()
+        if entry.config_id.startswith("llm-provider-host/")
+    ]
+    out: list[dict[str, Any]] = []
+    for entry in sorted(entries, key=lambda e: e.config_id):
+        out.append({
+            "config_id": entry.config_id,
+            "params": {"config_id": entry.config_id},
+            "identifier": entry.display_name,
+            "current": entry.default,
+            "options": [],
+            "input": "text",
+            "actions": ["set"],
+            "description": entry.panel_form_spec.help_text,
+        })
+    return out
+
+
+def _credential_row(view: Any, vault: Any) -> dict[str, Any]:
+    """一条凭据 → `table` 一行（**只取掩码视图**，明文永不进描述）。"""
+    uses = ()
+    try:
+        uses = vault.query_usage(view.credential_id)
+    except Exception:  # noqa: BLE001 —— 使用记录读不到不该拖垮整张表
+        uses = ()
+    last = max((record.timestamp for record in uses), default=None) if uses else None
+    return {
+        "credential_id": view.credential_id,
+        "kind": view.kind,
+        "label": view.label or "—",
+        "masked": view.masked,
+        "version": view.version,
+        "updated_at": _stamp(view.updated_at),
+        "usage_count": len(uses),
+        "last_used_at": _stamp(last) if last is not None else "（未使用）",
+    }
+
+
+def _capability_lines(records: Any, empty: str) -> list[str]:
+    """能力声明逐条成行（`display_name` + 降级标注）；空集给中性占位而非留白。"""
+    lines = []
+    for record in records:
+        note = str(getattr(record, "degrade_note", "") or "")
+        lines.append(f"{record.display_name}——{note}" if note else str(record.display_name))
+    return lines or [empty]
+
+
+def _capability_text(capability: Any) -> str:
+    """端点能力 → 一行摘要（取不到即「—」，不臆造能力）。"""
+    if capability is None:
+        return "—"
+    parts = []
+    if getattr(capability, "supports_function_calling", None) is not None:
+        parts.append("工具调用" if capability.supports_function_calling else "无工具调用")
+    if getattr(capability, "supports_streaming", None) is not None:
+        parts.append("流式" if capability.supports_streaming else "非流式")
+    tokens = getattr(capability, "max_context_tokens", None)
+    if tokens:
+        parts.append(f"上下文 {tokens}")
+    return " · ".join(parts) or "—"
+
+
+def _mode_line(mode: str) -> str:
+    """落盘格式 → 中性说明（02 §2.2：加密是**可选项**、默认关；凭据恒加密）。"""
+    if mode == "plain":
+        return "明文落盘（免口令）——凭据分区仍恒加密，访问凭据时才要求口令"
+    if mode == "encrypted":
+        return "加密落盘——密钥由主密码派生；主密码丢失即不可恢复（无产品方恢复通道）"
+    return f"未知格式：{mode or '（缺）'}"
+
+
+def _store_errors(call: Callable[[], Any]) -> Any:
+    """跑一次 L0 存储写面调用，把它的异常翻成**六态**（[01 §5]；`_call_face` 只认 `ValueError`）。
+
+    备份族（`BackupError`）与存储族（`StorageError`）抛的**都不是** `ValueError`；不翻译，
+    「密码打错了」「确认不足」就会被当成未预期失败报成 `failed`——既不准确，也让用户以为
+    工具坏了。故此处按语义分两路：
+
+    - **输入类**（密码错 / 版本不兼容 / 确认不足 / 留存取值非法 / 目标格式非法）
+      ⇒ `validation_failed`；
+    - **完整性类**（归档损坏、分区损坏、加解密失败）⇒ `failed` + `log_ref`（真失败，要能查）。
+
+    成功时原样返回被调方的结果。
+    """
+    try:
+        return call()
+    except (BackupAuthError, BackupVersionError, WipeConfirmationError, RetentionError,
+            StorageOpenError) as exc:
+        return ResultEnvelope.validation_failed(str(exc))
+    except (BackupCorruptedError, CryptoError, StorageCorruptionError) as exc:
+        log_ref = f"ui/settings-store-{uuid.uuid4().hex[:12]}"
+        _LOG.warning("存储写面完整性失败（log_ref=%s）：%s", log_ref, exc)
+        return ResultEnvelope.failed(str(exc), log_ref=log_ref)
+
+
+def _bytes_text(size: int) -> str:
+    """字节数 → 人可读（二进制档位；口径固定，便于逐次比对）。"""
+    value = float(size)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if value < 1024 or unit == "TiB":
+            return f"{value:.0f} {unit}" if unit == "B" else f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TiB"
+
+
+def _window_start(hours: Any) -> datetime:
+    """网络活动窗口起点（缺省 24 小时；非正整数 / 超上限即拒——不静默夹取）。"""
+    raw = str(hours or "").strip()
+    if not raw:
+        span = 24
+    elif raw.isdigit() and int(raw) > 0:
+        span = int(raw)
+    else:
+        raise ValueError(f"窗口须为正整数小时：{hours!r}")
+    if span > _MAX_WINDOW_HOURS:
+        raise ValueError(f"窗口不得超过 {_MAX_WINDOW_HOURS} 小时（{raw}）")
+    return _now() - timedelta(hours=span)
+
+
+def _window_text(hours: Any) -> str:
+    span = str(hours or "").strip() or "24"
+    return f"过去 {span} 小时"
+
+
+def _stamp(value: Any, *, compact: bool = False) -> str:
+    """时刻 → 文本（缺值给「—」；`compact` 用于文件名，去掉分隔符）。"""
+    if value is None:
+        return "—"
+    text = value.isoformat() if hasattr(value, "isoformat") else str(value)
+    if not compact:
+        return text
+    return "".join(ch for ch in text if ch.isalnum())
+
+
+def _coerce_value(entry: Any, value: Any) -> Any:
+    """表单回传值 → 该条目的声明类型（[01 §7] 的 `value_schema` 是唯一判据）。
+
+    `<select>` / `<input>` 的值**恒为字符串**，而落值面按声明类型校验（布尔 / 整数）。
+    这里按 `value_schema.type` 就地还原；还原不了即抛——**不猜测、不静默透传**。
+    """
+    declared = (getattr(entry, "value_schema", None) or {}).get("type")
+    if declared == "boolean":
+        if isinstance(value, bool):
+            return value
+        text = str(value).strip().lower()
+        if text in ("true", "false"):
+            return text == "true"
+        raise ValueError(f"{entry.config_id} 的取值须为布尔：{value!r}")
+    if declared == "number":
+        if isinstance(value, bool):
+            raise ValueError(f"{entry.config_id} 的取值须为数值：{value!r}")
+        if isinstance(value, (int, float)):
+            return int(value)
+        text = str(value).strip()
+        if text.lstrip("+-").isdigit():
+            return int(text)
+        raise ValueError(f"{entry.config_id} 的取值须为整数：{value!r}")
+    return value
+
+
+def _maintenance_slots(kind: str, *, tokens: tuple[str, ...] = ()) -> dict[str, Any]:
+    """备份 / 恢复 / 清空三条**声明**的 `permission_approval_card` 槽。
+
+    逐条、不合并（[01 §10] 的取向）：把「这次要动什么」一条一条列清楚，**不给建议**。
+    清空的第三步把三枚有序令牌如实摆出——那是 L0 的硬门，不是文案。
+    """
+    if kind == "backup":
+        items = [
+            ("backup-memory", "包含：记忆图谱全部分区内容（节点与边）"),
+            ("backup-config", "包含：配置注册表数据、Skill 参数、版本锁"),
+            ("backup-chat", "包含：对话历史（可搜索、可导出 Markdown）"),
+            ("backup-reflection", "包含：反思报告、反馈事件、A/B 实验日志"),
+            ("backup-data-cache", "可选：市场数据缓存（默认不纳入；不纳入时档案型文本在源端失效后不可恢复）"),
+            ("backup-secrets", "不包含：凭据与执行留痕永不进归档（凭据只在本机加密分区内）"),
+        ]
+        key, source = "backup", "本机存储"
+    elif kind == "restore":
+        items = [
+            ("restore-verify", "恢复前校验：归档完整性、主密码、版本兼容性——任一项不过即拒且不写脏数据"),
+            ("restore-overwrite", "覆盖写：归档内的分区整体替换目标根的同名分区；归档外的分区不动"),
+            ("restore-format", "目标格式：新根沿用归档口径（加密）；既有根按其格式标记分派，不擅自改格式"),
+            ("restore-target", "默认目标是当前存储根——覆盖写后须重启进程再继续"),
+        ]
+        key, source = "restore", "备份归档"
+    else:
+        items = [
+            ("wipe-scope", "删除范围：全部分区 + 派生数据 + 缓存 + 日志（存储根整目录）"),
+            ("wipe-confirm", "三次确认：三枚有序令牌须按序集齐，缺一即拒"),
+            ("wipe-outside", "不触碰：备份归档落在存储根之外，由用户自行处理"),
+        ]
+        key, source = "wipe", "本机存储"
+    for index, token in enumerate(tokens, start=1):
+        items.append((f"wipe-token-{index}", f"确认令牌 {index}：{token}"))
+    return {
+        "key": key,
+        "source": source,
+        "items": [
+            {
+                "permission": identifier,
+                "state": "pending",
+                "decided_at": None,
+                "panel_field": {
+                    "widget": "toggle", "label": identifier,
+                    "help_text": "由页面上的确认流程承载；本卡只声明范围",
+                },
+            }
+            for identifier, _text in items
+        ],
+        "labels": {identifier: {"description": text, "chat_text": text}
+                   for identifier, text in items},
+    }
+
+
+def _wipe_tokens(face: Any) -> tuple[str, ...]:
+    """L0 的三枚有序确认令牌（取不到即空——页面据此显式标注，不编造令牌）。"""
+    return tuple(getattr(face.backup, "WIPE_CONFIRM_TOKENS", ()) or ())
+
+
+def _backup_partitions(face: Any) -> tuple[str, ...]:
+    """归档必含分区表（[02 §8.1] 的四分区；取不到即空，不臆造）。"""
+    return tuple(getattr(face.backup, "BACKUP_PARTITIONS", ()) or ())
+
+
+def _default_backup_path(face: Any, root: Path) -> Path:
+    """缺省归档落点：**存储根之外**的同级目录（清空时不会被一并删掉）。"""
+    configured = getattr(face, "backups_dir", None)
+    base = Path(configured) if configured is not None else root.parent / f"{root.name}-backups"
+    return base / f"st-agent-{_stamp(_now(), compact=True)}.stbackup"
+
+
+def _is_inside(target: Path, root: Path) -> bool:
+    """`target` 是否落在 `root` 之内（**先解析再做后代判定**，符号链接也算）。"""
+    try:
+        resolved, base = target.resolve(), root.resolve()
+    except OSError:  # 不存在的路径在 Windows 上可能抛；退回字面比较
+        resolved, base = target.absolute(), root.absolute()
+    return resolved == base or base in resolved.parents
+
+
+@dataclass
+class RestartGate:
+    """破坏性操作（完全清空 / 恢复）之后的**进程级闸门**。
+
+    ``wipe_all`` 直接删掉存储根整目录、``restore_backup`` 覆盖写当前根——两者都让本进程
+    手里的 `Store` **句柄失效**（清单缓存过期，甚至根目录已不存在）。此后的读写要么报错、
+    要么**静默作用于陈旧清单**，后者正是必须防的那一类（[00 §6] 失败显式化）。
+
+    故操作成功后置 :attr:`reason`：:meth:`UiApp._call_face` 据此把**全部**数据面端点回
+    `unavailable` + 该原因，直到用户重启进程。**不假装进程仍健康**。
+    """
+
+    reason: str | None = None
+
+
 @dataclass(frozen=True)
 class UiApp:
     """一次服务进程的装配结果（不可变；由 :func:`build_ui` 构造）。"""
@@ -466,6 +834,13 @@ class UiApp:
 
     settings: Any = None
     """L0 存储 / 配置面；缺省 ``None`` → fail-closed。"""
+
+    restart_gate: RestartGate = field(default_factory=RestartGate)
+    """破坏性操作后的进程级闸门（见 :class:`RestartGate`）。
+
+    ``frozen`` 的 :class:`UiApp` 装的是一枚**可变**持有者——闸门要在端点里被置位，
+    而整个 app 的其余部分不该跟着变。`build_ui` 可注入同一实例供集成套件断言。
+    """
 
     commands: Any = None
     """快捷指令注册表（鸭子端口：``list() -> tuple[QuickCommand, ...]``）；缺省 ``None`` → fail-closed。
@@ -1005,6 +1380,651 @@ class UiApp:
                 )
             )
         return envelope_payload(ResultEnvelope.ok({"face": face, "available": True}))
+
+    # ───────────────────── 设置区（[T-UI-018]） ─────────────────────
+
+    def api_settings_storage(self) -> dict[str, Any]:
+        """设置-存储页：**存储位置与大小** + 落盘格式 + 凭据分区锁定态（[02 §2.1–§2.3]）。
+
+        两段：`summary`（`report_card`：位置 / 格式 / 凭据分区）与 `partitions`（`table`：
+        逐分区状态 / 文件数 / 明文字节数）。用量取自 :meth:`Store.usage`——**未解锁或损坏的
+        分区不谎报为 0**，其 `detail` 与该行的「状态」列一并透出。
+        """
+        return self._settings_parts(
+            "settings-storage", ("store",), ("summary", "partitions"),
+            lambda face: self._storage_parts(face),
+        )
+
+    def api_settings_llm(self) -> dict[str, Any]:
+        """设置-LLM 提供方页：提供方主机映射（`setting_panel`）+ 端点 + 凭据（掩码）。
+
+        三段**并列**，不合并：端点（`EndpointRegistry`）、提供方→主机映射（`llm-provider-host/`
+        的 01 §7 条目，可改值）、凭据（`CredentialVault` 的掩码视图 + 使用记录计数）。
+        **凭据明文永不出站**——页面只拿到 `CredentialView.masked`。
+        """
+        return self._settings_parts(
+            "settings-llm", ("endpoints", "vault"),
+            ("panel", "endpoints", "credentials"),
+            lambda face: self._llm_parts(face),
+        )
+
+    def api_settings_sources(self) -> dict[str, Any]:
+        """设置-数据源页：逐源开关（`setting_panel`，面键 `settings-config`；story-05）。"""
+        return self._settings_parts(
+            "settings-sources", ("config_registry",), ("panel",),
+            lambda face: {"panel": self._part(
+                "setting_panel",
+                slots={
+                    "entries": _switch_entries(face.config_registry, "data-source/"),
+                    "surface": "settings-config",
+                    "labels": {"enable": "启用", "disable": "停用"},
+                },
+                text_kinds={"entries": "data", "surface": "data", "labels": "generated"},
+                title="数据源开关",
+            )},
+        )
+
+    def api_settings_privacy(self) -> dict[str, Any]:
+        """设置-隐私页：数据留存策略 + 出网审计开关（两条都经 [01 §7] 注册表落值）。
+
+        **两条族混在一个面板里**（`retention.*` 与 `net-audit/enabled`）——它们都是
+        「本机的数据边界」旋钮，且落值走**同一条** `/api/settings/apply`（[01 §7] 的统一
+        落值面），故不必拆两面。
+        """
+        return self._settings_parts(
+            "settings-privacy", ("config_registry",), ("panel",),
+            lambda face: {"panel": self._part(
+                "setting_panel",
+                slots={
+                    "entries": _privacy_entries(face.config_registry),
+                    "surface": "settings-config",
+                    "labels": {
+                        "set": "应用", "enable": "开启", "disable": "关闭",
+                        **_retention_option_labels(),
+                    },
+                },
+                text_kinds={"entries": "data", "surface": "data", "labels": "generated"},
+                title="隐私与留存",
+            )},
+        )
+
+    def api_settings_network(self, *, hours: str = "") -> dict[str, Any]:
+        """网络活动面板：过去 N 小时（缺省 24）的出网留痕（`table`）。
+
+        **三态互不混同**（[02 §6]）：审计开启且有记录 ⇒ `ok`；审计开启但窗口内无记录 ⇒
+        `empty` + 原因；**审计未开启 ⇒ `unavailable` + 原因**——不得静默呈现空表被读成
+        「没有请求」。
+        """
+        return self._call_face(
+            "settings-network", self._gateway_face(), "L0 出网网关面",
+            lambda face: self._network_envelope(face, hours),
+        )
+
+    def api_settings_offline(self) -> dict[str, Any]:
+        """离线横幅与三类清单（[02 §7] / [11-sitemap §3.9]）。
+
+        `report_card` 四段并列：离线态 + 三类能力（可用 / 受限 / 不可用）——**受限项带
+        降级标注**（本地替代说明或快照过期），依赖 LLM 的能力由 `cloud-llm` 那条如实写明
+        「断网时不可用；已配置本地推理端点则改用本地端点」。
+        """
+        return self._call_face(
+            "settings-offline", self._gateway_face(), "L0 出网网关面",
+            lambda face: ResultEnvelope.ok(self._offline_description(face)),
+        )
+
+    def api_settings_maintenance(self) -> dict[str, Any]:
+        """维护面：备份 / 恢复 / 清空**三条声明**（各一张 `permission_approval_card`）。
+
+        声明面只讲「这次要动什么」，**不代用户表态**——密码输入与三步确认由页面 chrome
+        承载（先例＝ [`renderEvolutionPage`] 的出厂重置块）。清空的「三次确认」在 L0 是
+        三枚**有序**令牌（`:data:`WIPE_CONFIRM_TOKENS``），此处如实列出。
+        """
+        return self._settings_parts(
+            "settings-backup", ("backup", "store"), ("backup", "restore", "wipe"),
+            lambda face: {
+                "backup": self._part(
+                    "permission_approval_card",
+                    slots=_maintenance_slots("backup"),
+                    text_kinds={"key": "data", "source": "data", "items": "data",
+                                "labels": "generated"},
+                    title="一键备份",
+                ),
+                "restore": self._part(
+                    "permission_approval_card",
+                    slots=_maintenance_slots("restore"),
+                    text_kinds={"key": "data", "source": "data", "items": "data",
+                                "labels": "generated"},
+                    title="恢复",
+                ),
+                "wipe": self._part(
+                    "permission_approval_card",
+                    slots=_maintenance_slots("wipe", tokens=_wipe_tokens(face)),
+                    text_kinds={"key": "data", "source": "data", "items": "data",
+                                "labels": "generated"},
+                    title="完全清空",
+                ),
+            },
+        )
+
+    def api_settings_apply(self, body: dict[str, Any]) -> dict[str, Any]:
+        """应用一条设置——经 [01 §7] 统一落值面生效并留痕（**不旁路写盘**，GWT-2）。
+
+        动作三选一：`set`（取 `value`）/ `enable` / `disable`（布尔条目的两个动作）。
+        表单控件一律以**字符串**回传（`<select>` / `<input>` 的值都是字符串），故此处按
+        条目的 ``value_schema.type`` **就地还原成声明类型**再落值——类型不符即
+        `validation_failed`，不猜测。
+        """
+        return self._call_face(
+            "settings-apply", self.settings, "L0 存储 / 配置面",
+            lambda face: ResultEnvelope.ok(self._apply_config(face, body)),
+        )
+
+    def api_settings_convert(self, body: dict[str, Any]) -> dict[str, Any]:
+        """明密双向转换：**源不动、写新根**（[02 §2.2](../../docs/技术架构-v2/02-L0-本地优先基座.md)）。
+
+        转换**不碰当前存储根**（[`Store.convert`] 收尾整目录 `os.replace` 到目标路径），
+        故本进程的句柄仍然有效、不置闸门——但**切换存储根须重启进程并指向新根**，
+        回报里明说这一点。目标落在当前根之内即拒：那等于把新根写进旧根里。
+        """
+        return self._call_face(
+            "settings-convert", self.settings, "L0 存储 / 配置面",
+            lambda face: self._run_convert(face, body),
+        )
+
+    def api_settings_backup_run(self, body: dict[str, Any]) -> dict[str, Any]:
+        """一键备份：**输入密码 → 单个加密文件**（[02 §8.1]；本体归 L0，本层只做门）。
+
+        归档**不得落在存储根之内**——`wipe_all` 删的是整个存储根，把备份放进去等于
+        清空时连备份一起删（[02 §8.3] 明说「备份文件位置由用户自行处理」）。
+        """
+        return self._call_face(
+            "settings-backup-run", self.settings, "L0 存储 / 配置面",
+            lambda face: self._run_backup(face, body),
+        )
+
+    def api_settings_restore(self, body: dict[str, Any]) -> dict[str, Any]:
+        """恢复：**输入密码 → 完整还原**；成功后置重启闸门（覆盖写的是运行中的存储根）。"""
+        return self._call_face(
+            "settings-restore", self.settings, "L0 存储 / 配置面",
+            lambda face: self._run_restore(face, body),
+        )
+
+    def api_settings_wipe(self, body: dict[str, Any]) -> dict[str, Any]:
+        """完全清空：**三次确认**（三枚有序令牌）→ 彻底删除本地数据；成功后置重启闸门。"""
+        return self._call_face(
+            "settings-wipe", self.settings, "L0 存储 / 配置面",
+            lambda face: self._run_wipe(face, body),
+        )
+
+    def api_settings_credential(self, body: dict[str, Any]) -> dict[str, Any]:
+        """凭据新增 / 重设 / 吊销（[02 §3]；`secrets` 分区恒加密、惰性解锁）。
+
+        未解锁即 `unavailable` + 点名——**不静默当作「没有凭据」**。
+        """
+        return self._call_face(
+            "settings-credential", self.settings, "L0 存储 / 配置面",
+            lambda face: self._run_credential(face, body),
+        )
+
+    def api_settings_online(self, body: dict[str, Any]) -> dict[str, Any]:
+        """同步在线态（[02 §7] 的检测面缺口由**出口侧**补上）。
+
+        平台侧没有网络探测（`EgressGateway.online` 是手动态），而**唯一的探测器就在出口**：
+        浏览器。壳把 `navigator.onLine` 的变化报到这里，经 `L1Runtime.set_online` 翻转—
+        从离线翻回在线时**按策略补跑**待补到期点（03 §6）。重复报同一态无副作用。
+        """
+        return self._call_face(
+            "settings-online", self.settings, "L0 存储 / 配置面",
+            lambda face: self._set_online(face, body),
+        )
+
+    def api_settings_network_export(self, body: dict[str, Any]) -> dict[str, Any]:
+        """导出网络活动报告到导出目录（[02 §6]「可导出」）；回路径与条数。"""
+        return self._call_face(
+            "settings-network-export", self._gateway_face(),
+            "L0 出网网关面",
+            lambda face: self._export_network(face, body),
+        )
+
+    # ── 设置区的取数装配 ──────────────────────────────────────────────
+
+    def _gateway_face(self) -> Any:
+        """出网网关的取数口（挂在 `settings` 门面上；门面缺席即 `None`，由 `_call_face` 点名）。"""
+        return None if self.settings is None else getattr(self.settings, "gateway", None)
+
+    def _part(self, component_type: str, *, slots: dict[str, Any],
+              text_kinds: dict[str, str], title: str | None = None) -> dict[str, Any]:
+        """一段 `ok` 出站载荷（过本层两道闸；不过闸即抛，由调用方转 `validation_failed`）。"""
+        return envelope_payload(ResultEnvelope.ok(
+            self._gated_description(
+                component_type, slots=slots, text_kinds=text_kinds, title=title
+            )
+        ))
+
+    def _settings_parts(
+        self,
+        where: str,
+        requires: tuple[str, ...],
+        keys: tuple[str, ...],
+        fn: Callable[[Any], dict[str, Any]],
+    ) -> dict[str, Any]:
+        """多段设置端点：**任一失败，各段都是同一支错误信封**（同 `analyze` 的分段口径）。
+
+        `requires` 是该端点用到的门面字段——缺任一项即 `unavailable` + 点名（装配归组合根），
+        不半途抛 `AttributeError` 变成一条假的 `failed`。
+        """
+        def blank(envelope: ResultEnvelope) -> dict[str, Any]:
+            payload = envelope_payload(envelope)
+            return {key: payload for key in keys}
+
+        if self.restart_gate.reason:
+            return blank(ResultEnvelope.unavailable(
+                self.restart_gate.reason, last_updated_at=_now()
+            ))
+        face = self.settings
+        if face is None:
+            return blank(ResultEnvelope.unavailable(
+                "未接入 L0 存储 / 配置面，该端点不可用（装配归组合根）",
+                last_updated_at=_now(),
+            ))
+        missing = [name for name in requires if getattr(face, name, None) is None]
+        if missing:
+            return blank(ResultEnvelope.unavailable(
+                f"设置面缺句柄：{'、'.join(missing)}（装配归组合根）", last_updated_at=_now()
+            ))
+        try:
+            return fn(face)
+        except (ValueError, KeyError) as exc:
+            _LOG.info("表现层端点 %s 拒绝请求（%s）：%s", where, type(exc).__name__, exc)
+            return blank(ResultEnvelope.validation_failed(str(exc) or "请求不合契约"))
+        except Exception as exc:  # noqa: BLE001 —— 内部失败：不吞，落日志 + 显式 failed
+            log_ref = f"ui/{where}-{uuid.uuid4().hex[:12]}"
+            _LOG.exception("表现层端点 %s 未预期失败（log_ref=%s）：%s", where, log_ref, exc)
+            return blank(ResultEnvelope.failed("该端点未预期失败，详见服务端日志", log_ref=log_ref))
+
+    def _storage_parts(self, face: Any) -> dict[str, Any]:
+        store = face.store
+        root = getattr(store, "root", None)
+        if root is None:
+            raise ValueError("存储句柄未透出根目录（装配归组合根）")
+        mode = str(getattr(store, "mode", ""))
+        unlocked = bool(getattr(store, "secrets_unlocked", False))
+        usage = store.usage()
+        total = sum(item.bytes for item in usage)
+        summary = self._part(
+            "report_card",
+            slots={"sections": [
+                {"title": "存储位置", "lines": [str(root)]},
+                {"title": "落盘格式", "lines": [_mode_line(mode)]},
+                {"title": "凭据分区", "lines": [
+                    "已解锁（本次会话可读写 API Key 等凭据）" if unlocked
+                    else "未解锁——访问凭据时才要求口令；未解锁时凭据清单与增改一并不可用"
+                ]},
+                {"title": "占用合计", "lines": [f"{_bytes_text(total)}（全部分区的明文字节数之和）"]},
+            ]},
+            text_kinds={"sections": "data"},
+            title="存储",
+        )
+        rows = [
+            {
+                "partition": item.partition,
+                "state": _STATE_LABELS.get(item.state, item.state),
+                "file_count": item.file_count,
+                "bytes": item.bytes,
+                "detail": item.detail or "",
+            }
+            for item in usage
+        ]
+        partitions = self._part(
+            "table",
+            slots=table_slots(
+                (
+                    Column("partition", "分区"),
+                    Column("state", "状态"),
+                    Column("file_count", "文件数", "number", digits=0),
+                    Column("bytes", "占用（明文字节）", "number", digits=0),
+                    Column("detail", "说明"),
+                ),
+                rows,
+            ),
+            text_kinds=table_text_kinds(),
+            title="分区与用量",
+        )
+        return {"summary": summary, "partitions": partitions}
+
+    def _llm_parts(self, face: Any) -> dict[str, Any]:
+        registry = face.config_registry
+        panel = self._part(
+            "setting_panel",
+            slots={
+                "entries": _provider_entries(registry),
+                "surface": "settings-config",
+                "labels": {"set": "应用"},
+            },
+            text_kinds={"entries": "data", "surface": "data", "labels": "generated"},
+            title="提供方主机映射",
+        )
+        endpoints = [
+            {
+                "provider": getattr(item, "provider", ""),
+                "kind": _KIND_LABELS.get(str(getattr(item, "kind", "")), "—"),
+                "model": str(getattr(item, "model", "") or "—"),
+                "priority": int(getattr(item, "priority", 0)),
+                "credential": str(getattr(item, "credential_id", "") or "（未绑定）"),
+                "capability": _capability_text(getattr(item, "capability", None)),
+            }
+            for item in face.endpoints.list_endpoints()
+        ]
+        endpoints_part = (
+            self._part(
+                "table",
+                slots=table_slots(
+                    (
+                        Column("provider", "提供方"),
+                        Column("kind", "类型"),
+                        Column("model", "模型"),
+                        Column("priority", "优先级", "number", digits=0),
+                        Column("credential", "凭据"),
+                        Column("capability", "能力"),
+                    ),
+                    endpoints,
+                ),
+                text_kinds=table_text_kinds(),
+                title="已登记端点",
+            )
+            if endpoints
+            else envelope_payload(ResultEnvelope.empty(
+                "尚未登记任何 LLM 端点——请先新增端点与凭据（或经启动参数装载引导配置）"
+            ))
+        )
+        vault, store = face.vault, face.store
+        if not bool(getattr(store, "secrets_unlocked", False)):
+            credentials_part = envelope_payload(ResultEnvelope.unavailable(
+                "凭据分区未解锁（凭据恒加密、惰性解锁）：本次会话读不到凭据清单，"
+                "亦不可增改——经启动参数提供凭据口令后可用",
+                last_updated_at=_now(),
+            ))
+        else:
+            views = list(vault.list_credentials())
+            credentials_part = (
+                self._part(
+                    "table",
+                    slots=table_slots(
+                        (
+                            Column("credential_id", "标识"),
+                            Column("kind", "类别"),
+                            Column("label", "名称"),
+                            Column("masked", "掩码"),
+                            Column("version", "版本", "number", digits=0),
+                            Column("updated_at", "最近更新"),
+                            Column("usage_count", "使用次数", "number", digits=0),
+                            Column("last_used_at", "最近使用"),
+                        ),
+                        [_credential_row(view, vault) for view in views],
+                    ),
+                    text_kinds=table_text_kinds(),
+                    title="凭据（掩码）",
+                )
+                if views
+                else envelope_payload(ResultEnvelope.empty(
+                    "凭据分区已解锁，但本机尚无凭据——新增后在此列出（只显示掩码）"
+                ))
+            )
+        return {"panel": panel, "endpoints": endpoints_part, "credentials": credentials_part}
+
+    def _network_envelope(self, gateway: Any, hours: str) -> ResultEnvelope:
+        since = _window_start(hours)
+        events = gateway.query(since=since)
+        if not gateway.audit_enabled:
+            return ResultEnvelope.unavailable(
+                f"出网审计未开启，无记录可查（窗口 {_window_text(hours)}）；"
+                "开启后逐次留痕——这是「未开启」，不是「没有请求」",
+                last_updated_at=_now(),
+            )
+        if not events:
+            return ResultEnvelope.empty(
+                f"审计已开启，{_window_text(hours)}内没有对外网络请求", as_of=_now()
+            )
+        rows = [
+            {
+                "timestamp": _stamp(event.timestamp),
+                "initiator": str(event.initiator),
+                "kind": _KIND_LABELS.get(str(event.kind), str(event.kind)),
+                "target_host": str(event.target_host),
+                "purpose": str(event.purpose),
+                "bytes": int(event.bytes_out) + int(event.bytes_in),
+                "status": _STATUS_LABELS.get(str(event.status), str(event.status)),
+            }
+            for event in events
+        ]
+        return ResultEnvelope.ok(self._part(
+            "table",
+            slots=table_slots(
+                (
+                    Column("timestamp", "时刻"),
+                    Column("initiator", "发起方"),
+                    Column("kind", "类目"),
+                    Column("target_host", "目标主机"),
+                    Column("purpose", "目的"),
+                    Column("bytes", "数据量（字节）", "number", digits=0),
+                    Column("status", "结果"),
+                ),
+                rows,
+            ),
+            text_kinds=table_text_kinds(),
+            title=f"网络活动（{_window_text(hours)}）",
+        ))
+
+    def _offline_description(self, gateway: Any) -> UiDescription:
+        report = gateway.offline_report()
+        online = bool(getattr(gateway, "online", True))
+        return self._gated_description(
+            "report_card",
+            slots={"sections": [
+                {"title": "连接状态", "lines": [
+                    "在线" if online
+                    else "离线模式——历史数据可查、记忆可编辑、已缓存 Skill 可运行"
+                ]},
+                {"title": "离线可用", "lines": _capability_lines(report.available, "（无）")},
+                {"title": "可用但受限", "lines": _capability_lines(report.limited, "（无）")},
+                {"title": "必须联网", "lines": _capability_lines(report.unavailable, "（无）")},
+            ]},
+            text_kinds={"sections": "data"},
+            title="离线降级",
+            as_of=report.generated_at,
+        )
+
+    def _apply_config(self, face: Any, body: dict[str, Any]) -> dict[str, Any]:
+        registry = face.config_registry
+        config_id = str(_required(body, "config_id"))
+        action = str(body.get("action") or "set")
+        entry = registry.entry(config_id)
+        if entry is None:
+            raise ValueError(f"该设置面不认这个条目：{config_id!r}（不在统一配置注册表内）")
+        if action in ("enable", "disable"):
+            value: Any = action == "enable"
+        elif action == "set":
+            if "value" not in body:
+                raise ValueError(f"{config_id} 的 set 动作须给出 value")
+            value = _coerce_value(entry, body.get("value"))
+        else:
+            raise ValueError(f"未知的设置动作：{action!r}（只认 set / enable / disable）")
+        change = registry.set(config_id, value, trace_id=f"ui-settings/{config_id}")
+        return {
+            "config_id": config_id,
+            "changed": change is not None,
+            "change_id": getattr(change, "change_id", None),
+        }
+
+    def _run_convert(self, face: Any, body: dict[str, Any]) -> Any:
+        to_format = str(_required(body, "to_format")).strip()
+        target = str(_required(body, "target")).strip()
+        root = Path(face.store.root)
+        current = str(getattr(face.store, "mode", ""))
+        if to_format not in ("plain", "encrypted"):
+            raise ValueError(f"目标格式只认 plain / encrypted：{to_format!r}")
+        if to_format == current:
+            raise ValueError(f"当前存储已是该格式（{current}），无需转换")
+        dest = Path(target)
+        if _is_inside(dest, root):
+            raise ValueError(
+                f"目标根不得落在当前存储根之内（{dest}）——新根须与源并列或在他处"
+            )
+        if face.convert_store is None:
+            return ResultEnvelope.unavailable(
+                "明密转换口未注入设置面（装配归组合根）", last_updated_at=_now()
+            )
+        envelope = _store_errors(lambda: face.convert_store(
+            root,
+            dest,
+            to_format=to_format,
+            source_passphrase=str(body.get("source_passphrase") or "").strip() or None,
+            target_passphrase=str(body.get("target_passphrase") or "").strip() or None,
+        ))
+        if isinstance(envelope, ResultEnvelope):
+            return envelope
+        return {
+            "target": str(dest),
+            "to_format": to_format,
+            "note": "源根未改动；凭据分区原样搬运，凭据口令不变。"
+                    "切换存储根须重启进程并指向新根",
+        }
+
+    def _run_backup(self, face: Any, body: dict[str, Any]) -> Any:
+        passphrase = str(_required(body, "passphrase"))
+        root = Path(face.store.root)
+        dest = str(body.get("dest") or "").strip()
+        target = Path(dest) if dest else _default_backup_path(face, root)
+        if _is_inside(target, root):
+            raise ValueError(
+                f"备份归档不得落在存储根之内（{target}）——存储根会被「完全清空」整体删除，"
+                "备份放进去等于一起删"
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        envelope = _store_errors(lambda: face.backup.create_backup(
+            face.store, passphrase, target,
+            include_data_cache=bool(body.get("include_data_cache")),
+        ))
+        if isinstance(envelope, ResultEnvelope):
+            return envelope
+        written = envelope
+        return {
+            "archive": str(written),
+            "include_data_cache": bool(body.get("include_data_cache")),
+            "partitions": list(_backup_partitions(face)),
+            "note": "归档为独立加密容器（密码即本次输入者）；可复制到任何存储介质",
+        }
+
+    def _run_restore(self, face: Any, body: dict[str, Any]) -> Any:
+        archive = str(_required(body, "archive"))
+        passphrase = str(_required(body, "passphrase"))
+        root = Path(face.store.root)
+        target_root = str(body.get("target_root") or "").strip() or str(root)
+        target_pass = str(body.get("target_passphrase") or "").strip() or None
+        envelope = _store_errors(lambda: face.backup.restore_backup(
+            archive, passphrase, target_root, target_passphrase=target_pass,
+        ))
+        if isinstance(envelope, ResultEnvelope):
+            return envelope
+        report = envelope
+        over_live = Path(target_root) == root
+        note = (
+            "已覆盖写当前存储根：本进程手里的存储句柄随之失效，须重启后继续"
+            if over_live else f"已还原到 {target_root}（当前存储根未动）"
+        )
+        if over_live:
+            self.restart_gate.reason = (
+                f"已从归档恢复并覆盖写存储根 {root}：本进程的存储句柄已失效，"
+                "继续读写会作用于陈旧清单——请重启后再操作"
+            )
+        return {
+            "restored_partitions": list(report.restored_partitions),
+            "file_count": int(report.file_count),
+            "archived_at": _stamp(report.archived_at),
+            "target_root": str(target_root),
+            "restart_required": over_live,
+            "note": note,
+        }
+
+    def _run_wipe(self, face: Any, body: dict[str, Any]) -> Any:
+        raw = body.get("confirmations")
+        tokens = [str(item) for item in raw] if isinstance(raw, list) else []
+        root = Path(face.store.root)
+        envelope = _store_errors(lambda: face.backup.wipe_all(root, tokens))
+        if isinstance(envelope, ResultEnvelope):
+            return envelope
+        report = envelope
+        self.restart_gate.reason = (
+            f"已完全清空存储根 {root}（含全部分区与派生数据）：本进程的数据面已停用，"
+            "请重启后再操作；备份文件在存储根之外，由用户自行处理"
+        )
+        return {
+            "deleted_partitions": list(report.deleted_partitions),
+            "detail": str(report.detail),
+            "restart_required": True,
+            "note": "备份文件位置由用户自行处理——清空不触碰存储根之外的内容",
+        }
+
+    def _run_credential(self, face: Any, body: dict[str, Any]) -> Any:
+        if not bool(getattr(face.store, "secrets_unlocked", False)):
+            return ResultEnvelope.unavailable(
+                "凭据分区未解锁（凭据恒加密、惰性解锁）：本次会话不可增改凭据——"
+                "经启动参数提供凭据口令后可用",
+                last_updated_at=_now(),
+            )
+        action = str(_required(body, "action"))
+        credential_id = str(_required(body, "credential_id"))
+        vault = face.vault
+        if action == "add":
+            view = vault.add(
+                credential_id,
+                str(_required(body, "kind")),
+                str(_required(body, "value")),
+                str(body.get("label") or ""),
+            )
+        elif action == "rotate":
+            view = vault.rotate(credential_id, str(_required(body, "value")))
+        elif action == "revoke":
+            view = vault.revoke(credential_id)
+        else:
+            raise ValueError(f"未知的凭据动作：{action!r}（只认 add / rotate / revoke）")
+        return {
+            "credential_id": view.credential_id,
+            "action": action,
+            "masked": view.masked,
+            "version": view.version,
+            "note": "凭据明文不落日志、不出站；界面只显示掩码",
+        }
+
+    def _set_online(self, face: Any, body: dict[str, Any]) -> dict[str, Any]:
+        flag = body.get("online")
+        if not isinstance(flag, bool):
+            raise ValueError(f"在线态须为布尔：{flag!r}")
+        if face.set_online is None:
+            return {"online": flag, "caught_up": 0,
+                    "note": "在线态未接线（装配归组合根）：浏览器侧状态照常，后端未改"}
+        runs = face.set_online(flag)
+        return {"online": flag, "caught_up": len(runs or ()),
+                "note": "由离线翻回在线时按策略补跑待补到期点；重复报同一态无副作用"}
+
+    def _export_network(self, gateway: Any, body: dict[str, Any]) -> Any:
+        exports_dir = getattr(self.settings, "exports_dir", None)
+        if exports_dir is None:
+            return ResultEnvelope.unavailable(
+                "导出目录未注入设置面（装配归组合根）", last_updated_at=_now()
+            )
+        if not gateway.audit_enabled:
+            return ResultEnvelope.unavailable(
+                "出网审计未开启，无记录可导出（这是「未开启」，不是「没有请求」）",
+                last_updated_at=_now(),
+            )
+        since = _window_start(body.get("hours"))
+        report = gateway.export_report(since=since)
+        target = Path(exports_dir) / f"network-activity-{_stamp(_now(), compact=True)}.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"path": str(target), "count": int(report.get("count") or 0),
+                "note": "报告只含计数与出网元数据（域名 / 目的 / 时间 / 数据量），不含请求内容"}
 
     # ───────────────────── 反思中心（[T-UI-004.2]） ─────────────────────
 
@@ -2226,11 +3246,17 @@ class UiApp:
     ) -> dict[str, Any]:
         """调一次面操作并包成信封载荷（**本方法不向上抛**，同 :meth:`api_chat` 的口径）。
 
+        - 重启闸门已置位（清空 / 恢复之后）⇒ `unavailable` + 该原因——此时手里的存储
+          句柄已失效，**任何**数据面读数都不可信（见 :class:`RestartGate`）；
         - 面未注入 ⇒ `unavailable` + 点名（不 500、不伪造）；
         - `ValueError` / `KeyError`（输入类，含契约构造失败）⇒ `validation_failed`；
         - 返回 `ResultEnvelope` ⇒ 原样出（六态由该面给，不吞）；其余值 ⇒ `ok` 包起来；
         - 其他异常 ⇒ `failed` + `log_ref`（[00 §6]，不静默）。
         """
+        if self.restart_gate.reason:
+            return envelope_payload(
+                ResultEnvelope.unavailable(self.restart_gate.reason, last_updated_at=_now())
+            )
         if face is None:
             return envelope_payload(
                 ResultEnvelope.unavailable(
@@ -2322,6 +3348,7 @@ def build_ui(
     delivery: Any = None,
     settings: Any = None,
     commands: Any = None,
+    restart_gate: RestartGate | None = None,
 ) -> UiApp:
     """按已绑定的 ``host`` / ``port`` 装配表现层。
 
@@ -2332,6 +3359,9 @@ def build_ui(
     ``skills`` / ``mcp`` / ``graph`` / ``deliberation`` / ``delivery`` / ``settings``：M6 的
     七个（[`T-UI-011.1`]）；``commands``：快捷指令注册表（[`T-UI-012.1`]）。全部缺省
     ``None`` ⇒ 对应面 fail-closed（`ui` 不 import `st_agent.app`，只经端口消费）。
+
+    ``restart_gate``：见 :class:`RestartGate`；缺省新建一枚。集成套件可注入同一实例，
+    以便在端点之外断言「清空 / 恢复之后数据面确实停了」。
     """
     dev_package = _load_dev() if dev else None
     if dev and dev_package is None:
@@ -2355,4 +3385,5 @@ def build_ui(
         delivery=delivery,
         settings=settings,
         commands=commands,
+        restart_gate=restart_gate if restart_gate is not None else RestartGate(),
     )

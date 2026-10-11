@@ -100,6 +100,7 @@ from st_agent.l0.storage.partition import (
 
 __all__ = [
     "CorruptedPartitionReport",
+    "PartitionUsage",
     "StorageState",
     "Store",
     "StoreCorruptionReport",
@@ -164,6 +165,24 @@ class StorageState(BaseModel):
     detail: str = ""
 
 
+class PartitionUsage(BaseModel):
+    """单个分区的**用量**（02 §2.1「分区边界必须可独立导出、独立清空」的读面）。
+
+    与 :class:`StorageState` 同款三态口径：``locked`` 分区读不到清单 ⇒ ``bytes`` /
+    ``file_count`` 恒 0 且 ``detail`` 写明原因，**不**谎报为空分区。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    partition: PartitionName
+    state: str = Field(pattern="^(ok|corrupted|missing|locked)$")
+    file_count: int = 0
+    bytes: int = Field(default=0, ge=0)
+    """该分区数据内容的**明文字节数合计**（清单登记的 ``size`` 之和；清单文件与
+    keyfile 本身不计入）。"""
+    detail: str = ""
+
+
 class CorruptedPartitionReport(BaseModel):
     """单个分区的损坏明细（§2.3「明确告知损坏范围」）。"""
 
@@ -223,6 +242,11 @@ class Store:
     def mode(self) -> str:
         """本根的落盘格式（``plain`` / ``encrypted``；02 §2.2）。"""
         return self._mode
+
+    @property
+    def root(self) -> Path:
+        """本存储根目录（只读；02 §2.1「用户可查看存储位置」的读面）。"""
+        return self._root
 
     @property
     def secrets_unlocked(self) -> bool:
@@ -775,6 +799,31 @@ class Store:
                 partition=partition, state="ok",
                 file_count=len(self._manifest(partition).entries),
             )
+
+    def usage(self) -> tuple[PartitionUsage, ...]:
+        """逐分区用量（分区序；02 §2.1「用户可查看存储位置和大小」的读面）。
+
+        与 :meth:`partition_state` 同一三态口径——**未解锁 / 损坏的分区不谎报为 0**：
+        其 ``bytes`` / ``file_count`` 恒 0 且 ``detail`` 写明原因。用量取自内存中的
+        清单（明文长度合计），**不做逐文件校验**，故它是廉价的只读面，不改变任何
+        分区的健康状态。
+        """
+        states = {s.partition: s for s in (self.partition_state(p.name) for p in PARTITIONS)}
+        out: list[PartitionUsage] = []
+        for p in PARTITIONS:
+            state = states[p.name]
+            if state.state != "ok":
+                out.append(PartitionUsage(
+                    partition=p.name, state=state.state, file_count=state.file_count,
+                    detail=state.detail,
+                ))
+                continue
+            entries = self._manifest(p.name).entries
+            out.append(PartitionUsage(
+                partition=p.name, state="ok", file_count=len(entries),
+                bytes=sum(e.size for e in entries),
+            ))
+        return tuple(out)
 
     def storage_report(self) -> StoreCorruptionReport:
         """全存储损坏报告（打开失败被 catch 后仍可查询；正常打开时恒 clean）。"""

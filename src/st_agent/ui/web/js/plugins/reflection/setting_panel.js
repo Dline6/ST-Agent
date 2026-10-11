@@ -1,13 +1,19 @@
 // `setting_panel` 组件：逐条设置 / 处置面板（01 §12；08 §5 的演进授权设置页、09 §3 的逐项批准）。
 //
 // 槽：`entries`(data：每项含 `identifier` / `current` / `options`（候选值，可空）/ `actions`
-//     / `description` / `note`) · `labels`(generated：动作键与候选值 → 中性中文标签)
+//     / `description` / `note` / `input`（可空：`text` ⇒ 自由文本输入）/ `params`)
+//     · `labels`(generated：动作键与候选值 → 中性中文标签)
 //     · `surface`(data：**面键**，取值见下)
+//
+// **取值面三态**（按条目的形状选，不猜）：有 `options` ⇒ 下拉选值；`input === 'text'` ⇒
+// 自由文本输入（如提供方主机——它的值域由后端 owner 校验，前端不预先枚举）；两者皆无 ⇒
+// 只给动作按钮（如逐项批准 / 拒绝、布尔条目的启用 / 停用——**动作即取值**）。
+// 布尔条目**刻意不走下拉**：`<select>` 的值恒为字符串（`"true"` / `"false"`），而落值面按
+// 声明类型校验，用两个动作表达取值可以把这层字符串绕开。
 //
 // **与 `config_draft_card` 的分工**（01 §12）：后者是**只读**面板视图；本件**带动作**。
 // **动作不进描述**（01 §12）：路由由 `surface` 这个**枚举键**在下面这张**固定表**里解析，
 // 描述**不接受** URL / 方法 / 脚本；未知面键即显式拒（不猜）。
-// 有 `options` 时逐条给「选值 + 应用」；无 `options` 时只给动作按钮（如逐项批准 / 拒绝）。
 
 import { appendUnknownSlots, el, readSlot } from '../../components/slots.js';
 import { postJson } from '../../api.js';
@@ -20,6 +26,10 @@ const ROUTES = {
   // 推理区阵容（[T-UI-016.1]，面键 `deliberation-lens`）：逐条启用 / 停用 / 删除——
   // 内置视角只给停用（[06 §1] 只能停用不可删），删除对内置仍在后端显式拒。
   'deliberation-lens': '/api/deliberation/lenses/update',
+  // 设置区（[T-UI-018.1]，面键 `settings-config`）：**四设置页共用一个面键**——数据源开关 /
+  // 留存与审计 / 提供方主机映射三处都是「逐条设置 + 应用」的同形，且落值走**同一条**
+  // [01 §7] 统一落值面（`set` / `enable` / `disable` 三个动作）。
+  'settings-config': '/api/settings/apply',
 };
 
 function optionSelect(entry, labels) {
@@ -45,6 +55,14 @@ function entryNode(entry, labels, route) {
   const actions = entry.actions || [];
   if (actions.length) {
     const select = (entry.options || []).length ? optionSelect(entry, labels) : null;
+    // 自由文本取值（如提供方主机）：值域由后端 owner 校验，前端不预先枚举。
+    let free = null;
+    if (!select && entry.input === 'text') {
+      free = document.createElement('input');
+      free.type = 'text';
+      free.className = 'setting__input';
+      free.value = entry.current === undefined || entry.current === null ? '' : entry.current;
+    }
     const row = el('div', 'setting-actions');
     for (const action of actions) {
       const button = el('button', 'setting-actions__button', labels[action] || action);
@@ -52,10 +70,11 @@ function entryNode(entry, labels, route) {
       button.addEventListener('click', async () => {
         button.disabled = true;
         try {
-          // 请求体 = 动作键 + 该条的 `params`（**数据**，如条目 id / 文件名）+ 候选值。
+          // 请求体 = 动作键 + 该条的 `params`（**数据**，如条目 id / 文件名）+ 候选值 / 自由文本。
           // 渲染件只做这次合并，**不解读** `params` 的内容，也不从描述里取路由。
           const body = { action, ...(entry.params || {}) };
           if (select) body.value = select.value;
+          else if (free) body.value = free.value;
           const payload = await postJson(route, body);
           if (payload.status === 'ok') {
             const data = payload.data || {};
@@ -83,6 +102,7 @@ function entryNode(entry, labels, route) {
       row.append(button);
     }
     if (select) row.append(select);
+    if (free) row.append(free);
     node.append(row);
   } else {
     node.append(el('p', 'state state--empty', entry.note || '该项没有可改的取值'));

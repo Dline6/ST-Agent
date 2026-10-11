@@ -57,6 +57,8 @@ from st_agent.eco import (
     ShareExporter,
     ShareImporter,
 )
+from st_agent.l0 import backup as l0_backup
+from st_agent.l0.storage import Store
 from st_agent.l1.events import EventBus
 from st_agent.l1.pack import OfficialPack, ResourceEntry, load_official_pack
 from st_agent.l1.runtime import L1Runtime, open_runtime
@@ -2552,6 +2554,10 @@ EXPORTS_DIR_NAME = "exports"
 INBOX_DIR_NAME = "inbox"
 """导入收件目录名（同上）。"""
 
+BACKUP_DIR_SUFFIX = "-backups"
+"""缺省备份归档目录的**后缀**（拼在存储根名之后）——目录落在存储根**之外**，
+否则「完全清空」删掉整个存储根时会把备份一并删掉（[02 §8.3]）。"""
+
 
 def _eco_dir(root: Path | str, name: str) -> Path:
     """建好（若缺）表现层的分享文件目录并返回它。
@@ -3237,10 +3243,31 @@ class DeliveryFacade:
 
 @dataclass(frozen=True)
 class SettingsFacade:
-    """L0 存储 / 配置面：持 01 §7 配置注册表门面与本地存储句柄。"""
+    """L0 存储 / 配置面：持 01 §7 配置注册表门面与本地存储句柄（[`T-UI-018`] 扩为全量）。
+
+    :param config_registry: 统一配置注册表门面（[01 §7]；各设置项经它落值）
+    :param store: 本地存储句柄（位置 / 格式 / 分区用量 / 凭据分区锁定态）
+    :param gateway: 出网网关（网络活动留痕、离线清单与在线态）
+    :param backup: ``st_agent.l0.backup`` 模块（备份 / 恢复 / 清空与留存策略的**本体**）
+    :param endpoints: LLM 端点注册表（设置-LLM 提供方页的端点读面）
+    :param vault: 凭据库（掩码视图与使用记录；明文不出站）
+    :param exports_dir: 表现层导出目录（网络活动报告落点）
+    :param backups_dir: 缺省归档落点——**存储根之外**（清空时不会被一并删掉）
+    """
 
     config_registry: Any
     store: Any = None
+    gateway: Any = None
+    backup: Any = None
+    endpoints: Any = None
+    vault: Any = None
+    exports_dir: Any = None
+    backups_dir: Any = None
+    set_online: Any = None
+    convert_store: Any = None
+    """明密双向转换口（``Store.convert`` 类方法）——**源不动、写新根**（02 §2.2）。"""
+    """在线态翻转口（``L1Runtime.set_online``）——**带离线补跑**：由离翻回在线时按策略
+    处置待补到期点（03 §6）。表现层经它把浏览器的 `online` / `offline` 事件同步过来。"""
 
 
 @dataclass(frozen=True)
@@ -3358,8 +3385,27 @@ class M5Runtime:
 
     @property
     def settings(self) -> SettingsFacade:
-        """L0 存储 / 配置面。"""
-        return SettingsFacade(config_registry=self.m1.runtime.config_registry, store=self.store)
+        """L0 存储 / 配置面（[`T-UI-018`] 补齐备份 / 网关 / 端点 / 凭据 / 目录五处句柄）。
+
+        句柄全部向下取自 :class:`~st_agent.l1.runtime.L1Runtime`（[铁律 7]）：`store` 与
+        `config_registry` 本就在，另四支（`gateway` / `endpoints` / `vault` / `convert_store`）
+        此前**没有门面透出**——设置区需要它们，故在此一并过桥。`backup` 是 L0 的**模块**
+        （备份 / 恢复 / 清空本体是模块级函数），门面只传引用、不包装。
+        """
+        runtime = self.m1.runtime
+        root = self.store.root
+        return SettingsFacade(
+            config_registry=runtime.config_registry,
+            store=self.store,
+            gateway=runtime.gateway,
+            backup=l0_backup,
+            endpoints=runtime.endpoints,
+            vault=runtime.vault,
+            exports_dir=root / EXPORTS_DIR_NAME,
+            backups_dir=root.parent / f"{root.name}{BACKUP_DIR_SUFFIX}",
+            set_online=runtime.set_online,
+            convert_store=Store.convert,
+        )
 
     @property
     def commands(self) -> CommandRegistry:

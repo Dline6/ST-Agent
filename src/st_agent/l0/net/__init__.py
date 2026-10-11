@@ -18,6 +18,7 @@ from st_agent.l0.net.audit_config import (
     net_audit_config_entries,
     set_audit_policy,
 )
+from st_agent.l0.net.capabilities import DEFAULT_CAPABILITIES, seed_default_capabilities
 from st_agent.l0.net.errors import (
     CapabilityExistsError,
     CapabilityNotFoundError,
@@ -53,6 +54,7 @@ __all__ = [
     "AUDIT_SEGMENT_SIZE",
     "CAPABILITY_PREFIX",
     "DEFAULT_AUDIT_ENABLED",
+    "DEFAULT_CAPABILITIES",
     "NET_AUDIT_DISABLED_REF",
     "NET_LOG_PREFIX",
     "CapabilityExistsError",
@@ -76,5 +78,6 @@ __all__ = [
     "check_capability_id",
     "get_audit_policy",
     "net_audit_config_entries",
+    "seed_default_capabilities",
     "set_audit_policy",
 ]

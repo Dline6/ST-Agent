@@ -7,12 +7,13 @@
 // import 自己的模块）。**未填 `render` 的页面走可用性探针占位**——它只证明「路由通、
 // 端口在不在」，不冒充业务内容；`.1` 交付的四处入口在各自叶子落地前即处于此态。
 
-import { getJson, readToken } from './api.js';
+import { getJson, postJson, readToken } from './api.js';
 import { PAGES, pageFor } from './pages.js';
 import { renderEnvelope } from './render.js';
 
 const root = document.getElementById('root');
 const nav = document.getElementById('nav');
+const banner = document.getElementById('banner');
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -23,6 +24,41 @@ function el(tag, className, text) {
 
 function showFailure(message) {
   root.replaceChildren(el('p', 'state state--error', message));
+}
+
+// ── 离线横幅（全局要素；[11-sitemap §2.1] 判为**壳面**——它是全局 chrome，不属描述体系）
+//
+// **唯一的探测器在出口**：平台侧没有网络探测（`EgressGateway.online` 是手动态），故由壳把
+// `navigator.onLine` 报给后端（`POST /api/settings/online`，经 `L1Runtime.set_online` 翻转，
+// 由离线翻回在线时按策略补跑）。横幅内容取自 `GET /api/settings/offline` 的四段（连接状态 +
+// 三类能力清单）——**三类清单逐条并列**，受限项带降级标注（02 §7）。
+//
+// 联机时横幅**不出现**（它不是常驻状态条）；要复现走查，用浏览器的离线模式切换即可。
+
+async function paintBanner() {
+  if (!banner) return;
+  const offline = navigator.onLine === false;
+  try {
+    await postJson('/api/settings/online', { online: !offline });
+  } catch (error) {
+    // 报不进后端不改前端判定：横幅仍按浏览器口径显示，并在下方如实说明
+    banner.hidden = false;
+    banner.replaceChildren(el('p', 'banner__line', `在线态未能同步到本机服务：${error.message}`));
+    return;
+  }
+  if (!offline) {
+    banner.hidden = true;
+    banner.replaceChildren();
+    return;
+  }
+  const box = el('div', 'banner__body');
+  try {
+    renderEnvelope(await getJson('/api/settings/offline'), box);
+  } catch (error) {
+    box.append(el('p', 'state state--error', `无法取数：${error.message}`));
+  }
+  banner.hidden = false;
+  banner.replaceChildren(box);
 }
 
 /** 跳页链接：把当前 fragment（令牌）拼回 `href`——路由走路径、令牌走 fragment。 */
@@ -73,6 +109,10 @@ async function boot() {
     return;
   }
   buildNav(page);
+  // 离线横幅**独立于页面渲染**：它是全局要素，取数失败不该拦住页面本身（反之亦然）。
+  paintBanner();
+  window.addEventListener('online', paintBanner);
+  window.addEventListener('offline', paintBanner);
   try {
     await renderPage(page);
   } catch (error) {
