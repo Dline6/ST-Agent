@@ -468,3 +468,45 @@ main {
 .deliberation__lenses { margin: .35rem 0; padding-left: 1.2rem; }
 .deliberation__lens { display: flex; align-items: center; gap: .5rem; margin: .2rem 0; }
 .deliberation__lens-name { flex: 1 1 auto; }
+
+/* 设置区的页内视图切换（[T-UI-018.1]）——`/settings` 一条路径承载四设置页 + 维护面 +
+   网络活动（[11-sitemap §2.2] 的「一屏一路径、子面按查询串聚合」）。 */
+.page__tabs { display: flex; flex-wrap: wrap; gap: .25rem .5rem; margin: 0 0 1rem; }
+.page__tab {
+  display: inline-block;
+  padding: .15rem .45rem;
+  border-radius: var(--radius-sm);
+  color: var(--fg-muted);
+  font-size: var(--text-sm);
+  text-decoration: none;
+}
+.page__tab:hover { color: var(--fg); background: var(--line); }
+.page__tab[aria-current="page"] { color: var(--fg); font-weight: 600; background: var(--line); }
+
+/* 设置区的输入行（备份 / 恢复 / 凭据）——标签在左、控件在右，窄屏换行。 */
+.settings-field { display: flex; flex-wrap: wrap; align-items: center; gap: .4rem; margin: .3rem 0; }
+.settings-field__label { min-width: 9rem; color: var(--fg-muted); font-size: var(--text-sm); }
+.settings-field__input {
+  flex: 1 1 14rem;
+  padding: .2rem .4rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: var(--fg);
+  font-family: inherit;
+  font-size: var(--text-sm);
+}
+
+/* 离线横幅（全局要素；[11-sitemap §2.1] 判为壳面）——与主区同宽，只在离线时出现。 */
+.banner {
+  max-width: 46rem;
+  margin: 0 auto .75rem;
+  padding: .5rem .75rem;
+  border: 1px solid var(--delayed);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--card);
+}
+.banner__line { margin: 0 0 .25rem; color: var(--delayed); font-weight: 600; }
+.banner__body .state { margin: 0 0 .25rem; }
+.banner__body .component-report h3 { font-size: var(--text-md); }

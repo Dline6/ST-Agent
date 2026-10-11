@@ -40,6 +40,7 @@ from st_agent.l0.llm.http_transport import (
 )
 from st_agent.l0.llm.models import ToolSpec
 from st_agent.l0.llm.registry import EndpointRegistry
+from st_agent.l0.net.capabilities import seed_default_capabilities
 from st_agent.l0.net.gateway import EgressGateway
 from st_agent.l0.secrets.errors import CredentialNotFoundError
 from st_agent.l0.secrets.vault import CredentialVault
@@ -52,6 +53,7 @@ from st_agent.l1.reuse.freshness import MarketFreshnessOracle
 from st_agent.l1.reuse.registry import OutputRegistry
 from st_agent.l1.registry.facade import ConfigRegistryFacade
 from st_agent.l1.registry.families import (
+    DataSourceSwitchFamily,
     McpHubPolicyFamily,
     NetAuditFamily,
     ProviderHostFamily,
@@ -294,8 +296,9 @@ def build_l1_runtime(
 ) -> L1Runtime:
     """装配 L1 运行时（L0 面 + L1 能力面 + MCP 面；调度接线见 ``.4``）。
 
-    构造各门面**不写盘**（官方 Pack 的**播种**除外——幂等：已注册版本即跳过），
-    故重复装配不重置任何用户配置。
+    构造各门面**不写盘**（两类**出厂播种**除外，二者皆幂等——已存在即跳过，故重复装配
+    不重置任何用户配置、且零写）：官方 Pack 的描述体（已注册版本即跳过）与平台能力的
+    离线分级声明（[`seed_default_capabilities`]，02 §7 三类清单的数据源）。
 
     :param market_query: 官方 Pack 的取数源（``MarketQuerySource`` 鸭子类型，
         ``query(sql, params=()) -> ResultEnvelope``）。**必填**——它是「官方 Pack
@@ -331,6 +334,7 @@ def build_l1_runtime(
         门面（``net-audit/*`` 族）即热切换本网关
     """
     gateway = EgressGateway(store, sender=sender, online=online, audit=audit)
+    seed_default_capabilities(gateway)
     endpoints = EndpointRegistry(store)
     vault = CredentialVault(store)
     provider_hosts = ProviderHostRegistry(store)
@@ -454,6 +458,8 @@ def _build_config_registry(
     不重置任何用户配置，与 :func:`build_l1_runtime` 的既有口径一致）。
 
     ``gateway`` 进 ``NetAuditFamily``：审计开关落值即热切换该网关（02 §6）。
+    ``DataSourceSwitchFamily`` 只持 ``store``——它的消费方是同步引擎，由
+    :func:`~st_agent.l0.info.switch_config.enabled_task_map` 在发起同步时现取。
     """
     facade = ConfigRegistryFacade(store, resolve=skills.get_latest)
     facade.register_family(RetentionFamily(store))
@@ -461,6 +467,7 @@ def _build_config_registry(
     facade.register_family(McpHubPolicyFamily(mcp_config))
     facade.register_family(ProviderHostFamily(provider_hosts, store))
     facade.register_family(NetAuditFamily(store, gateway=gateway))
+    facade.register_family(DataSourceSwitchFamily(store))
     return facade
 
 

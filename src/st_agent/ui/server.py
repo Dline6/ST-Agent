@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from datetime import datetime
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -114,6 +115,16 @@ _GET_ROUTES: dict[str, Callable[[UiApp, str], dict]] = {
     ),
     # 决策留痕读面（[`T-UI-016.3`]）：[06 §2.4] 写下的 L2 `history` 节点，逐条并列。
     "/api/deliberation/decisions": lambda app, _q: app.api_deliberation_decisions(),
+    # 设置区（[`T-UI-018.1`] / [`.2`] / [`.3`]）：存储 / LLM 提供方 / 数据源 / 隐私四页，
+    # 维护面三条声明（备份 / 恢复 / 清空），网络活动面板（`?hours=`），离线横幅。
+    # 带参数的读面走**查询串**（[11-sitemap §2.2]：路径集仍是有限字面量集合，不引动态段）。
+    "/api/settings/storage": lambda app, _q: app.api_settings_storage(),
+    "/api/settings/llm": lambda app, _q: app.api_settings_llm(),
+    "/api/settings/sources": lambda app, _q: app.api_settings_sources(),
+    "/api/settings/privacy": lambda app, _q: app.api_settings_privacy(),
+    "/api/settings/maintenance": lambda app, _q: app.api_settings_maintenance(),
+    "/api/settings/network": lambda app, q: app.api_settings_network(hours=_query(q, "hours")),
+    "/api/settings/offline": lambda app, _q: app.api_settings_offline(),
 }
 """`GET` 数据面的路由表：路径 → `(UiApp, 查询串)` → 载荷。**只此一处**判定「某路径存在与否」
 ——散落的 `if path == …` 分支会随着端点增多而漂移（[`T-UI-003`] 的同型取向）。"""
@@ -154,6 +165,16 @@ _POST_ROUTES: dict[str, Callable[[UiApp, dict], dict]] = {
     ),
     # 决策沉淀（[`T-UI-016.3`]）：决策 + 理由 + 采纳 / 忽略视角 → L2 `history` 节点。
     "/api/deliberation/decision": lambda app, body: app.api_deliberation_decision(body),
+    # 设置区的写面（[`T-UI-018`]）：设置落值（经 [01 §7] 统一注册表）/ 备份 / 恢复 / 清空 /
+    # 凭据增改吊销 / 网络活动导出——六条全部是**显式动作**，故进写表。
+    "/api/settings/apply": lambda app, body: app.api_settings_apply(body),
+    "/api/settings/convert": lambda app, body: app.api_settings_convert(body),
+    "/api/settings/backup": lambda app, body: app.api_settings_backup_run(body),
+    "/api/settings/restore": lambda app, body: app.api_settings_restore(body),
+    "/api/settings/wipe": lambda app, body: app.api_settings_wipe(body),
+    "/api/settings/credential": lambda app, body: app.api_settings_credential(body),
+    "/api/settings/online": lambda app, body: app.api_settings_online(body),
+    "/api/settings/network/export": lambda app, body: app.api_settings_network_export(body),
 }
 """`POST` 数据面的路由表：路径 → `(UiApp, body)` → 载荷。**非本表内的 POST 一律 404**。
 
@@ -190,6 +211,21 @@ def _dispatch_guarded(where: str, call: Callable[[], dict]) -> dict:
         )
 
 
+def _restart_blocked(app: Any, path: str) -> dict | None:
+    """重启闸门：破坏性操作（清空 / 恢复）之后，**全部**数据面端点一律 `unavailable`。
+
+    闸门放在**传输层**而不是某个面里——各端点构造 `unavailable` 的姿势不止一处（有的走
+    `UiApp._call_face`、有的自己判面缺席），只在其中一处设闸会漏掉另一些。`/api/health`
+    除外：壳要靠它判断「服务还活着吗」，把它一起拦掉会让页面连不上而非显示原因。
+    """
+    reason = getattr(getattr(app, "restart_gate", None), "reason", None)
+    if not reason or path == "/api/health":
+        return None
+    return envelope_payload(
+        ResultEnvelope.unavailable(reason, last_updated_at=datetime.now().astimezone())
+    )
+
+
 class UiRequestHandler(BaseHTTPRequestHandler):
     """回环请求处理。
 
@@ -217,6 +253,10 @@ class UiRequestHandler(BaseHTTPRequestHandler):
 
         handler = _GET_ROUTES.get(path)
         if handler is not None:
+            blocked = _restart_blocked(self.app, path)
+            if blocked is not None:
+                self._send_json(200, blocked)
+                return
             self._send_json(200, _dispatch_guarded(path, lambda: handler(self.app, parsed.query)))
             return
 
@@ -268,6 +308,10 @@ class UiRequestHandler(BaseHTTPRequestHandler):
             self._send_text(404, "未找到")
             return
         body = self._read_json_body()
+        blocked = _restart_blocked(self.app, path)
+        if blocked is not None:
+            self._send_json(200, blocked)
+            return
         self._send_json(200, _dispatch_guarded(path, lambda: handler(self.app, body)))
 
     # ── 发送 ────────────────────────────────────────────────────────────────

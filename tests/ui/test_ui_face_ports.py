@@ -52,11 +52,23 @@ _EXPECTED_POST_ROUTES = frozenset({
     "/api/deliberation/lenses",
     "/api/deliberation/lenses/update",
     "/api/deliberation/decision",
+    # 设置区的写面（[`T-UI-018`]）：设置落值 / 备份 / 恢复 / 清空 / 凭据增改吊销 / 在线态
+    # 同步 / 网络活动导出——七条全部是显式动作，非幂等读面。
+    "/api/settings/apply",
+    "/api/settings/convert",
+    "/api/settings/backup",
+    "/api/settings/restore",
+    "/api/settings/wipe",
+    "/api/settings/credential",
+    "/api/settings/online",
+    "/api/settings/network/export",
 })
 """写面白名单的**副本**——枚举副本 + 测试钉住（既有做法）。
 
 `T-UI-011.1` 落下 15 条；[`T-UI-014.3`] 新增 2 条（记忆导出确认 / Onboarding 提交）；
-[`T-UI-016.1`] 新增 2 条（推理触发 / 视角增改）、[`T-UI-016.3`] 新增 1 条（决策沉淀）。
+[`T-UI-016.1`] 新增 2 条（推理触发 / 视角增改）、[`T-UI-016.3`] 新增 1 条（决策沉淀）；
+[`T-UI-018`] 新增 8 条（设置落值 / 明密转换 / 备份 / 恢复 / 清空 / 凭据 / 在线态 /
+网络活动导出）。
 后续各面功能叶在自己的交付里新增写端点时，同批把此处补上。
 """
 

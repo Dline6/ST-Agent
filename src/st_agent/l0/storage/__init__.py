@@ -30,6 +30,7 @@ from st_agent.l0.storage.partition import (
 )
 from st_agent.l0.storage.store import (
     CorruptedPartitionReport,
+    PartitionUsage,
     StorageState,
     Store,
     StoreCorruptionReport,
@@ -46,6 +47,7 @@ __all__ = [
     "PARTITION_NAMES",
     "Partition",
     "PartitionName",
+    "PartitionUsage",
     "StorageCorruptionError",
     "StorageOpenError",
     "StoragePassphraseRequired",
