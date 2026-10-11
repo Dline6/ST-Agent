@@ -21,6 +21,7 @@ import { renderEcoPage, renderImportPage, renderImportsPage, renderIndexPage, re
 import { renderEvolutionPage, renderChangesPage } from './pages/evolution.js';
 import { renderMemoryPage } from './pages/memory.js';
 import { renderReflectionPage, singleBlockPage } from './pages/reflection.js';
+import { renderSettingsPage } from './pages/settings.js';
 import { renderStudioPage } from './pages/studio.js';
 
 export const PAGES = [
@@ -92,7 +93,13 @@ export const PAGES = [
     render: singleBlockPage('/api/reflection/training', '训练对话留痕'),
   },
   // ── 设置 ──────────────────────────────────────────────────────────────
-  { path: '/settings', title: '设置', statusPath: '/api/settings/status', root: true },
+  {
+    path: '/settings',
+    title: '设置',
+    statusPath: '/api/settings/status',
+    render: renderSettingsPage,
+    root: true,
+  },
   {
     path: '/settings/evolution',
     title: '演进授权',

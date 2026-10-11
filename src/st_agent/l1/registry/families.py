@@ -29,6 +29,12 @@ from st_agent.l0.backup import (
     retention_config_entries,
     set_policy,
 )
+from st_agent.l0.info.switch_config import (
+    SOURCE_SWITCH_PREFIX,
+    get_source_switches,
+    set_source_switch,
+    source_switch_config_entries,
+)
 from st_agent.l0.net.audit_config import (
     AUDIT_CONFIG_ID,
     get_audit_policy,
@@ -46,6 +52,7 @@ from st_agent.l1.sandbox.provider_hosts import CONFIG_ID_PREFIX, ProviderHostReg
 from st_agent.l1.scheduler.policy import OFFLINE_CATCH_UP_CONFIG_ID, SchedulerPolicy
 
 __all__ = [
+    "DataSourceSwitchFamily",
     "McpHubPolicyFamily",
     "NetAuditFamily",
     "ProviderHostFamily",
@@ -319,3 +326,83 @@ class NetAuditFamily:
             change.model_dump_json().encode("utf-8"),
         )
         return change
+
+
+
+class DataSourceSwitchFamily:
+    """L0 信息面数据源开关（``data-source/<source_id>``；story-05「数据源逐个可开关」）。
+
+    条目**按已注册源派生**（[`INFO_SOURCES`](../../../src/st_agent/l0/info/sources.py)
+    的 8 个源），缺省值＝**开**。落值委托
+    :func:`~st_agent.l0.info.switch_config.set_source_switch`（owner 侧的源名与值域
+    校验照旧），owner 不产生 ``ChangeRecord``，由本族补落一条（前缀
+    ``data-source-change/``）——与 ``retention`` / ``net-audit`` 同款。
+
+    本族**不反转合根**任何句柄：开关的消费方是同步引擎，由
+    :func:`~st_agent.l0.info.switch_config.enabled_task_map` 在发起同步时现取。
+
+    :param store: ``Store`` 句柄
+    :param now: 取时函数（测试注入固定时钟；缺省本机当前时刻）
+    """
+
+    config_prefix = SOURCE_SWITCH_PREFIX
+    scope: ConfigScope = "global"
+    change_prefix = "data-source-change/"
+
+    def __init__(self, store, *, now: Callable[[], datetime] | None = None) -> None:
+        self._store = store
+        self._now = _system_now if now is None else now
+
+    def entries(self) -> tuple[ConfigEntry, ...]:
+        current = get_source_switches(self._store)
+        return tuple(
+            e.model_copy(update={"default": current[_source_of(e.config_id)]})
+            for e in source_switch_config_entries()
+        )
+
+    def entry(self, config_id: str) -> ConfigEntry | None:
+        source_id = _source_of(config_id, strict=False)
+        if source_id is None:
+            return None
+        canonical = next(
+            e for e in source_switch_config_entries() if e.config_id == config_id
+        )
+        return canonical.model_copy(
+            update={"default": get_source_switches(self._store)[source_id]}
+        )
+
+    def apply(
+        self, config_id: str, value: object, *, trace_id: str | None = None
+    ) -> ChangeRecord | None:
+        source_id = _source_of(config_id)
+        if not isinstance(value, bool):
+            raise RegistryValidationError(f"{config_id} 的取值须为布尔：{value!r}")
+        old = get_source_switches(self._store)[source_id]
+        if old == value:
+            return None
+        set_source_switch(self._store, source_id, value)
+        change = ChangeRecord(
+            change_id=new_change_id(), config_id=config_id,
+            old_value=old, new_value=value, applied_at=self._now().isoformat(),
+            trace_ref=trace_id,
+        )
+        self._store.put(
+            CHANGE_PARTITION, f"{self.change_prefix}{change.change_id}.json",
+            change.model_dump_json().encode("utf-8"),
+        )
+        return change
+
+
+def _source_of(config_id: str, *, strict: bool = True) -> str | None:
+    """``config_id`` → 源标识；不属本族（或源未注册）时按 ``strict`` 抛或回 ``None``。"""
+    if not config_id.startswith(SOURCE_SWITCH_PREFIX):
+        if strict:
+            raise RegistryValidationError(
+                f"{config_id!r} 不属本族（前缀 {SOURCE_SWITCH_PREFIX!r}）"
+            )
+        return None
+    if config_id not in {e.config_id for e in source_switch_config_entries()}:
+        if strict:
+            raise RegistryValidationError(f"未注册的数据源开关条目：{config_id!r}")
+        return None
+    return config_id[len(SOURCE_SWITCH_PREFIX):]

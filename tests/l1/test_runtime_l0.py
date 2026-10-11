@@ -141,12 +141,23 @@ class TestGwt3ProviderHostOwnership:
         # 装配不迁移归属：同一个 `Store` 上的同类门面读到同一条映射（供 `.2` 注入沙箱）
         assert _build(store).provider_hosts.list() == rt.provider_hosts.list()
 
-    def test_build_writes_only_the_official_pack_seed(self, store: Store):
-        """装配只新增官方 Pack 描述体（`.2` 面），不迁移归属、不写其他配置。"""
+    def test_build_writes_only_the_factory_seeds(self, store: Store):
+        """装配只新增**出厂播种**（两类），不迁移归属、不写任何用户配置。
+
+        两类播种都是**静态出厂内容**、且都幂等（重复装配为零写）：
+
+        - `skill-registry/`——官方 Pack 描述体（`.2` 面）；
+        - `net-capability/`——平台能力的离线分级声明（[`seed_default_capabilities`]，
+          02 §7 的三类清单数据源；此前**无人登记**，故真装配下清单恒空）。
+
+        「不写其他配置」这一半是本用例的真正守卫：用户的设置项、注册表条目、MCP 映射…
+        都不得在装配期被凭空写出来。
+        """
+        factory_prefixes = ("skill-registry/", "net-capability/")
         _build(store)
         after = set(store.list_files("config"))
 
-        assert after and all(n.startswith("skill-registry/") for n in after)
+        assert after and all(n.startswith(factory_prefixes) for n in after)
         _build(store)
         assert set(store.list_files("config")) == after
 
