@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import http.client
 from pathlib import Path
 
 import pytest
@@ -79,6 +80,44 @@ def test_static_shell_still_rejects_foreign_host(ui_server, http_get) -> None:
     """壳不要求令牌，但 `Host` 照校——挡 DNS rebinding 的那道闸门不放松。"""
     response = http_get(ui_server, "/", headers={"Host": "evil.example"})
     assert response.status == 403
+
+
+def test_static_shell_accepts_the_localhost_spelling(ui_server, http_get) -> None:
+    """回环的另一种写法能直达（[D-113]）——此前它撞 403，而用户最自然会敲的就是 `localhost`。"""
+    response = http_get(ui_server, "/", headers={"Host": f"localhost:{ui_server.port}"})
+    assert response.status == 200
+
+
+def test_api_accepts_the_localhost_spelling(ui_server, http_get, auth) -> None:
+    """数据面同理：由 `localhost` 加载的页面发请求时 `Host` / `Origin` 都是该写法。"""
+    headers = auth(
+        ui_server,
+        Host=f"localhost:{ui_server.port}",
+        Origin=f"http://localhost:{ui_server.port}",
+    )
+    assert http_get(ui_server, "/api/health", headers=headers).status == 200
+
+
+def test_reachable_by_the_localhost_hostname(ui_server) -> None:
+    """**按主机名**（而非字面 IP）连得住——这是浏览器实际走的那条路（[D-113] 假设 A1）。
+
+    本机 Windows 上 `localhost` 先解析到 `::1`，而服务只绑 IPv4：连接靠客户端
+    逐地址回落才成立。这条把「回落可达」与「自动填出的 `Host: localhost:port` 过守卫」
+    一并钉住——`http.client` 不手填 `Host`，由它按主机名生成。
+    """
+    conn = http.client.HTTPConnection("localhost", ui_server.port, timeout=5)
+    try:
+        conn.request("GET", "/")
+        assert conn.getresponse().status == 200
+    finally:
+        conn.close()
+
+    conn = http.client.HTTPConnection("localhost", ui_server.port, timeout=5)
+    try:
+        conn.request("POST", "/api/health", body=b"{}", headers={"Content-Length": "2"})
+        assert conn.getresponse().status == 401  # 换写法不放松令牌那一档
+    finally:
+        conn.close()
 
 
 @pytest.mark.parametrize(

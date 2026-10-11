@@ -112,7 +112,7 @@ if "%PORT%"=="" goto :badnews
 
 echo.
 echo   URL    : http://127.0.0.1:%PORT%/#t=%TOK%
-echo   Open it with 127.0.0.1 (NOT localhost - the request guard rejects that).
+echo   Open it with 127.0.0.1 OR localhost (both spellings are accepted).
 echo   Opening the default browser ...
 start "" "http://127.0.0.1:%PORT%/#t=%TOK%"
 echo.

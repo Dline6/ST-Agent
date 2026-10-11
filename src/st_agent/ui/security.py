@@ -8,6 +8,11 @@
 - **数据面**（``/api/*``）：再加 ``X-ST-Token`` —— 令牌经 URL fragment 下发、由前端
   读出后放进请求头，故只有真拿到该地址的页面才用得上数据面。
 
+``Host`` / ``Origin`` 校的是**回环名允许集**而非绑定的那一个字面量（[D-113]）：回环有两种
+写法，用户敲 ``localhost`` 与应用内部拼 ``127.0.0.1`` 是同一件事。放行另一写法不削弱这道
+防线——要挡的是**攻击者可控的域名**（它把域名解析到本机时 ``Host`` 是那个域名），而
+``localhost`` 是 RFC 6761 保留名，攻击者既不能注册也不能改它的解析。
+
 本服务**不回任何 ``Access-Control-Allow-*`` 头**：自定义头 ``X-ST-Token`` 使跨源请求
 必然触发 CORS 预检，而预检拿不到许可头即失败——这是令牌之外的第二道跨源闸门。
 """
@@ -20,10 +25,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-__all__ = ["TOKEN_HEADER", "GuardVerdict", "RequestGuard", "new_token", "resolve_static"]
+__all__ = [
+    "TOKEN_HEADER",
+    "LOOPBACK_NAMES",
+    "GuardVerdict",
+    "RequestGuard",
+    "new_token",
+    "resolve_static",
+]
 
 TOKEN_HEADER = "X-ST-Token"
 """启动令牌的请求头名（[D-060] ③F）。"""
+
+LOOPBACK_NAMES = ("127.0.0.1", "localhost")
+"""回环的两种写法（[D-113]）。绑定名落在其中时，两者视为同一个回环面（端口沿用绑定值）。"""
 
 
 def new_token() -> str:
@@ -57,14 +72,20 @@ class RequestGuard:
         self._port = port
 
     @property
-    def authority(self) -> str:
-        """允许的 ``Host`` 值。"""
-        return f"{self._host}:{self._port}"
+    def authorities(self) -> frozenset[str]:
+        """允许的 ``Host`` 值集合。
+
+        绑定名是回环写法之一时并入另一种（[D-113]），否则只认绑定值本身——绑 LAN 地址时
+        ``localhost`` 不得被自动放行。
+        """
+        if self._host not in LOOPBACK_NAMES:
+            return frozenset({f"{self._host}:{self._port}"})
+        return frozenset(f"{name}:{self._port}" for name in LOOPBACK_NAMES)
 
     @property
-    def origin(self) -> str:
-        """允许的 ``Origin`` 值（回环 http）。"""
-        return f"http://{self.authority}"
+    def origins(self) -> frozenset[str]:
+        """允许的 ``Origin`` 值集合（回环 http）。"""
+        return frozenset(f"http://{authority}" for authority in self.authorities)
 
     def check(self, headers: Mapping[str, str], *, require_token: bool = True) -> GuardVerdict:
         """校验一次请求。
@@ -77,10 +98,10 @@ class RequestGuard:
             token = _header(headers, TOKEN_HEADER)
             if not token or not hmac.compare_digest(token, self._token):
                 return GuardVerdict(False, 401, "缺少或无效的启动令牌")
-        if _header(headers, "Host") != self.authority:
+        if _header(headers, "Host") not in self.authorities:
             return GuardVerdict(False, 403, "请求 Host 与回环地址不符")
         origin = _header(headers, "Origin")
-        if origin and origin != self.origin:
+        if origin and origin not in self.origins:
             return GuardVerdict(False, 403, "请求 Origin 与回环地址不符")
         return GuardVerdict(True)
 
