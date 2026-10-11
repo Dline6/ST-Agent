@@ -23,12 +23,13 @@ import { renderMemoryPage } from './pages/memory.js';
 import { renderReflectionPage, singleBlockPage } from './pages/reflection.js';
 import { renderSettingsPage } from './pages/settings.js';
 import { renderStudioPage } from './pages/studio.js';
+import { renderWorkspacePage } from './pages/workspace.js';
 
 export const PAGES = [
   // ── Chat 主界面 ────────────────────────────────────────────────────────
   { path: '/', title: '总览', statusPath: '/api/health', render: renderChatPage, root: true },
   // ── 工作区 ────────────────────────────────────────────────────────────
-  { path: '/workspace', title: '工作区', statusPath: '/api/workspace/status', root: true },
+  { path: '/workspace', title: '工作区', statusPath: '/api/workspace/status', render: renderWorkspacePage, root: true },
   // ── 记忆 ──────────────────────────────────────────────────────────────
   {
     path: '/memory',

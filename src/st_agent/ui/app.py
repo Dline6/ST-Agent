@@ -810,11 +810,12 @@ class UiApp:
     # **端口名 = 面名**，故 `api_face_status("skills")` 的 `getattr` 直接可用。
 
     workspace: Any = None
-    """工作区（钉住的持久组件）面；缺省 ``None`` → fail-closed。
+    """工作区（钉住的持久组件）面（鸭子端口：``pins()`` / ``pin(body)`` / ``unpin(body)`` /
+    ``refresh(body)``）；缺省 ``None`` → fail-closed。
 
-    **本批刻意保持未接线**：钉住物的落盘与读面归 [`T-UI-013`]，本批不造空门面冒充它
-    （[01 §5]：不拿空壳当「面在」）。故 `/api/workspace/status` 在真组合根上仍回
-    `unavailable` + 点名——这正是「未接线」该有的样子。
+    由组合根注入 [`WorkspaceFacade`](../../src/st_agent/l3/workspace.py)——**重解析来源表
+    也在那一侧**（真取数口住组合根，表现层不认识来源面键背后的任何东西，[01 §12] 的
+    「动作不进描述」）。`ui` 不 import `l3` / `l0` 的类型，只经此鸭子端口消费。
     """
 
     skills: Any = None
@@ -3236,6 +3237,63 @@ class UiApp:
         if not verdict.passed:
             raise ValueError(verdict.reason)
         return description
+
+    # ───────────────────── 工作区（[T-UI-013]） ─────────────────────
+    # 钉住物的持久承载面（[05 §6]）。读面回的是**描述序列**——[01 §5] 允许工作区的 `data`
+    # 为描述序列，[01 §12] 同批写明「工作区是**承载页**、钉住物按其**自身型**渲染」，
+    # 故本层不另造容器型、也不直灌 JSON：逐条走**同一条**渲染路径（注册表 ＋ 两道闸）。
+
+    def api_workspace_pins(self) -> dict[str, Any]:
+        """工作区读面：钉住物按**新钉在前**排的描述序列。
+
+        空工作区是 ``empty`` ＋ 原因（[01 §5]：不得返回裸空），不是 ``ok`` 空数组——两者
+        在渲染面上是「还没钉过东西」与「钉过但都取不出来」的区别。
+        """
+        return self._call_face(
+            "workspace-pins", self.workspace, "工作区面", self._workspace_pins_envelope
+        )
+
+    def api_workspace_pin(self, body: dict[str, Any]) -> dict[str, Any]:
+        """钉住一份描述（同 `description_id` 重复钉住 ＝ 覆盖，即刷新落盘的那一半）。"""
+        return self._call_face(
+            "workspace-pin", self.workspace, "工作区面",
+            lambda face: self._gate_single_description(face.pin(body)),
+        )
+
+    def api_workspace_unpin(self, body: dict[str, Any]) -> dict[str, Any]:
+        """取消钉住（按 `description_id`，[01 §1] 的该 id 即寻址单位）。"""
+        return self._call_face(
+            "workspace-unpin", self.workspace, "工作区面", lambda face: face.unpin(body)
+        )
+
+    def api_workspace_refresh(self, body: dict[str, Any]) -> dict[str, Any]:
+        """重解析一条钉住物（来源面键 → 组合根注入的取数口）；见 [`WorkspaceFacade`]。
+
+        三种如实降级（无来源面键 / 该键未接取数口 / 来源自己非 `ok`）都由面给出
+        ``unavailable`` ＋ 原因，本层只把它**原样**送到渲染面（[01 §5] 六态不混用）。
+        """
+        return self._call_face(
+            "workspace-refresh", self.workspace, "工作区面",
+            lambda face: self._gate_single_description(face.refresh(body)),
+        )
+
+    def _workspace_pins_envelope(self, face: Any) -> ResultEnvelope:
+        """逐条过闸（必填槽 ＋ 渲染前中性门）——序列里任何一条不过即整面 `validation_failed`。
+
+        不逐条降级为「坏的那条不出、好的照出」：一条不过闸说明**产出方**有问题，
+        静默漏掉它会让工作区看起来「本来就少一块」。
+        """
+        envelope = face.pins()
+        if envelope.status != "ok":
+            return envelope
+        gated = [self._gate_description(item) for item in envelope.data]
+        return envelope.model_copy(update={"data": gated})
+
+    def _gate_single_description(self, envelope: ResultEnvelope) -> ResultEnvelope:
+        """`ok` 且载荷是**单份**描述时过闸；非 `ok` 原样出（六态由面给，不吞）。"""
+        if envelope.status != "ok" or not isinstance(envelope.data, UiDescription):
+            return envelope
+        return envelope.model_copy(update={"data": self._gate_description(envelope.data)})
 
     def _call_face(
         self,

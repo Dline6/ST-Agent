@@ -6,11 +6,12 @@
    装配归属（不 500、不装空表冒充「面在但无数据」）。
 2. **端口名 ＝ 面名**——注入后探针回 `ok` 且 `data == {"face": <面名>, "available": True}`，
    故 `api_face_status(face)` 的 `getattr` 与端口字段逐名对应（端口改名而未同步面名会在此红）。
-3. **新增路径只有只读探针**——七条全在 `_GET_ROUTES`、`_POST_ROUTES` 里一条都没有；
-   写面白名单（15 条）本叶**逐条不变**（[01 §12] 动作不进描述：本叶不开任何写面）。
+3. **新增路径只有只读探针**——七条全在 `_GET_ROUTES`；写面白名单由
+   `_EXPECTED_POST_ROUTES` **逐条钉住**（[01 §12] 动作不进描述：各叶开写面时同批补这里）。
 4. **守卫不放宽**——探针属 `/api/*` 数据面，恒要令牌。
 
-真实组合根上的「六面在、`workspace` 刻意未接线」由 `tests/integration/test_ui_face_wiring.py` 兜。
+真实组合根上的「**七面全接线**」由 `tests/integration/test_ui_face_wiring.py` 兜——`workspace`
+自 [`T-UI-013`] 起也在其中（此前刻意未接线）。
 """
 
 from __future__ import annotations
@@ -23,9 +24,6 @@ _FACES = ("workspace", "skills", "mcp", "graph", "deliberation", "delivery", "se
 """七个新面（[`T-UI-011.1`]）；端口名 ＝ 面名 ＝ 探针路径中段。"""
 
 _STATUS_PATHS = tuple(f"/api/{face}/status" for face in _FACES)
-
-_WIRED_FACES = tuple(face for face in _FACES if face != "workspace")
-"""组合根**会**造门面的六个面——`workspace` 刻意不装配（钉住物归 [`T-UI-013`]）。"""
 
 _EXPECTED_POST_ROUTES = frozenset({
     "/api/chat",
@@ -52,6 +50,10 @@ _EXPECTED_POST_ROUTES = frozenset({
     "/api/deliberation/lenses",
     "/api/deliberation/lenses/update",
     "/api/deliberation/decision",
+    # 工作区（[`T-UI-013`]）：钉住 / 取消钉住 / 重解析——三条均为显式动作，非幂等读面。
+    "/api/workspace/pin",
+    "/api/workspace/unpin",
+    "/api/workspace/refresh",
     # 设置区的写面（[`T-UI-018`]）：设置落值 / 备份 / 恢复 / 清空 / 凭据增改吊销 / 在线态
     # 同步 / 网络活动导出——七条全部是显式动作，非幂等读面。
     "/api/settings/apply",
@@ -68,7 +70,7 @@ _EXPECTED_POST_ROUTES = frozenset({
 `T-UI-011.1` 落下 15 条；[`T-UI-014.3`] 新增 2 条（记忆导出确认 / Onboarding 提交）；
 [`T-UI-016.1`] 新增 2 条（推理触发 / 视角增改）、[`T-UI-016.3`] 新增 1 条（决策沉淀）；
 [`T-UI-018`] 新增 8 条（设置落值 / 明密转换 / 备份 / 恢复 / 清空 / 凭据 / 在线态 /
-网络活动导出）。
+网络活动导出）；[`T-UI-013`] 新增 3 条（钉住 / 取消钉住 / 重解析）。
 后续各面功能叶在自己的交付里新增写端点时，同批把此处补上。
 """
 
@@ -94,7 +96,7 @@ def test_probe_needs_the_token(ui_server, http_get, path: str) -> None:
     assert http_get(ui_server, path).status == 401
 
 
-@pytest.mark.parametrize("face", _WIRED_FACES)
+@pytest.mark.parametrize("face", _FACES)
 def test_probe_is_ok_and_names_the_face_once_wired(http_get, auth, face: str) -> None:
     """GWT-2：注入端口 ⇒ `ok`，且 `data.face` 就是**面名**（端口名与面名逐名对应）。"""
     with serve(dev=False, **{face: object()}) as running:

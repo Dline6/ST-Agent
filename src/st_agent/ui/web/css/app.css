@@ -510,3 +510,32 @@ main {
 .banner__line { margin: 0 0 .25rem; color: var(--delayed); font-weight: 600; }
 .banner__body .state { margin: 0 0 .25rem; }
 .banner__body .component-report h3 { font-size: var(--text-md); }
+
+/* 工作区（/workspace；[11-sitemap §2 工作区] / [05 §6]）——钉住的持久组件一件一块，
+   每块自带一条动作行（刷新 / 下钻 / 取消钉住）与一行**就地**消息（成功 / 降级原因）。 */
+.page--workspace { max-width: 46rem; }
+.workspace__item {
+  margin: 0 0 1rem;
+  padding: .75rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  background: var(--card);
+}
+.workspace__item-head { margin: 0 0 .35rem; }
+.workspace__item-title { margin: 0 0 .15rem; font-size: var(--text-md); }
+.workspace__item-meta { margin: 0; color: var(--fg-muted); font-size: var(--text-xs); }
+.workspace__item-body { margin: .35rem 0 0; }
+.workspace__actions { display: flex; flex-wrap: wrap; gap: .4rem; margin: .6rem 0 0; }
+.workspace__action {
+  font: inherit;
+  padding: .2rem .6rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--card);
+  color: var(--fg);
+  cursor: pointer;
+}
+.workspace__action:hover { border-color: var(--fg-muted); }
+.workspace__action:disabled { opacity: .5; cursor: progress; }
+.workspace__note:empty { display: none; }
+.workspace__note .state { margin: .5rem 0 0; font-size: var(--text-sm); }

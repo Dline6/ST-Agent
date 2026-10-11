@@ -48,7 +48,6 @@ _GET_ROUTES: dict[str, Callable[[UiApp, str], dict]] = {
     "/api/eco/status": lambda app, _q: app.api_face_status("eco"),
     # M6 各面探针（[`T-UI-011.1`]）：与新端口**逐名对应**（端口名＝面名），故都是同一条
     # `api_face_status`——未接线即 `unavailable` + 点名，不 500、不装空表。
-    # `workspace` 面本批刻意不装配门面（钉住物归 [`T-UI-013`]），故它恒回 `unavailable`。
     "/api/workspace/status": lambda app, _q: app.api_face_status("workspace"),
     "/api/skills/status": lambda app, _q: app.api_face_status("skills"),
     "/api/mcp/status": lambda app, _q: app.api_face_status("mcp"),
@@ -105,6 +104,9 @@ _GET_ROUTES: dict[str, Callable[[UiApp, str], dict]] = {
     # 供首页常驻卡片与 `/` 补全菜单；未接端口即 `unavailable` + 点名（写面仍只 `/api/chat`）。
     "/api/chat/context": lambda app, _q: app.api_chat_context(),
     "/api/chat/commands": lambda app, _q: app.api_chat_commands(),
+    # 工作区（[`T-UI-013`]）：钉住物的**描述序列**读面——**一条只读**。写面（钉住 / 取消
+    # 钉住 / 重解析）在下面 `_POST_ROUTES`，因为三条都是**显式动作**、非幂等读面。
+    "/api/workspace/pins": lambda app, _q: app.api_workspace_pins(),
     # 推理区（[`T-UI-016.1`]）：视角阵容读面——**一条只读**；逐条启用态 + 启停 / 删除动作
     # （内置只给停用，[06 §1]），路由由 `surface` 面键在渲染件的固定表里解析。
     "/api/deliberation/lenses": lambda app, _q: app.api_deliberation_lenses(),
@@ -156,6 +158,12 @@ _POST_ROUTES: dict[str, Callable[[UiApp, dict], dict]] = {
     # 确认**后的写；未经确认（`confirmed_by != "user"`）即拒（[04 §8] 的强制三步）。
     "/api/memory/export": lambda app, body: app.api_memory_export(body),
     "/api/memory/onboarding": lambda app, body: app.api_memory_onboarding_submit(body),
+    # 工作区（[`T-UI-013`]）：钉住 / 取消钉住 / 重解析——三条均为**显式动作**。
+    # 重解析去哪个来源由**服务端**按记录下来的来源面键决定（[01 §12]：动作不进描述，
+    # 描述里既没有 URL 也没有方法），故请求体只给 `description` / `description_id`。
+    "/api/workspace/pin": lambda app, body: app.api_workspace_pin(body),
+    "/api/workspace/unpin": lambda app, body: app.api_workspace_unpin(body),
+    "/api/workspace/refresh": lambda app, body: app.api_workspace_refresh(body),
     # 推理区（[`T-UI-016.1`]）：页内**自带触发**一次编排 + 自定义视角的增删启停——三条
     # `POST`（`analyze` 会真跑 Skill / 读记忆，非幂等读面，故走写表）。
     "/api/deliberation/analyze": lambda app, body: app.api_deliberation_analyze(body),

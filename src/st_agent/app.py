@@ -112,6 +112,7 @@ from st_agent.l3.render import (
     describe_draft,
     describe_trace,
 )
+from st_agent.l3.workspace import SOURCE_BY_COMPONENT_TYPE, WorkspaceFacade, WorkspacePinStore
 from st_agent.l3.runtime import (
     ActionGate,
     AgentRunReport,
@@ -3405,6 +3406,25 @@ class M5Runtime:
             backups_dir=root.parent / f"{root.name}{BACKUP_DIR_SUFFIX}",
             set_online=runtime.set_online,
             convert_store=Store.convert,
+        )
+
+    @property
+    def workspace(self) -> WorkspaceFacade:
+        """工作区（钉住的持久组件）面（[`T-UI-013`]）。
+
+        两半都在组合根收齐，表现层只经鸭子端口消费：
+
+        - **落盘**——:class:`WorkspacePinStore` 落 L0 的 `config` 分区，钉住物因此走出
+          对话流、跨会话留存；
+        - **重解析来源表**——`context_card` 的取数口是 :meth:`DialogFacade.context_card`
+          （只读记忆、不跑 Skill、不写盘），故它是本批**唯一**接上真解析器的型；其余型
+          钉得住，但刷新如实回 `unavailable` + 点名（[01 §5]：不伪造一份「刷新过」的旧数据）。
+          键取自 :data:`SOURCE_BY_COMPONENT_TYPE` 这同一处真相源，不在此再写一遍字面量
+          ——[01 §12] 的「动作不进描述」要求键是**枚举值**而不是 URL。
+        """
+        return WorkspaceFacade(
+            store=WorkspacePinStore(self.store),
+            resolvers={SOURCE_BY_COMPONENT_TYPE["context_card"]: self.chat.context_card},
         )
 
     @property
