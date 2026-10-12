@@ -159,6 +159,19 @@ _GET_ROUTES: dict[str, Callable[[UiApp, str], dict]] = {
     "/api/studio/trials": lambda app, q: app.api_studio_trials(
         flow_id=_query(q, "flow"), a=_query(q, "a"), b=_query(q, "b")
     ),
+    # 触达区（[`T-UI-017`]）：每日报告 / 已生成日清单 / 推送历史 / 触达配置面板 /
+    # 五动作反馈对话框 / 疲劳面——六条**只读**。带标识与参数的面一律走**查询串**
+    # （[11-sitemap §2.2]：路径集仍是有限字面量集合，不引入动态段）；三条写面在下面
+    # `_POST_ROUTES`（生成 / 配置落值 / 疲劳答复）。
+    "/api/delivery/report": lambda app, q: app.api_delivery_report(day=_query(q, "day")),
+    "/api/delivery/reports": lambda app, q: app.api_delivery_reports(limit=_query(q, "limit")),
+    "/api/delivery/history": lambda app, q: app.api_delivery_history(limit=_query(q, "limit")),
+    "/api/delivery/config": lambda app, _q: app.api_delivery_config(),
+    "/api/delivery/feedback": lambda app, q: app.api_delivery_feedback(
+        delivery_id=_query(q, "delivery")
+    ),
+    "/api/delivery/fatigue": lambda app, _q: app.api_delivery_fatigue(),
+    "/api/delivery/inquiries": lambda app, _q: app.api_delivery_inquiries(),
 }
 """`GET` 数据面的路由表：路径 → `(UiApp, 查询串)` → 载荷。**只此一处**判定「某路径存在与否」
 ——散落的 `if path == …` 分支会随着端点增多而漂移（[`T-UI-003`] 的同型取向）。"""
@@ -228,6 +241,12 @@ _POST_ROUTES: dict[str, Callable[[UiApp, dict], dict]] = {
     "/api/studio/workflow/version": lambda app, body: app.api_studio_version_set(body),
     "/api/studio/template/fork": lambda app, body: app.api_studio_template_fork(body),
     "/api/studio/trial": lambda app, body: app.api_studio_trial(body),
+    # 触达区（[`T-UI-017`]）：生成当日报告（对同一纯函数的显式重放）/ 触达配置落值
+    # （预算格位 / 渠道链 / 情境模式 / 日报时刻 / 疲劳阈值——写面按条目取值形态分流）/
+    # 疲劳答复（经 L3 采集面铸 FeedbackEvent 发 `FeedbackRecorded`）——三条都是**显式动作**。
+    "/api/delivery/report/build": lambda app, body: app.api_delivery_report_build(body),
+    "/api/delivery/config": lambda app, body: app.api_delivery_config_apply(body),
+    "/api/delivery/fatigue/answer": lambda app, body: app.api_delivery_fatigue_answer(body),
 }
 """`POST` 数据面的路由表：路径 → `(UiApp, body)` → 载荷。**非本表内的 POST 一律 404**。
 

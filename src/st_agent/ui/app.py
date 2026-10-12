@@ -15,11 +15,13 @@ import logging
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+from itertools import combinations
 from pathlib import Path
 from typing import Any
 
 from st_agent import __version__
+from st_agent.contracts.identifiers import DeliveryId
 from st_agent.contracts.permissions import DECISION_LABELS, describe_permission
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.ui_description import UiDescription, checked_description, new_description_id
@@ -48,6 +50,13 @@ from st_agent.l1.workflow.errors import TrialError, WorkflowNotFoundError
 from st_agent.l1.workflow.ids import base_of
 from st_agent.l3.render.describe import STANCE_LABELS, describe_divergence_map, describe_trace
 from st_agent.l4.errors import BuiltinLensError, LensNotFoundError
+from st_agent.l5.budget import LEVELS as SIGNAL_LEVELS
+from st_agent.l5.budget import BudgetKey
+from st_agent.l5.channels import CHANNEL_KINDS
+from st_agent.l5.daily_report import NO_CONTENT_NOTE
+from st_agent.l5.daily_report_store import REPORT_PREFIX
+from st_agent.l5.errors import ChannelNotWiredError, L5Error
+from st_agent.l5.fatigue import ANSWERS as FATIGUE_ANSWERS
 
 from st_agent.ui.envelope import envelope_payload
 from st_agent.ui.errors import DevSurfaceUnavailable
@@ -1358,6 +1367,374 @@ def _is_inside(target: Path, root: Path) -> bool:
     except OSError:  # 不存在的路径在 Windows 上可能抛；退回字面比较
         resolved, base = target.absolute(), root.absolute()
     return resolved == base or base in resolved.parents
+
+
+# ───────────────────── 触达区（[T-UI-017]） ─────────────────────
+
+DELIVERY_CONFIG_SURFACE = "delivery-config"
+"""触达配置面板的面键（`setting_panel` 的 `surface` 槽；[`T-UI-017`] 三叶共用）。
+
+日报生成时刻、注意力预算（情境 / 格位）、渠道偏好、补发开关与疲劳阈值**共用一面键**——
+它们同属触达设置面、同走一条回环路由（先例＝`settings-config` 的四设置页共用一个按键）。
+路由由**枚举键**在渲染件的固定表里解析，描述**不接受** URL / 方法（[01 §12]「动作不进描述」）。
+"""
+
+_MODE_LABELS = {
+    "workday": "工作日", "weekend": "周末", "business_trip": "出差",
+    "vacation": "休假", "urgent": "紧急",
+}
+"""五情境模式的中文名（[07 §2] 的 `SituationMode`；系统文案）。"""
+
+_CONTENT_LABELS = {
+    "long_form": "长内容", "brief": "短提示",
+    "interactive": "交互式", "retrospective": "周期回顾",
+}
+"""四内容类型的中文名（[07 §2 的两轴口径]；系统文案）。"""
+
+_LEVEL_LABELS = {"emergency": "紧急", "important": "重要", "routine": "日常"}
+"""三信号级别的中文名（[07 §1]；系统文案）。"""
+
+_CHANNEL_LABELS = {
+    "desktop": "桌面通知", "tts": "语音朗读", "email": "邮件", "im_webhook": "IM Webhook",
+    "daily_report": "汇总进日报",
+}
+"""渠道的中文名（[07 §3] 的四类适配器 + 「汇总进日报」这一**路由位**，见 `DAILY_REPORT_CHANNEL`）。"""
+
+_DELIVERY_STATE_LABELS = {
+    "delivered": "已投出", "read": "已读", "unacknowledged": "链尽未读",
+    "queued": "汇总进日报", "unavailable": "不可用", "failed": "失败",
+}
+"""推送留痕六态的中文名（[`DeliveryStatus`]；系统文案，**不合并**）。"""
+
+_DELIVERY_TIMELINE_STATES = {
+    "delivered": "ok", "read": "ok", "queued": "empty",
+    "unacknowledged": "delayed", "unavailable": "delayed", "failed": "failed",
+}
+"""留痕态 → `timeline_view` 的四个呈现档（渲染件的 `STATE_CLASS` 只认 ok / empty / delayed / failed）。
+
+`delayed` 同时承载「链尽未读」与「离线待补发」两态——两者的区分写在条目正文里
+（「离线，暂无法发送」），**不靠**呈现档硬分。
+"""
+
+_FATIGUE_ANSWER_LABELS = {"reduce": "减少", "disable": "关闭", "keep": "保持"}
+"""疲劳答复三选的中文名（[07 §7]）。"""
+
+_FATIGUE_ANSWER_ACTION = "ignored"
+"""疲劳答复所携 `FeedbackEvent.action`——[08 §1] 的 `action` 只有五值，**无**「减少 / 关闭 / 保持」
+的对应值，故取一个合法固定值，答复语义载在 `context.fatigue_choice`（L5 `consume` 只读后者，
+[`T-UI-017.3`] 假设 A2）。**不取** `rejected`——它强求 `reason`（按钮答复没有原因输入）。
+"""
+
+_REPORT_LIST_LIMIT = 30
+"""已生成日报清单单次列出的上限（超出即如实标注「共 N 天、显示最近 M 天」，不静默截断）。"""
+
+_HISTORY_LIMIT = 100
+"""推送历史时间线单次列出的上限（同上）。"""
+
+
+def _today() -> date:
+    """本机墙钟日历日（[01 §8]；与日报的落盘键 `<YYYY-MM-DD>` 同口径）。"""
+    return _now().date()
+
+
+def _report_day(raw: str) -> date:
+    """`?day=` → 日历日；缺省＝今日；非法即拒（**不静默回落**，否则会读出一份别的日期的报告）。"""
+    text = (raw or "").strip()
+    if not text:
+        return _today()
+    try:
+        return date.fromisoformat(text)
+    except ValueError as exc:
+        raise ValueError(f"日期须为 YYYY-MM-DD（得到 {raw!r}）") from exc
+
+
+def _bounded_limit(raw: str, *, default: int, cap: int, what: str) -> int:
+    """列表条数上限（缺省 `default`；非法即拒**不夹取**；上限之上再夹一层是读取成本护栏）。"""
+    text = (raw or "").strip()
+    if not text:
+        return default
+    try:
+        value = int(text)
+    except ValueError as exc:
+        raise ValueError(f"{what} 须为整数（得到 {raw!r}）") from exc
+    if value < 1:
+        raise ValueError(f"{what} 须为正整数（得到 {raw!r}）")
+    return min(value, cap)
+
+
+def _level_tokens() -> tuple[tuple[str, str], ...]:
+    """允许级别集合的候选（token, 中文标签）——**恒含 `emergency`** 的非空子集（[07 §2]）。
+
+    候选集由 `LEVELS` 推导而非硬编码：级别集合若随官方 Pack 扩了，选项面跟着长，
+    不会悄悄少一档。token 是级别的逗号串（如 `emergency,important`）——稳定、可逆、
+    与 `BudgetCell.allowed_levels` 一一对应。
+    """
+    tokens: list[tuple[str, str]] = []
+    for size in range(1, len(SIGNAL_LEVELS) + 1):
+        for combo in combinations(SIGNAL_LEVELS, size):
+            if "emergency" not in combo:
+                continue
+            if size == len(SIGNAL_LEVELS):
+                label = "全部级别"
+            elif size == 1:
+                label = f"仅{_LEVEL_LABELS[combo[0]]}"
+            else:
+                label = " + ".join(_LEVEL_LABELS[level] for level in combo)
+            tokens.append((",".join(combo), label))
+    return tuple(tokens)
+
+
+def _l5_envelope(fn: Callable[[], Any]) -> Any:
+    """包一次 L5 调用：**接线缺口 → `unavailable`；越界 → `validation_failed`**。
+
+    L5 的失败词汇（[`L5Error`] 各支）**不是** `ValueError` ⇒ 不译就会被 `_call_face` 当成
+    「未预期失败」报成 `failed`，那是把「你填错了」误报成「服务端坏了」（同 [`T-UI-015.1`]
+    对 `SkillNotFoundError` 的就地翻译）。``ChannelNotWiredError`` 另作一支：它是**装配缺口**
+    （渠道没接线），不是输入错误。
+
+    成功时返回调用的原始结果（**不包信封**）——调用方按需决定怎么摆进描述。
+    """
+    try:
+        return fn()
+    except ChannelNotWiredError as exc:
+        return ResultEnvelope.unavailable(str(exc), last_updated_at=_now())
+    except L5Error as exc:
+        return ResultEnvelope.validation_failed(str(exc))
+    except (ValueError, KeyError) as exc:
+        return ResultEnvelope.validation_failed(str(exc) or "请求不合契约")
+
+
+def _as_envelope(value: Any) -> ResultEnvelope:
+    """`_l5_envelope` 的产物 → 信封（已是信封的原样出，其余包 `ok`）。"""
+    return value if isinstance(value, ResultEnvelope) else ResultEnvelope.ok(value)
+
+
+def _change_payload(record: Any) -> dict[str, Any]:
+    """一次落值的回执（渲染件据 `changed` 决定说「已应用（留痕已记）」还是「取值未变」）。"""
+    return {"changed": record is not None, "change_id": getattr(record, "change_id", None)}
+
+
+def _stored_report_days(store: Any) -> tuple[date, ...]:
+    """`execution_log/daily_report/` 前缀下**已生成**的日（新在前；不可解析的文件名跳过）。
+
+    文件名即 `<YYYY-MM-DD>.json`（[`DailyReportStore.path_for`] 的确定性派生），故列举目录
+    就能得到日清单，无需逐日试探（同 [`T-UI-015.1`] 的 `skill-run/` 列法）。
+    """
+    days: set[date] = set()
+    for name in store.list_files("execution_log"):
+        if not (name.startswith(REPORT_PREFIX) and name.endswith(".json")):
+            continue
+        try:
+            days.add(date.fromisoformat(name[len(REPORT_PREFIX):-len(".json")]))
+        except ValueError:
+            continue
+    return tuple(sorted(days, reverse=True))
+
+
+def _clock(at: datetime) -> str:
+    """留痕时刻的中性呈现（本机墙钟，分钟精度）。"""
+    return at.strftime("%Y-%m-%d %H:%M")
+
+
+def _report_sections(report: Any) -> list[dict[str, Any]]:
+    """`DailyReport` → `report_card` 的段（四段逐段并列 + 投出态；段级空态**显式**）。"""
+    sections: list[dict[str, Any]] = []
+    if report.empty:
+        sections.append({"title": "今日无内容", "lines": [NO_CONTENT_NOTE]})
+    for section in report.sections:
+        lines = list(section.lines)
+        if not lines:
+            lines = [section.empty_note or "（本段无内容）"]
+        sections.append({"title": section.label, "lines": lines})
+    delivered = str(getattr(report, "delivered_channel", "") or "")
+    sections.append({
+        "title": "投出",
+        "lines": [f"已投出到「{_CHANNEL_LABELS.get(delivered, delivered)}」" if delivered
+                  else "尚未投出（订阅渠道与到点生成由常驻循环驱动）"],
+    })
+    return sections
+
+
+def _history_entry(record: Any) -> dict[str, Any]:
+    """一条推送留痕 → `timeline_view` 的条目（状态如实、离线态显式标注）。"""
+    status = str(getattr(record, "status", ""))
+    channel = str(getattr(record, "channel", ""))
+    body = str(getattr(record, "body", ""))
+    title = str(getattr(record, "title", ""))
+    note = ""
+    if getattr(record, "pending_reconnect", False):
+        note = "（离线，暂无法发送；恢复后按开关补发）"
+    elif status == "unacknowledged":
+        note = "（链尽仍未读，已转日报汇总，不丢弃）"
+    text = f"{title}：{body}" if body and body != title else title
+    return {
+        "at": _clock(record.created_at),
+        "kind": channel,
+        "state": _DELIVERY_TIMELINE_STATES.get(status, "empty"),
+        "content": f"{_DELIVERY_STATE_LABELS.get(status, status)} · {text}{note}",
+        "trace_ref": str(getattr(record, "delivery_id", "")),
+    }
+
+
+def _delivery_config_labels() -> dict[str, str]:
+    """`delivery-config` 面板的标签表（动作键 + 候选取值 → 中性中文，过 [01 §6]）。"""
+    return {
+        "switch-mode": "切换",
+        "set-cell": "应用",
+        "set-policy": "应用",
+        "resend-on": "开启",
+        "resend-off": "关闭",
+        "set-report-time": "应用",
+        "set-fatigue-threshold": "应用",
+        **_MODE_LABELS,
+        **_CONTENT_LABELS,
+        **{token: label for token, label in _level_tokens()},
+    }
+
+
+def _mode_entry(budget_map: Any) -> dict[str, Any]:
+    """情境模式切换器（[07 §2]）；「按日历自动」**不给入口**——用户日历面未交付，不假装有。"""
+    return {
+        "identifier": "情境模式",
+        "current": budget_map.current_mode,
+        "options": [{"value": mode} for mode in budget_map.modes],
+        "actions": ["switch-mode"],
+        "description": "当前情境决定按哪一套注意力预算放行；按日历自动切换待用户日历面就位",
+        "params": {},
+    }
+
+
+def _cell_entries(budget_map: Any) -> list[dict[str, Any]]:
+    """**当前情境**下的预算格位（时段 × 内容类型）——逐格两条：允许级别 + 每格上限。
+
+    只列当前情境是**可用性**取舍：全叉积是 5 × 5 × 4 = 100 格，平铺成面板条目不可读
+    （[`T-UI-017.2`] 假设 A3）。切情境即重取该模式的格位。
+    """
+    tokens = _level_tokens()
+    labels = {slot.slot_id: slot.label for slot in budget_map.slots}
+    entries: list[dict[str, Any]] = []
+    for view in budget_map.cells:
+        if view.key.mode != budget_map.current_mode:
+            continue
+        head = f"{labels.get(view.key.slot_id, view.key.slot_id)} · " \
+               f"{_CONTENT_LABELS.get(view.key.content_type, view.key.content_type)}"
+        source = "用户已配" if view.source == "configured" else "缺省"
+        entries.append({
+            "identifier": f"{head} · 允许级别",
+            "current": ",".join(lv for lv in SIGNAL_LEVELS if lv in view.allowed_levels),
+            "options": [{"value": token} for token, _ in tokens],
+            "actions": ["set-cell"],
+            "description": f"{source}；允许单独触达的级别（恒含紧急——预算不挡紧急信号）",
+            "params": {
+                "mode": view.key.mode, "slot_id": view.key.slot_id,
+                "content_type": view.key.content_type, "field": "levels",
+            },
+        })
+        entries.append({
+            "identifier": f"{head} · 每格上限",
+            "current": str(view.max_per_slot),
+            "options": [],
+            "input": "text",
+            "actions": ["set-cell"],
+            "description": f"{source}；本格位在该时段内最多单独触达几条（整数，≥1）",
+            "params": {
+                "mode": view.key.mode, "slot_id": view.key.slot_id,
+                "content_type": view.key.content_type, "field": "max",
+            },
+        })
+    return entries
+
+
+def _policy_entries(policies: Any) -> list[dict[str, Any]]:
+    """逐级别的渠道链（有序链 + 未读等待）；取值形如 `desktop,email | 5,15`。
+
+    链与等待是**一对**（不变式 `len(waits) == len(channels) - 1`），故同一条目承载两者：
+    分开成两条会让「改链长」变成死锁（改链要新等待、改等待要新链）。等待段可省，
+    省则只在链长不变时合法（L5 会显式拒，页面据此提示须补等待段）。
+    """
+    entries: list[dict[str, Any]] = []
+    for policy in policies:
+        level = str(policy.level)
+        label = _LEVEL_LABELS.get(level, level)
+        waits = ",".join(str(wait) for wait in policy.waits_minutes)
+        current = f"{','.join(policy.channels)} | {waits}" if waits else ",".join(policy.channels)
+        entries.append({
+            "identifier": f"渠道链（{label}）",
+            "current": current,
+            "options": [],
+            "input": "text",
+            "actions": ["set-policy"],
+            "description": (
+                f"{'用户已配' if policy.source == 'configured' else '缺省'}；合法渠道键 = "
+                f"{' / '.join(CHANNEL_KINDS)}；格式「渠道1,渠道2 | 等待1,等待2」，"
+                "等待段可省（链长不变时沿用当前）"
+            ),
+            "params": {"level": level, "field": "chain"},
+        })
+    return entries
+
+
+def _resend_entry(enabled: bool) -> dict[str, Any]:
+    """断网补发开关（[07 §3]）。"""
+    return {
+        "identifier": "网络恢复后补发云端渠道",
+        "current": "开启" if enabled else "关闭",
+        "options": [],
+        "actions": ["resend-on", "resend-off"],
+        "description": "断网时云端渠道（邮件 / IM）记为待补发；网络恢复后按此开关补发",
+        "params": {},
+    }
+
+
+def _report_time_entry(report_time: Any) -> dict[str, Any]:
+    """日报生成时刻（[07 §5]；标量条目，取值 `HH:MM`）。"""
+    return {
+        "identifier": "日报生成时刻",
+        "current": report_time.strftime("%H:%M"),
+        "options": [],
+        "input": "text",
+        "actions": ["set-report-time"],
+        "description": "每天什么时候本地生成「给你的信」（24 小时制 HH:MM）；到点生成归常驻循环",
+        "params": {},
+    }
+
+
+def _fatigue_threshold_entry(threshold: int) -> dict[str, Any]:
+    """推送疲劳阈值（[07 §7]；标量条目）。"""
+    return {
+        "identifier": "推送疲劳阈值（连续忽略次数）",
+        "current": str(threshold),
+        "options": [],
+        "input": "text",
+        "actions": ["set-fatigue-threshold"],
+        "description": "某类推送被连续忽略达此次数即发问「要不要减少」（默认 5）",
+        "params": {},
+    }
+
+
+def _parse_policy_value(raw: str) -> tuple[list[str], list[int] | None]:
+    """渠道链条目的取值 → `(channels, waits)`；等待段省略即 `None`（由 L5 判是否可沿用）。"""
+    head, _, tail = raw.partition("|")
+    channels = [item.strip() for item in head.split(",") if item.strip()]
+    if not tail.strip():
+        return channels, None
+    waits: list[int] = []
+    for item in tail.split(","):
+        text = item.strip()
+        if not text:
+            continue
+        if not text.isdigit():
+            raise ValueError(f"未读等待须为正整数分钟，收到 {text!r}")
+        waits.append(int(text))
+    return channels, waits
+
+
+def _positive_int(raw: str, what: str) -> int:
+    """正整数取值（表单回传恒为字符串）；非正整数即拒**不夹取**。"""
+    text = raw.strip()
+    if not text.isdigit() or int(text) < 1:
+        raise ValueError(f"{what} 须为正整数，收到 {raw!r}")
+    return int(text)
 
 
 @dataclass
@@ -4880,6 +5257,525 @@ class UiApp:
         if isinstance(result, ResultEnvelope):
             return envelope_payload(result)
         return envelope_payload(ResultEnvelope.ok(result))
+
+    # ───────────────────── 触达区（[T-UI-017]） ─────────────────────
+    #
+    # 三叶同批落在这一个区块：`.1` 日报与推送历史 · `.2` 预算 / 渠道 / 情境配置 ·
+    # `.3` 五动作反馈与疲劳调整询问。四条纪律与其余各面一致——
+    # ① 带标识 / 参数的面走**查询串**（[11-sitemap §2.2]：路径集仍是有限字面量集合）；
+    # ② 写面是**显式动作**，进 `_POST_ROUTES`；③ L5 的失败词汇经 `_l5_envelope` 翻成六态
+    # （**不**冒充 `failed`）；④ 动作不进描述——`setting_panel` 的路由由 `surface` 面键在
+    # 渲染件的固定表里解析，描述只承载数据（[01 §12]）。
+
+    def _require_handle(self, face: Any, name: str, label: str) -> Any:
+        """取门面上的一个句柄；缺即 `unavailable` + 点名（返回信封，调用方判类型）。"""
+        value = getattr(face, name, None)
+        if value is None:
+            return ResultEnvelope.unavailable(
+                f"未接入{label}（{name}），该动作不可用（装配归组合根）",
+                last_updated_at=_now(),
+            )
+        return value
+
+    # ── `.1` 日报与推送历史 ────────────────────────────────────────────────
+
+    def api_delivery_report(self, *, day: str) -> dict[str, Any]:
+        """每日报告页 → `report_card`（四段 + 投出态；`?day=` 缺省＝今日）。"""
+        return self._call_face(
+            "delivery-report", self.delivery, "L5 主动触达面",
+            lambda face: self._delivery_report_envelope(face, day),
+        )
+
+    def api_delivery_reports(self, *, limit: str) -> dict[str, Any]:
+        """已生成日报清单 → `table`（`?limit=` 列出最近 N 天）。"""
+        return self._call_face(
+            "delivery-reports", self.delivery, "L5 主动触达面",
+            lambda face: self._delivery_reports_envelope(face, limit),
+        )
+
+    def api_delivery_history(self, *, limit: str) -> dict[str, Any]:
+        """推送历史时间线 → `timeline_view`（逐条投递留痕；`?limit=` 列出最近 N 条）。"""
+        return self._call_face(
+            "delivery-history", self.delivery, "L5 主动触达面",
+            lambda face: self._delivery_history_envelope(face, limit),
+        )
+
+    def api_delivery_report_build(self, body: dict[str, Any]) -> dict[str, Any]:
+        """生成某日报告——对同一纯函数 `build(day)` 的**显式重放**（[07 §5]）。
+
+        日报生成本是常驻循环 `tick` 内 `due` 判定的职责；`build` 以「显式时刻 / 留痕状态」
+        为唯一输入、写同一路径（`execution_log/daily_report/<day>.json`），故页面触发生成
+        **不新增第二条生成逻辑**、也不会产生重复报告。
+        """
+        return self._call_face(
+            "delivery-report-build", self.delivery, "L5 主动触达面",
+            lambda face: self._build_report_envelope(face, body),
+        )
+
+    def _delivery_report_envelope(self, face: Any, day: str) -> ResultEnvelope:
+        reports = self._require_handle(face, "reports", "L5 日报面")
+        if isinstance(reports, ResultEnvelope):
+            return reports
+        target = _report_day(day)
+        report = _l5_envelope(lambda: reports.stored(target))
+        if isinstance(report, ResultEnvelope):
+            return report
+        if report is None:
+            return ResultEnvelope.empty(
+                f"{target.isoformat()} 尚无报告——到点由常驻循环生成；"
+                "「生成」是对同一纯函数的显式重放，可立即补出"
+            )
+        return ResultEnvelope.ok(self._gated_description(
+            "report_card",
+            slots={"sections": _report_sections(report)},
+            text_kinds={"sections": "data"},
+            title=f"日报 · {report.day.isoformat()}",
+            as_of=report.generated_at,
+        ))
+
+    def _delivery_reports_envelope(self, face: Any, limit: str) -> ResultEnvelope:
+        store = self._require_handle(face, "store", "本地存储面")
+        if isinstance(store, ResultEnvelope):
+            return store
+        reports = self._require_handle(face, "reports", "L5 日报面")
+        if isinstance(reports, ResultEnvelope):
+            return reports
+        cap = _bounded_limit(limit, default=_REPORT_LIST_LIMIT, cap=_REPORT_LIST_LIMIT,
+                             what="条数（limit）")
+        stored = _l5_envelope(lambda: _stored_report_days(store))
+        if isinstance(stored, ResultEnvelope):
+            return stored
+        if not stored:
+            return ResultEnvelope.empty(
+                "尚无已生成的日报——到点由常驻循环生成，或在日报页点「生成」"
+            )
+        rows: list[dict[str, Any]] = []
+        unreadable = 0
+        for target in stored[:cap]:
+            report = _l5_envelope(lambda: reports.stored(target))
+            if isinstance(report, ResultEnvelope):
+                return report
+            if report is None:
+                unreadable += 1
+                continue
+            channel = str(getattr(report, "delivered_channel", "") or "")
+            rows.append({
+                "day": report.day.isoformat(),
+                "generated_at": _clock(report.generated_at),
+                "content": "无内容（今天没有需要打扰你的事）" if report.empty else "有内容",
+                "delivered": _CHANNEL_LABELS.get(channel, channel) if channel else "（未投出）",
+            })
+        title = f"已生成的日报 · 共 {len(stored)} 天"
+        if len(stored) > cap:
+            title += f"，显示最近 {cap} 天"
+        if unreadable:
+            title += f"（另 {unreadable} 天留痕无法解析，未计入）"
+        return ResultEnvelope.ok(self._gated_description(
+            "table",
+            slots=table_slots(
+                (
+                    Column("day", "日期"),
+                    Column("generated_at", "生成时刻"),
+                    Column("content", "内容"),
+                    Column("delivered", "投出"),
+                ),
+                rows,
+            ),
+            text_kinds=table_text_kinds(),
+            title=title,
+        ))
+
+    def _delivery_history_envelope(self, face: Any, limit: str) -> ResultEnvelope:
+        orchestrator = self._require_handle(face, "delivery", "L5 投递编排面")
+        if isinstance(orchestrator, ResultEnvelope):
+            return orchestrator
+        cap = _bounded_limit(limit, default=_HISTORY_LIMIT, cap=_HISTORY_LIMIT,
+                             what="条数（limit）")
+        ledger = _l5_envelope(lambda: tuple(orchestrator.ledger()))
+        if isinstance(ledger, ResultEnvelope):
+            return ledger
+        if not ledger:
+            return ResultEnvelope.empty("尚无推送留痕——信号经 L5 投出后在此逐条呈现")
+        ordered = sorted(ledger, key=lambda record: record.created_at, reverse=True)
+        title = f"推送历史 · 共 {len(ordered)} 条"
+        if len(ordered) > cap:
+            title += f"，显示最近 {cap} 条"
+        return ResultEnvelope.ok(self._gated_description(
+            "timeline_view",
+            slots={
+                "entries": [_history_entry(record) for record in ordered[:cap]],
+                "labels": {
+                    "kinds": dict(_CHANNEL_LABELS),
+                    "states": {
+                        "ok": "已投出", "empty": "已汇总",
+                        "delayed": "未确认", "failed": "失败",
+                    },
+                },
+                "empty_hint": "尚无推送留痕",
+            },
+            text_kinds={"entries": "data", "labels": "generated", "empty_hint": "generated"},
+            title=title,
+        ))
+
+    def _build_report_envelope(self, face: Any, body: dict[str, Any]) -> ResultEnvelope:
+        reports = self._require_handle(face, "reports", "L5 日报面")
+        if isinstance(reports, ResultEnvelope):
+            return reports
+        target = _report_day(str(body.get("day") or ""))
+        report = _l5_envelope(lambda: reports.build(target))
+        if isinstance(report, ResultEnvelope):
+            return report
+        return ResultEnvelope.ok({
+            "day": report.day.isoformat(),
+            "empty": report.empty,
+            "sections": len(report.sections),
+        })
+
+    # ── `.2` / `.3` 配置面板与落值 ─────────────────────────────────────────
+
+    def api_delivery_config(self) -> dict[str, Any]:
+        """触达配置面板 → `setting_panel`（面键 `delivery-config`）。
+
+        预算格位 / 渠道链的取值是**对象 / 列表** ⇒ 写面归 L5 自有 API（[01 §7]「逐条目一次
+        落值」）；日报时刻与疲劳阈值是**标量**（本可用统一落值面），本页把它们也走 L5 自有
+        写面——同一面板的落点只此一处，不为标量另开一条注册表路径（[`T-UI-017.2`] 假设 A2）。
+        """
+        return self._call_face(
+            "delivery-config", self.delivery, "L5 主动触达面",
+            lambda face: self._delivery_config_envelope(face),
+        )
+
+    def api_delivery_config_apply(self, body: dict[str, Any]) -> dict[str, Any]:
+        """触达配置落值——按 `action` 分派到 L5 自有写面（**留痕经 [01 §7] 的 `ChangeRecord`**）。"""
+        return self._call_face(
+            "delivery-config-apply", self.delivery, "L5 主动触达面",
+            lambda face: _as_envelope(self._apply_delivery_config(face, body)),
+        )
+
+    def _delivery_config_envelope(self, face: Any) -> ResultEnvelope:
+        for name, label in (("budget", "注意力预算面"), ("policies", "渠道偏好面"),
+                            ("reports", "L5 日报面"), ("fatigue", "疲劳监控面")):
+            missing = self._require_handle(face, name, label)
+            if isinstance(missing, ResultEnvelope):
+                return missing
+        budget_map = _l5_envelope(lambda: face.budget.map())
+        if isinstance(budget_map, ResultEnvelope):
+            return budget_map
+        policies = _l5_envelope(lambda: tuple(face.policies.map()))
+        if isinstance(policies, ResultEnvelope):
+            return policies
+        report_time = _l5_envelope(lambda: face.reports.report_time())
+        if isinstance(report_time, ResultEnvelope):
+            return report_time
+        threshold = _l5_envelope(lambda: face.fatigue.threshold())
+        if isinstance(threshold, ResultEnvelope):
+            return threshold
+        resend = _l5_envelope(lambda: face.policies.resend_on_reconnect)
+        if isinstance(resend, ResultEnvelope):
+            return resend
+        entries = [
+            _mode_entry(budget_map),
+            *_cell_entries(budget_map),
+            *_policy_entries(policies),
+            _resend_entry(bool(resend)),
+            _report_time_entry(report_time),
+            _fatigue_threshold_entry(int(threshold)),
+        ]
+        return ResultEnvelope.ok(self._gated_description(
+            "setting_panel",
+            slots={
+                "entries": entries,
+                "labels": _delivery_config_labels(),
+                "surface": DELIVERY_CONFIG_SURFACE,
+            },
+            text_kinds={"entries": "data", "surface": "data", "labels": "generated"},
+            title="触达配置",
+        ))
+
+    def _apply_delivery_config(self, face: Any, body: dict[str, Any]) -> Any:
+        action = str(body.get("action") or "")
+        if action == "switch-mode":
+            budget = self._require_handle(face, "budget", "注意力预算面")
+            if isinstance(budget, ResultEnvelope):
+                return budget
+            mode = str(_required(body, "value"))
+            got = _l5_envelope(lambda: budget.switch_mode(mode))
+            return got if isinstance(got, ResultEnvelope) else _change_payload(got)
+        if action == "set-cell":
+            budget = self._require_handle(face, "budget", "注意力预算面")
+            if isinstance(budget, ResultEnvelope):
+                return budget
+            key = BudgetKey(
+                mode=str(_required(body, "mode")),
+                slot_id=str(_required(body, "slot_id")),
+                content_type=str(_required(body, "content_type")),
+            )
+            field = str(_required(body, "field"))
+            value = str(_required(body, "value"))
+            current = _l5_envelope(lambda: budget.cell(key))
+            if isinstance(current, ResultEnvelope):
+                return current
+            if field == "levels":
+                cell: dict[str, Any] = {
+                    "allowed_levels": [lv.strip() for lv in value.split(",") if lv.strip()],
+                    "max_per_slot": current.max_per_slot,
+                }
+            elif field == "max":
+                cell = {
+                    "allowed_levels": [lv for lv in SIGNAL_LEVELS if lv in current.allowed_levels],
+                    "max_per_slot": _positive_int(value, "每格上限"),
+                }
+            else:
+                raise ValueError(f"未知的格位字段：{field!r}（只认 levels / max）")
+            got = _l5_envelope(lambda: budget.set_cell(key, cell))
+            return got if isinstance(got, ResultEnvelope) else _change_payload(got)
+        if action == "set-policy":
+            policies = self._require_handle(face, "policies", "渠道偏好面")
+            if isinstance(policies, ResultEnvelope):
+                return policies
+            level = str(_required(body, "level"))
+            channels, waits = _parse_policy_value(str(_required(body, "value")))
+            before = len(policies.changes())
+            got = _l5_envelope(
+                lambda: policies.set_policy(level, channels, waits_minutes=waits)
+            )
+            if isinstance(got, ResultEnvelope):
+                return got
+            # `set_policy` 回的是策略本体（非 `ChangeRecord`）⇒ 用留痕条数判「是否真落值」；
+            # 取值未变时 L5 不写盘、不留痕（[01 §7]）。
+            return {"changed": len(policies.changes()) > before}
+        if action in ("resend-on", "resend-off"):
+            policies = self._require_handle(face, "policies", "渠道偏好面")
+            if isinstance(policies, ResultEnvelope):
+                return policies
+            got = _l5_envelope(
+                lambda: policies.set_resend_on_reconnect(action == "resend-on")
+            )
+            return got if isinstance(got, ResultEnvelope) else _change_payload(got)
+        if action == "set-report-time":
+            reports = self._require_handle(face, "reports", "L5 日报面")
+            if isinstance(reports, ResultEnvelope):
+                return reports
+            got = _l5_envelope(lambda: reports.set_time(str(_required(body, "value"))))
+            return got if isinstance(got, ResultEnvelope) else _change_payload(got)
+        if action == "set-fatigue-threshold":
+            fatigue = self._require_handle(face, "fatigue", "疲劳监控面")
+            if isinstance(fatigue, ResultEnvelope):
+                return fatigue
+            value = _positive_int(str(_required(body, "value")), "阈值")
+            got = _l5_envelope(lambda: fatigue.set_threshold(value))
+            return got if isinstance(got, ResultEnvelope) else _change_payload(got)
+        raise ValueError(
+            f"未知的触达配置动作：{action!r}"
+            "（只认 switch-mode / set-cell / set-policy / resend-on / resend-off / "
+            "set-report-time / set-fatigue-threshold）"
+        )
+
+    # ── `.3` 五动作反馈与疲劳调整询问 ──────────────────────────────────────
+
+    def api_delivery_feedback(self, *, delivery_id: str) -> dict[str, Any]:
+        """推送疲劳反馈对话框 → `feedback_capture`（五动作 + 否定类原因入口）。
+
+        写面是**既有** `POST /api/reflection/feedback`（渲染件的固定回环路由，[01 §12]）——
+        本叶只把「可反馈的对象」（某条推送留痕的 `delivery_id`）喂给组件，**不另造写通道**。
+        """
+        return self._call_face(
+            "delivery-feedback", self.delivery, "L5 主动触达面",
+            lambda face: self._delivery_feedback_envelope(face, delivery_id),
+        )
+
+    def api_delivery_fatigue(self) -> dict[str, Any]:
+        """疲劳面 → `report_card`（逐类计数 / 阈值 / 静音 / 最近答复 + 待答复询问）。"""
+        return self._call_face(
+            "delivery-fatigue", self.delivery, "L5 主动触达面",
+            lambda face: self._delivery_fatigue_envelope(face),
+        )
+
+    def api_delivery_fatigue_answer(self, body: dict[str, Any]) -> dict[str, Any]:
+        """答复疲劳调整询问（减少 / 关闭 / 保持）。
+
+        经 **L3 反馈采集面**铸 `FeedbackEvent`（`feedback_id` 产生方＝交互层，[01 §1]）并以
+        `context.fatigue_choice` 发布 `FeedbackRecorded`，由 L5 `FatigueMonitor.consume` 落值
+        ——L5 与 L6 同经总线收到该反馈（[07 §7]）。**不**直调 `FatigueMonitor.answer`（那是
+        无 UI 时的第二通道，见 [`T-L5-003.3`] 假设 A1）。
+        """
+        return self._call_face(
+            "delivery-fatigue-answer", self.delivery, "L5 主动触达面",
+            lambda face: self._answer_fatigue(face, body),
+        )
+
+    def _delivery_feedback_envelope(self, face: Any, delivery_id: str) -> ResultEnvelope:
+        if not delivery_id:
+            return ResultEnvelope.validation_failed("缺少推送标识（delivery）")
+        try:
+            DeliveryId.of(delivery_id)
+        except ValueError as exc:
+            return ResultEnvelope.validation_failed(f"推送标识不合 01 §1 形态：{exc}")
+        orchestrator = getattr(face, "delivery", None)
+        target_title = f"对推送的反馈 · {delivery_id}"
+        if orchestrator is not None:
+            record = _l5_envelope(lambda: orchestrator.get(delivery_id))
+            if isinstance(record, ResultEnvelope):
+                return record
+            if record is None:
+                return ResultEnvelope.unavailable(
+                    f"投递留痕里没有 {delivery_id}——标识形态合法但无此留痕（不是请求不合契约）",
+                    last_updated_at=_now(),
+                )
+            target_title = f"对推送的反馈 · {record.title}"
+        return ResultEnvelope.ok(self._gated_description(
+            "feedback_capture",
+            slots={
+                "target": {"kind": "delivery", "ref": delivery_id},
+                "actions": list(_FEEDBACK_ACTIONS),
+                "reason_required": list(_FEEDBACK_REASON_REQUIRED),
+                "labels": dict(_FEEDBACK_LABELS),
+                "prompt": "否定类反馈必须说明原因",
+            },
+            text_kinds={
+                "target": "data", "actions": "data", "reason_required": "data",
+                "labels": "generated", "prompt": "generated",
+            },
+            title=target_title,
+        ))
+
+    def _delivery_fatigue_envelope(self, face: Any) -> ResultEnvelope:
+        fatigue = self._require_handle(face, "fatigue", "疲劳监控面")
+        if isinstance(fatigue, ResultEnvelope):
+            return fatigue
+        states = _l5_envelope(lambda: tuple(fatigue.counts()))
+        if isinstance(states, ResultEnvelope):
+            return states
+        threshold = _l5_envelope(lambda: fatigue.threshold())
+        if isinstance(threshold, ResultEnvelope):
+            return threshold
+        if not states:
+            return ResultEnvelope.empty(
+                "尚无疲劳计数——某类推送被连续忽略达阈值、或用户答复过之后才会在此列出"
+            )
+        lines: list[str] = []
+        for state in states:
+            bits = [f"连续忽略 {state.ignored_streak} 次（阈值 {state.threshold}）",
+                    "已静音（不再单独触达，改汇总进日报）" if state.muted else "未静音"]
+            if state.last_answer:
+                bits.append(
+                    f"最近答复：{_FATIGUE_ANSWER_LABELS.get(state.last_answer, state.last_answer)}"
+                )
+            if state.answered_at:
+                bits.append(f"答复于 {_clock(state.answered_at)}")
+            if state.as_of:
+                bits.append(f"计数截至 {_clock(state.as_of)}")
+            if state.asked_delivery_id:
+                bits.append("有未答复的调整询问（见「待答复的询问」表）")
+            lines.append(f"{state.dedup_key}：{' · '.join(bits)}")
+        return ResultEnvelope.ok(self._gated_description(
+            "report_card",
+            slots={"sections": [
+                {"title": "阈值", "lines": [f"连续忽略 {threshold} 次即发问（可改）"]},
+                {"title": "逐类疲劳状态", "lines": lines},
+                {"title": "可答复", "lines": [
+                    f"{choice}：{label}" for choice, label in _FATIGUE_ANSWER_LABELS.items()
+                ]},
+            ]},
+            text_kinds={"sections": "data"},
+            title="推送疲劳",
+        ))
+
+    def api_delivery_inquiries(self) -> dict[str, Any]:
+        """待答复的调整询问 → `table`（逐条给 `delivery_id`——页面据此就地造答复按钮）。
+
+        **不调 `sweep`**：那是「发问」的动作（有副作用），本端点是**只读**——只列
+        L5 已发出且尚未答复的询问（判据是 `asked_delivery_id` 非空，[`T-UI-017.3`] 假设 A5）。
+        """
+        return self._call_face(
+            "delivery-inquiries", self.delivery, "L5 主动触达面",
+            lambda face: self._delivery_inquiries_envelope(face),
+        )
+
+    def _delivery_inquiries_envelope(self, face: Any) -> ResultEnvelope:
+        fatigue = self._require_handle(face, "fatigue", "疲劳监控面")
+        if isinstance(fatigue, ResultEnvelope):
+            return fatigue
+        states = _l5_envelope(lambda: tuple(fatigue.counts()))
+        if isinstance(states, ResultEnvelope):
+            return states
+        waiting = [state for state in states if state.asked_delivery_id]
+        if not waiting:
+            return ResultEnvelope.empty(
+                "当前没有待答复的调整询问——某类被连续忽略达阈值时 L5 会发问"
+            )
+        orchestrator = getattr(face, "delivery", None)
+        rows: list[dict[str, Any]] = []
+        for state in waiting:
+            question = ""
+            if orchestrator is not None:
+                record = _l5_envelope(lambda: orchestrator.get(state.asked_delivery_id))
+                if isinstance(record, ResultEnvelope):
+                    return record
+                if record is not None:
+                    question = str(getattr(record, "body", "") or getattr(record, "title", ""))
+            rows.append({
+                "delivery_id": state.asked_delivery_id,
+                "dedup_key": state.dedup_key,
+                "streak": state.ignored_streak,
+                "question": question or "（询问留痕不可读；答复仍可按推送标识提交）",
+            })
+        return ResultEnvelope.ok(self._gated_description(
+            "table",
+            slots=table_slots(
+                (
+                    Column("delivery_id", "推送标识"),
+                    Column("dedup_key", "类"),
+                    Column("streak", "连续忽略", "number", digits=0),
+                    Column("question", "问句"),
+                ),
+                rows,
+            ),
+            text_kinds=table_text_kinds(),
+            title=f"待答复的调整询问 · {len(rows)} 条",
+        ))
+
+    def _answer_fatigue(self, face: Any, body: dict[str, Any]) -> Any:
+        delivery_id = str(_required(body, "delivery_id"))
+        choice = str(_required(body, "choice"))
+        if choice not in FATIGUE_ANSWERS:
+            raise ValueError(
+                f"答复须为 {' / '.join(FATIGUE_ANSWERS)} 之一，收到 {choice!r}"
+            )
+        fatigue = self._require_handle(face, "fatigue", "疲劳监控面")
+        if isinstance(fatigue, ResultEnvelope):
+            return fatigue
+        feedback = self._require_handle(face, "feedback", "交互层反馈采集面")
+        if isinstance(feedback, ResultEnvelope):
+            return feedback
+        states = _l5_envelope(lambda: tuple(fatigue.counts()))
+        if isinstance(states, ResultEnvelope):
+            return states
+        waiting = {state.asked_delivery_id for state in states if state.asked_delivery_id}
+        if delivery_id not in waiting:
+            raise ValueError(
+                f"{delivery_id!r} 不是待答复的调整询问——疲劳面没有以它发问且尚未答复的类"
+                "（答复别的推送不属本面，且不会落进 L5 的答复面）"
+            )
+        result = feedback(
+            target={"kind": "delivery", "ref": delivery_id},
+            action=_FATIGUE_ANSWER_ACTION,
+            context={"fatigue_choice": choice},
+        )
+        if not isinstance(result, ResultEnvelope):
+            result = ResultEnvelope.ok(result)
+        if result.status != "ok":
+            return result
+        delivery = getattr(result.data, "delivery", None)
+        delivered = bool(getattr(delivery, "delivered", False))
+        note = str(getattr(delivery, "note", "") or "")
+        label = _FATIGUE_ANSWER_LABELS.get(choice, choice)
+        return ResultEnvelope.ok({
+            "choice": choice,
+            "delivered": delivered,
+            "applied": f"答复「{label}」已送达 L5 与 L6" if delivered
+                       else f"答复未送达：{note or '事件接收面未接通（装配归组合根）'}",
+        })
 
     def api_description(self, description: UiDescription) -> dict[str, Any]:
         """出站一份 UI 描述：先查该型必填槽，再过**中性化门**（[01 §6] 执行点 2）。

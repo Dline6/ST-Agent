@@ -38,6 +38,10 @@ const ROUTES = {
   // 逐项、不合并。**声明面**（「这个 Server 想做什么」）另由 `permission_approval_card` 承载
   // （该渲染件只渲染不落账），本键只管动作。
   'mcp-permissions': '/api/mcp/permissions',
+  // 触达区（[T-UI-017]，面键 `delivery-config`）：情境模式、预算格位、渠道链、补发开关、
+  // 日报生成时刻与疲劳阈值**共用一键**——同属触达设置面、同走一条回环路由（先例＝
+  // `settings-config` 的四设置页）。落值按条目取值形态分流：对象 / 列表归 L5 自有 API。
+  'delivery-config': '/api/delivery/config',
 };
 
 function optionSelect(entry, labels) {

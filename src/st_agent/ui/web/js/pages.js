@@ -16,6 +16,7 @@
 // `main.js` 的**六态可用性探针**（只证「路由通、端口在不在」，不冒充业务内容）。
 
 import { renderChatPage } from './pages/chat.js';
+import { renderDeliveryPage } from './pages/delivery.js';
 import { renderDeliberationPage } from './pages/deliberation.js';
 import { renderEcoPage, renderImportPage, renderImportsPage, renderIndexPage, renderSecurityPage } from './pages/eco.js';
 import { renderEvolutionPage, renderChangesPage } from './pages/evolution.js';
@@ -68,7 +69,13 @@ export const PAGES = [
     root: true,
   },
   // ── 触达 ──────────────────────────────────────────────────────────────
-  { path: '/delivery', title: '触达', statusPath: '/api/delivery/status', root: true },
+  {
+    path: '/delivery',
+    title: '触达',
+    statusPath: '/api/delivery/status',
+    render: renderDeliveryPage,
+    root: true,
+  },
   // ── 反思 ──────────────────────────────────────────────────────────────
   {
     path: '/reflection',
