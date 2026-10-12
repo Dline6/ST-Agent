@@ -76,6 +76,12 @@ _EXPECTED_POST_ROUTES = frozenset({
     "/api/studio/workflow/version",
     "/api/studio/template/fork",
     "/api/studio/trial",
+    # 触达区（[`T-UI-017`]）：生成日报（同一纯函数的显式重放）/ 触达配置落值（预算格位 /
+    # 渠道链 / 情境模式 / 日报时刻 / 疲劳阈值）/ 疲劳答复（经 L3 采集面铸 FeedbackEvent）——
+    # 三条都是显式动作，非幂等读面。
+    "/api/delivery/report/build",
+    "/api/delivery/config",
+    "/api/delivery/fatigue/answer",
 })
 """写面白名单的**副本**——枚举副本 + 测试钉住（既有做法）。
 
@@ -84,7 +90,8 @@ _EXPECTED_POST_ROUTES = frozenset({
 [`T-UI-018`] 新增 8 条（设置落值 / 明密转换 / 备份 / 恢复 / 清空 / 凭据 / 在线态 /
 网络活动导出）；[`T-UI-013`] 新增 3 条（钉住 / 取消钉住 / 重解析）；
 [`T-UI-015.1`] 新增 1 条（Skill 参数落值）、[`T-UI-015.2`] 新增 3 条（MCP 挂载 /
-启停移除与测试 / 逐项批准）、[`T-UI-015.3`] 新增 3 条（版本动作 / 模板 fork / 试跑驱动）。
+启停移除与测试 / 逐项批准）、[`T-UI-015.3`] 新增 3 条（版本动作 / 模板 fork / 试跑驱动）；
+[`T-UI-017`] 新增 3 条（生成日报 / 触达配置落值 / 疲劳答复）。
 后续各面功能叶在自己的交付里新增写端点时，同批把此处补上。
 """
 
