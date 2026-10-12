@@ -32,6 +32,9 @@ _LOG = logging.getLogger("st_agent.ui.server")
 _MAX_BODY_BYTES = 256 * 1024
 """对话请求体的读取上限（回环本机、单轮文本；超限截断后按畸形处理，不整块吃进内存）。"""
 
+_DRAIN_CHUNK_BYTES = 64 * 1024
+"""读净请求体时的分块大小——只决定**读取**的内存占用（丢掉的字节不累计）。"""
+
 _CONTENT_TYPES = {    ".html": "text/html; charset=utf-8",
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
@@ -251,7 +254,8 @@ _POST_ROUTES: dict[str, Callable[[UiApp, dict], dict]] = {
 """`POST` 数据面的路由表：路径 → `(UiApp, body)` → 载荷。**非本表内的 POST 一律 404**。
 
 受限写端点（提案处置 / 回滚 / 导出导入 / 授权切换 / 出厂重置）由各叶在此表登记；
-请求体一律经 :meth:`UiRequestHandler._read_json_body` 归一（畸形 / 超大 → `{}`，由门面 fail-closed）。
+请求体一律经 :meth:`UiRequestHandler._read_json_body` 归一（畸形 / 超大 → `{}`，由门面 fail-closed），
+且**响应写出前体必读净**（:meth:`UiRequestHandler._drain_request_body`，含表外路径的 404）。
 """
 
 
@@ -318,6 +322,10 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         path = unquote(parsed.path)
 
+        # `GET` 常态无体；带体的 `GET`（本服务不产这种形态，但客户端可发）同样要在响应前
+        # 读净，否则关闭连接时对端拿到复位 —— 见 :meth:`_drain_request_body`。
+        self._drain_request_body()
+
         verdict = self.app.guard.check(self.headers, require_token=path.startswith("/api/"))
         if not verdict.allowed:
             self._send_json(verdict.status, {"error": verdict.reason})
@@ -366,42 +374,91 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         校验与 GET 同一档——`/api/*` 必带令牌（`Origin` 校验防 DNS rebinding）；
         请求体经 `_read_json_body` 归一为 dict；组合根未注入门面时各端点自身回
         `unavailable`（不伪造，见 `UiApp.api_chat` 与各面端点）。
+
+        **每条出口都先读净请求体**（含三条拒绝分支）——写完响应就关闭一条接收队列里还有
+        未读数据的连接会让对端拿到连接复位，把本该显示的信封盖成网络错误，见
+        :meth:`_drain_request_body`。
         """
         parsed = urlsplit(self.path)
         path = unquote(parsed.path)
 
         verdict = self.app.guard.check(self.headers, require_token=path.startswith("/api/"))
         if not verdict.allowed:
+            self._drain_request_body()
             self._send_json(verdict.status, {"error": verdict.reason})
             return
 
         handler = _POST_ROUTES.get(path)
         if handler is None:
+            self._drain_request_body()
             self._send_text(404, "未找到")
             return
-        body = self._read_json_body()
         blocked = _restart_blocked(self.app, path)
         if blocked is not None:
+            self._drain_request_body()
             self._send_json(200, blocked)
             return
+        body = self._read_json_body()
         self._send_json(200, _dispatch_guarded(path, lambda: handler(self.app, body)))
 
-    # ── 发送 ────────────────────────────────────────────────────────────────
-    def _read_json_body(self) -> dict:
-        """读并解析 JSON 请求体（畸形 / 超大一律回空体，由门面 fail-closed）。"""
+    def send_error(
+        self, code: int, message: str | None = None, explain: str | None = None
+    ) -> None:
+        """`http.server` 自己的错误出口（未支持的方法 ⇒ 501 等），同走「响应前读净」。
+
+        只有**这次请求的头已解析出来**时体长才已知——畸形请求行 / 超长请求行这些路径
+        `parse_request` 已提前返回（`self.headers` 尚未赋值），在那里跳过。
+        """
+        if getattr(self, "headers", None) is not None:
+            self._drain_request_body()
+        super().send_error(code, message, explain)
+
+    # ── 请求体 ──────────────────────────────────────────────────────────────
+    def _content_length(self) -> int:
+        """声明的请求体长度（缺失 / 非数字 / 负数一律 0）。"""
         try:
-            length = int(self.headers.get("Content-Length") or 0)
+            return max(0, int(self.headers.get("Content-Length") or 0))
         except ValueError:
-            return {}
+            return 0
+
+    def _drain_request_body(self, consumed: int = 0) -> None:
+        """把声明的请求体**读满并丢弃**（内存 O(一个分块)）。
+
+        关闭一条**接收队列里还有未读数据**的连接会让对端拿到连接复位（本机 Windows 实测
+        `ConnectionAbortedError: [WinError 10053]`）——本该 point at 401/403/404 的
+        `ResultEnvelope` 会被盖成一句无信息量的网络错误（[00 §6 失败显式化]）。故**任何
+        响应写出之前**都先读净。
+
+        判据是「关闭时接收队列为空」，故按**声明的全长**读：实测只排一部分**没用**——
+        4 MiB 体留 1 MiB 未读仍 20 次里中 1 次，读满则 40/40。``consumed`` 是调用方已经
+        读走的前缀（:meth:`_read_json_body` 截断解析的那一段）；**只读声明的长度**，
+        绝不多读一个字节。
+        """
+        left = self._content_length() - max(0, consumed)
+        while left > 0:
+            chunk = self.rfile.read(min(_DRAIN_CHUNK_BYTES, left))
+            if not chunk:
+                break
+            left -= len(chunk)
+
+    def _read_json_body(self) -> dict:
+        """读并解析 JSON 请求体（畸形 / 超大一律回空体，由门面 fail-closed）。
+
+        超过 `_MAX_BODY_BYTES` 的部分**不参与解析**，但仍要读走——截断即丢下未读数据，
+        同样会在关闭连接时复位对端（见 :meth:`_drain_request_body`）。
+        """
+        length = self._content_length()
         if length <= 0:
             return {}
         raw = self.rfile.read(min(length, _MAX_BODY_BYTES))
+        self._drain_request_body(consumed=len(raw))
         try:
             parsed = json.loads(raw.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             return {}
         return parsed if isinstance(parsed, dict) else {}
 
+    # ── 发送 ────────────────────────────────────────────────────────────────
     def _send_json(self, status: int, payload: dict) -> None:
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         self._send_bytes(status, body, "application/json; charset=utf-8")
