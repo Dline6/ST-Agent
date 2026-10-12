@@ -1,17 +1,21 @@
-"""回环服务的端到端行为：绑定、鉴权、静态服务、路径穿越、无 CORS 头。
+"""回环服务的端到端行为：绑定、鉴权、静态服务、路径穿越、无 CORS 头、请求体读净。
 
 全部走真 HTTP——这些性质在桩上不可见（同 [D-059] 的教训：替身能满足签名，却表达不了
-「真的发生过」）。
+「真的发生过」）。末组（[`T-UI-022`]）尤其如此：它观测的是**连接怎么关的**，桩与
+内存传输都表达不了。
 """
 
 from __future__ import annotations
 
 import http.client
+import json
 from pathlib import Path
 
 import pytest
 
-from st_agent.ui.security import resolve_static
+from st_agent.contracts.result_envelope import ResultEnvelope
+from st_agent.ui.security import TOKEN_HEADER, resolve_static
+from st_agent.ui.server import serve
 
 
 def test_binds_loopback_with_os_assigned_port(ui_server) -> None:
@@ -142,3 +146,127 @@ def test_resolve_static_blocks_escape(tmp_path: Path) -> None:
     assert resolve_static(root, "/index.html") == root / "index.html"
     assert resolve_static(root, "/../secret.txt") is None
     assert resolve_static(root, "/missing.html") is None
+
+
+# ── 请求体读净（[`T-UI-022`]：[00 §6]「失败显式化」的传输层前提） ────────────────
+#
+# 服务写完响应就关闭连接（HTTP/1.0 ⇒ 每请求一条），而**接收队列里还留着未读的请求体**
+# 时，本机 Windows 发 RST：客户端拿到的是 `ConnectionAbortedError`，服务端写出的那支
+# 响应被丢掉。故判据是「关闭时接收队列为空」——任何出口都得先读净声明的体。
+#
+# 体必须**大于套接字缓冲**才复现（小体会被内核吸收、不留残量）：实测 4 MiB 体在修前
+# 打 401 路径 0/8、合法路由 7/8、带体 GET 1/8、DELETE 0/8 中招；256 KiB 则 8/8 不复现。
+
+_OVERSIZED = b"x" * (4 * 1024 * 1024)
+"""大于套接字缓冲的请求体——小于它的体被内核缓冲吸收，复位就不出现。"""
+
+
+@pytest.mark.parametrize(
+    ("label", "path", "status", "with_token", "extra_headers", "marker"),
+    [
+        ("缺令牌 ⇒ 401", "/api/health", 401, False, {}, "缺少或无效的启动令牌"),
+        (
+            "Host 不符 ⇒ 403",
+            "/api/health",
+            403,
+            True,
+            {"Host": "evil.example"},
+            "请求 Host 与回环地址不符",
+        ),
+        ("路径不在写表 ⇒ 404", "/api/nope", 404, True, {}, "未找到"),
+    ],
+)
+def test_oversized_body_does_not_reset_a_rejected_connection(
+    ui_server, http_post, auth, label, path, status, with_token, extra_headers, marker
+) -> None:  # noqa: ANN001（参数化）
+    """GWT-1：三条拒绝路径都先读净体——客户端拿到服务端写出的那支响应，而非连接复位。
+
+    `http_post` **不吞传输异常**（夹具契约），故复位会以 `ConnectionAbortedError` 直接判
+    失败——这正是 `test_ui_face_ports.py::test_new_paths_are_get_only` 此前偶发红的成因。
+    """
+    headers = auth(ui_server, **extra_headers) if with_token else dict(extra_headers)
+    response = http_post(ui_server, path, _OVERSIZED, headers)
+    assert response.status == status, label
+    assert marker.encode("utf-8") in response.body, f"{label}：响应被复位吃掉了"
+
+
+class _EchoChat:
+    """只记下收到的请求体（用于观测归一结果），行为同最小对话门面。"""
+
+    def __init__(self) -> None:
+        self.seen: list[dict] = []
+
+    def turn(self, body: dict) -> dict:
+        self.seen.append(dict(body))
+        return {
+            "reply": ResultEnvelope.ok({"echo": True}),
+            "session_id": "sess_echo",
+            "needs_confirmation": False,
+            "description": None,
+        }
+
+
+def test_oversized_body_does_not_reset_an_accepted_route(http_post, auth) -> None:
+    """GWT-2：**合法路由**同样先读净——`/api/chat` 的面未注入 ⇒ 仍回 200 信封（fail-closed）。"""
+    with serve(dev=False) as running:
+        response = http_post(running, "/api/chat", _OVERSIZED, auth(running))
+    assert response.status == 200
+    assert response.json()["status"] == "unavailable", "响应被复位吃掉了"
+
+
+def test_body_beyond_the_parse_cap_is_truncated_but_fully_drained(http_post) -> None:
+    """GWT-2：解析口径**不变**（超 `_MAX_BODY_BYTES` 的部分不参与解析）而**仍被读走**。
+
+    整体是合法 JSON、前 256 KiB 却只是它的开头 ⇒ 截断后必判畸形 ⇒ 归一为 `{}`（既有的
+    `T-UI-003` 口径）。两半同一条用例里钉住：门面收到 `{}`（截断生效）**且**信封回来了
+    （余量已读净）。
+    """
+    chat = _EchoChat()
+    oversized_json = b'{"action": "post", "text": "' + b"x" * (300 * 1024) + b'"}'
+    assert len(oversized_json) > 256 * 1024
+    with serve(dev=False, chat=chat) as running:
+        response = http_post(
+            running, "/api/chat", oversized_json, {TOKEN_HEADER: running.token}
+        )
+    assert response.status == 200
+    assert response.json()["status"] == "ok", "响应被复位吃掉了"
+    assert chat.seen == [{}], "超上限的体应只按前 256 KiB 解析 ⇒ 畸形 ⇒ {}"
+
+
+def test_normal_body_still_reaches_the_face_intact(http_post) -> None:
+    """GWT-4：排空**不得**吞掉正常体——合法请求的门面入参逐字不变。"""
+    chat = _EchoChat()
+    with serve(dev=False, chat=chat) as running:
+        response = http_post(
+            running,
+            "/api/chat",
+            {"action": "post", "text": "查 sh.600000 退市风险"},
+            {TOKEN_HEADER: running.token},
+        )
+    assert response.status == 200
+    assert response.json()["status"] == "ok"
+    assert chat.seen == [{"action": "post", "text": "查 sh.600000 退市风险"}]
+
+
+def test_get_carrying_a_body_is_drained(ui_server, auth) -> None:
+    """GWT-3：带体的 `GET`（本服务不产该形态，但客户端可发）也在响应前读净。"""
+    conn = http.client.HTTPConnection(ui_server.host, ui_server.port, timeout=5)
+    try:
+        conn.request("GET", "/api/health", body=_OVERSIZED, headers=auth(ui_server))
+        raw = conn.getresponse()
+        assert raw.status == 200
+        assert json.loads(raw.read().decode("utf-8"))["status"] == "ok"
+    finally:
+        conn.close()
+
+
+def test_unsupported_method_with_a_body_is_drained(ui_server) -> None:
+    """`send_error` 出口（未支持的方法 ⇒ 501）同样是本服务写出的响应，一并在响应前读净。"""
+    conn = http.client.HTTPConnection(ui_server.host, ui_server.port, timeout=5)
+    try:
+        conn.request("DELETE", "/api/health", body=_OVERSIZED)
+        raw = conn.getresponse()
+        assert raw.status == 501
+        assert raw.read(), "响应被复位吃掉了"
+    finally:
+        conn.close()
