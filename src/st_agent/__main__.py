@@ -74,6 +74,7 @@ __all__ = [
     "main",
     "parent_alive",
     "run_backend",
+    "ui_ports",
     "watch_parent",
     "watch_stdin",
 ]
@@ -539,6 +540,41 @@ def _build_with_passphrase(
 # ───────────────────────── 运行 ─────────────────────────
 
 
+def ui_ports(runtime: Any) -> dict[str, Any]:
+    """表现层端口 → 组合根句柄的**唯一映射**（[`T-UI-011.1`] 起逐批补齐）。
+
+    各面经**鸭子端口**注入：表现层（`ui/**`）不 import `app`、也不 import 各层类型，
+    只经这些口消费；注入的是组合根造好的**适配面**（如 `M5Runtime.reflection`），而非
+    裸的 L6Stack——输入的归一与失败分类都留在组合根，表现层只按 `ValueError` / 其他异常
+    两类回 `validation_failed` / `failed`。
+
+    **缺面一律传 `None`（不是省略键）**：早期里程碑的根没造后起的那些面（如其 `workspace`），
+    相关端点据此回 `unavailable` ＋ 点名，而**不是启动失败**——这正是「未接线」与「接线了
+    但无数据」在表现层可分的地方（[01 §5] 六态不可混用）。
+
+    与 [`serve`][st_agent.ui.server.serve] 的端口形参**一一对应**（键名＝形参名），故
+    `serve(host=…, port=…, dev=…, **ui_ports(runtime))` 是完整的注入面；这张表是那份对应
+    关系的**单源**——新增一个面时，`T-INT-007` 的关卡用例据 `serve` 的签名断言此处不漏。
+    `eco` 是唯一名不同的一对（组合根属性叫 `ecosystem`），故**不能**靠 `getattr(runtime, name)`
+    批量取，本函数的字面量因此是必需的而非冗余。
+    """
+    return {
+        "chat": runtime.chat,
+        "reflection": getattr(runtime, "reflection", None),
+        "eco": getattr(runtime, "ecosystem", None),
+        "memory": getattr(runtime, "memory", None),
+        "workspace": getattr(runtime, "workspace", None),
+        "skills": getattr(runtime, "skills", None),
+        "mcp": getattr(runtime, "mcp", None),
+        "graph": getattr(runtime, "graph", None),
+        "deliberation": getattr(runtime, "deliberation", None),
+        "delivery": getattr(runtime, "delivery", None),
+        "settings": getattr(runtime, "settings", None),
+        "studio": getattr(runtime, "studio", None),
+        "commands": getattr(runtime, "commands", None),
+    }
+
+
 def run_backend(
     *,
     root: Path,
@@ -591,39 +627,7 @@ def run_backend(
                     json_handshake=json_handshake)
         return _EXIT_STARTUP_FAILED
     try:
-        running = serve_ui(
-            host=host,
-            port=port,
-            dev=dev,
-            chat=runtime.chat,
-            # L6 / ECO 面经**鸭子端口**注入（[`T-UI-004.1`] / [`.2`]）：表现层不 import `app`，
-            # 也不 import 各层类型，只经这两个口消费。注入的是组合根造好的**适配面**
-            # （`M5Runtime.reflection`），而非裸的 L6Stack——输入的归一与失败分类都留在
-            # 组合根，表现层只按 `ValueError` / 其他异常两类回 `validation_failed` / `failed`。
-            # 组合根未带该面（如 M1/M2 根）时传 `None` ⇒ 相关端点回 `unavailable` + 点名，
-            # 而不是启动失败。
-            reflection=getattr(runtime, "reflection", None),
-            eco=getattr(runtime, "ecosystem", None),
-            # 记忆区读面同理经鸭子端口（[`T-UI-009.2`]）：组合根已把 L2 的 attention 面与
-            # L0 行情面装配成 `MemoryPositionsFacade`；表现层不 import 任何层类型。
-            # 未带该面的根（M1–M4）传 `None` ⇒ 记忆区端点回 `unavailable` + 点名。
-            memory=getattr(runtime, "memory", None),
-            # M6 各面（[`T-UI-011.1`]）：七个同形鸭子端口，各自对应一条 `/api/<面>/status`
-            # 探针。`workspace` 面组合根**刻意不提供**（钉住物归 [`T-UI-013`]），故
-            # `getattr` 取到 `None` ⇒ 该面探针如实回 `unavailable` + 点名——这正是
-            # 「未接线」与「接线了但无数据」在表现层可分的地方（[01 §5] 六态不可混用）。
-            workspace=getattr(runtime, "workspace", None),
-            skills=getattr(runtime, "skills", None),
-            mcp=getattr(runtime, "mcp", None),
-            graph=getattr(runtime, "graph", None),
-            deliberation=getattr(runtime, "deliberation", None),
-            delivery=getattr(runtime, "delivery", None),
-            settings=getattr(runtime, "settings", None),
-            studio=getattr(runtime, "studio", None),
-            # 快捷指令注册表（[`T-UI-012.1`]）：首页 `/` 补全清单经此口取真注册表；未带
-            # 该面的根传 `None` ⇒ `GET /api/chat/commands` 回 `unavailable` + 点名。
-            commands=getattr(runtime, "commands", None),
-        )
+        running = serve_ui(host=host, port=port, dev=dev, **ui_ports(runtime))
     except Exception as exc:                     # noqa: BLE001 —— 入口须给出机器可读失败行
         traceback.print_exc()
         _emit_error(stream, f"{type(exc).__name__}: {exc}", code="serve_failed",
