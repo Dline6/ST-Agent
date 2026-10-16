@@ -459,7 +459,7 @@
 
 | 类别 | 面 | 处置 |
 |---|---|---|
-| **文档** | [13 册](13-visual-design.md)（§1 原则 3、§2.1 指认、§3、§4、§5、§9、§10 已改；§2.1 **值**待 P0）· [11 册](11-sitemap.md)（§1、§2.1、§2.2 口径、§5 已改）· [story-01](../PRD-v2-Agent/story-01-chat-as-os.md)（导航口径 **4 处**：`:15` `:20` `:43` `:55`）· 本册同目录 [README](README.md) 占位段 | 本次同批 |
+| **文档** | [13 册](13-visual-design.md)（§1 原则 3、§2.1 指认、§3、§4、§5、§9、§10 已改；§2.1 **值**待 P0）· [11 册](11-sitemap.md)（§1、§2.1、§2.2 口径、§5 已改）· [story-01](story-01-chat-as-os.md)（导航口径 **4 处**：`:15` `:20` `:43` `:55`）· 本册同目录 [README](README.md) 占位段 | 本次同批 |
 | **其余 9 个 story** | 只在末两行用 `[11-sitemap.md · 分区](anchor)` 指路，是**指针**而非口径；分区名与 Flow 编号不变，故**无需改** | 豁免（改动面 = 0） |
 | **测试守卫** | [`test_ui_design_tokens.py`](../../tests/ui/test_ui_design_tokens.py)（读 13 册 §2.1）· [`test_ui_shell_routing.py`](../../tests/ui/test_ui_shell_routing.py)（读 11 册 §2.2） | P0 / P1 随实现同批扩写 |
 | **代码注释** | 约 **20 个** `src/` 文件里以「[13 册 §n]」「[11 册 §n]」指路的注释（`ui/app.py` 14 处、`ui/server.py` 8、`app.py` 5、`app.css` 8、`tokens.css` 1、`main.js` 2、`pages.js` 1、`render.js` 1、`pages/*.js` 8、`components/table.js` 2、`plugins/l3/*` 4、`registry.py`、`tables.py`、`shell/autostart.py`、`l0/net/capabilities.py`） | **豁免**——见 §13.3 的落点选择；只有在被引小节的编号/标题变动时才需改 |
