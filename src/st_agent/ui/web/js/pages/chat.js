@@ -21,6 +21,8 @@
 // 构造 DOM，不直写 HTML（与「渲染器只解析描述、不解析任意代码」同一取向，见 05 §6）。
 
 import { getJson, postJson } from '../api.js';
+import { showToast } from '../components/toast.js';
+import { runBusy } from '../busy.js';
 import { renderEnvelope } from '../render.js';
 
 function el(tag, className, text) {
@@ -360,17 +362,35 @@ export function pinButton(envelope) {
       note.textContent = '本回复不含生成式 UI 描述，没有可钉住的组件。';
       return;
     }
-    button.disabled = true;
     note.textContent = '正在钉到工作区…';
     try {
-      const payload = await postJson('/api/workspace/pin', { description: envelope.data });
+      const payload = await runBusy(button, () => postJson('/api/workspace/pin', { description: envelope.data }));
       note.textContent = payload.status === 'ok'
         ? '已钉到工作区：在「工作区」页可刷新 / 下钻 / 取消钉住。'
         : `钉住未完成：${payload.reason || payload.status}`;
+      if (payload.status === 'ok') {
+        const descriptionId = payload.data && payload.data.description_id;
+        showToast('已钉到工作区', {
+          type: 'success',
+          action: descriptionId
+            ? {
+                label: '撤销',
+                run: async () => {
+                  try {
+                    const undo = await postJson('/api/workspace/unpin', { description_id: descriptionId });
+                    note.textContent = undo.status === 'ok'
+                      ? '已撤销钉住。'
+                      : `撤销未完成：${undo.reason || undo.status}`;
+                  } catch (error) {
+                    note.textContent = `撤销失败：${error.message}`;
+                  }
+                },
+              }
+            : null,
+        });
+      }
     } catch (error) {
       note.textContent = `钉住失败：${error.message}`;
-    } finally {
-      button.disabled = false;
     }
   });
   return button;

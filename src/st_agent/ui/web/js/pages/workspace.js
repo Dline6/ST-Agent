@@ -17,6 +17,7 @@
 //      （路由走 path、令牌走 hash，[D-063]）。
 
 import { getJson, postJson } from '../api.js';
+import { openContextMenu } from '../components/context_menu.js';
 import { renderDescription, renderEnvelope } from '../render.js';
 
 /** 下钻目标表：**组件型 → 固定路由**（[01 §12] 的动作不进描述，故不进 `slots`）。
@@ -132,6 +133,16 @@ function buildItem(description, reload) {
     actionButton('取消钉住', () => unpin(description, note, reload)),
   );
   item.append(bar, note);
+
+  // 右键菜单（14 册 §6.1）：层级 ≤ 1，菜单项复用条目已有的动作按钮，删除类置底。
+  item.addEventListener('contextmenu', (event) => {
+    const buttons = Array.from(bar.querySelectorAll('button'));
+    openContextMenu(event, buttons.map((button) => ({
+      label: button.textContent,
+      destructive: button.textContent.includes('取消'),
+      run: () => button.click(),
+    })));
+  });
   return item;
 }
 

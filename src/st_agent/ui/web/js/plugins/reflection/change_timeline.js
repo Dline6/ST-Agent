@@ -6,7 +6,10 @@
 // **动作不进描述**（01 §12）：回滚恒发往下面这条**固定回环路由**。
 // 已回滚过的条目 `actions` 为空——重复回滚会被 L6 显式拒，前端不提供该按钮（不静默、不猜）。
 
-import { appendUnknownSlots, definitionList, el, readSlot } from '../../components/slots.js';
+import { appendUnknownSlots, definitionList, display, el, readSlot } from '../../components/slots.js';
+import { openDialog } from '../../components/dialog.js';
+import { showToast } from '../../components/toast.js';
+import { runBusy } from '../../busy.js';
 import { postJson } from '../../api.js';
 
 export const KNOWN_SLOTS = ['changes', 'labels'];
@@ -35,18 +38,24 @@ function changeNode(change, labels) {
   if (actions.length) {
     const row = el('div', 'change-actions');
     for (const action of actions) {
-      const button = el('button', 'change-actions__button', labels[action] || action);
+      const label = labels[action] || action;
+      const button = el('button', 'change-actions__button', label);
       button.type = 'button';
-      button.addEventListener('click', async () => {
-        button.disabled = true;
+
+      async function rollback() {
+        status.textContent = '正在回滚…';
+        status.className = 'component__meta';
         try {
-          const payload = await postJson(ROUTE, { change_id: change.change_id });
+          const payload = await runBusy(button, () => postJson(ROUTE, { change_id: change.change_id }));
           if (payload.status === 'ok') {
             const data = payload.data || {};
             status.textContent = data.applied
               ? `已回滚：${data.note || '取值已回到变更前'}`
               : `未回滚：${data.note || '无变更前取值可回放'}`;
             status.className = 'component__meta';
+            showToast(data.applied ? '变更已回滚' : '无变更前取值可回放', {
+              type: data.applied ? 'success' : 'info',
+            });
           } else {
             status.textContent = `未回滚（${payload.status}）：${payload.reason || ''}`;
             status.className = 'state state--error';
@@ -54,9 +63,25 @@ function changeNode(change, labels) {
         } catch (error) {
           status.textContent = `请求失败：${error.message}`;
           status.className = 'state state--error';
-        } finally {
-          button.disabled = false;
         }
+      }
+
+      button.addEventListener('click', () => {
+        openDialog({
+          title: label,
+          description: '回滚会把该配置恢复到变更前取值。',
+          scope: [
+            `配置项：${display(change.config_id)}`,
+            `变更：${display(change.old_value)} → ${display(change.new_value)}`,
+            `序号：${display(change.seq)}`,
+            ...(change.reason ? [`理由：${display(change.reason)}`] : []),
+          ],
+          confirmLabel: label,
+          destructive: true,
+          onConfirm: () => {
+            rollback();
+          },
+        });
       });
       row.append(button);
     }

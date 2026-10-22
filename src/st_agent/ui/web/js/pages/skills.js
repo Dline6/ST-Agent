@@ -15,6 +15,7 @@
 //      （路由走 path、令牌走 hash，[D-063]）。
 
 import { getJson } from '../api.js';
+import { openSheet } from '../components/sheet.js';
 import { renderEnvelope } from '../render.js';
 import { el, readSlot } from '../components/slots.js';
 
@@ -49,7 +50,24 @@ function buildPicker(catalog, active) {
   const button = el('button', 'setting-actions__button', '查看');
   button.type = 'button';
   button.addEventListener('click', () => openSkill(select.value));
-  row.append(select, button);
+  const quick = el('button', 'setting-actions__button', '快速查看');
+  quick.type = 'button';
+  quick.addEventListener('click', () => {
+    const skillId = select.value;
+    if (!skillId) return;
+    openSheet({
+      title: `Skill 详情 · ${skillId}`,
+      load: async (body) => {
+        body.replaceChildren();
+        try {
+          renderEnvelope(await getJson(`/api/skills/detail?skill=${encodeURIComponent(skillId)}`), body);
+        } catch (error) {
+          body.replaceChildren(el('p', 'state state--error', `无法取数：${error.message}`));
+        }
+      },
+    });
+  });
+  row.append(select, button, quick);
   block.append(row);
   return block;
 }

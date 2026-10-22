@@ -14,7 +14,7 @@
     <nav class="command-bar__crumbs" id="crumbs" aria-label="位置"></nav>
     <div class="command-bar__actions">
       <button type="button" class="command-bar__button" id="nav-toggle" aria-expanded="true" aria-controls="nav">导航</button>
-      <button type="button" class="command-bar__button" id="palette-entry" disabled title="命令面板随交互底座（T-UI-025）落地">命令面板 Ctrl+K</button>
+      <button type="button" class="command-bar__button" id="palette-entry" aria-keyshortcuts="Control+K" title="命令面板（Ctrl+K）">命令面板 Ctrl+K</button>
       <span class="command-bar__conn" id="conn-state">连接中…</span>
       <button type="button" class="command-bar__button" id="chat-toggle" aria-expanded="true" aria-controls="chat-rail">对话</button>
     </div>
@@ -46,6 +46,7 @@
     <span class="status-bar__items" id="status-items"></span>
   </footer>
 </div>
+<div class="toast-region" id="toast-region" role="status" aria-live="polite"></div>
 <!--ST_DEV_SCRIPT-->
 <script type="module" src="/js/main.js"></script>
 </body>

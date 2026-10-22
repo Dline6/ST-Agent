@@ -9,8 +9,8 @@
    （不再全局 1.7）、圆角按层级 4 档、**界面边界线**（`--line-strong`）与装饰线（`--line`）分立、
    涨跌色与状态色不再同值。
    两条产品铁律仍落在令牌里：**中性**（界面读作工具与仪表，不读作人，铁律 2）与
-   **并列不合并**（铁律 4）——故分层仍优先取线与留白；**浮层**的 elevation 令牌随 P2 落地
-   （14 册 §5），本文件暂不含 z-index / 阴影 / 时长。 */
+   **并列不合并**（铁律 4）——故分层仍优先取线与留白；**浮层**才用 elevation（14 册 §5），
+   本文件的 z-index / 阴影 / 时长与缓动仅供浮层与反馈件消费。 */
 
 :root {
   color-scheme: light dark;
@@ -91,6 +91,26 @@
   --radius-surface: 8px;
   --radius-overlay: 12px;
   --radius-pill: 999px;
+
+  /* ── 层级（14 册 §5）：只在真需要压过别层时消费，不给普通内容加 z ── */
+  --z-content: 0;
+  --z-sticky: 10;
+  --z-rail: 20;
+  --z-popover: 30;
+  --z-modal: 40;
+  --z-toast: 50;
+  --z-tooltip: 60;
+
+  /* ── 阴影（elevation）：浮层才用；层级仍优先靠线与留白（13 册 §1 原则 3）── */
+  --shadow-1: 0 1px 2px rgba(0,0,0,.06), 0 1px 3px rgba(0,0,0,.08);
+  --shadow-2: 0 4px 12px rgba(0,0,0,.10);
+  --shadow-3: 0 12px 32px rgba(0,0,0,.18);
+
+  /* ── 动效：只做「回答动作」的动效（13 册 §7），并尊重 prefers-reduced-motion ── */
+  --dur-fast: 120ms;
+  --dur-base: 160ms;
+  --dur-slow: 240ms;
+  --ease-out: cubic-bezier(.2,.8,.2,1);
 }
 
 @media (prefers-color-scheme: dark) {
