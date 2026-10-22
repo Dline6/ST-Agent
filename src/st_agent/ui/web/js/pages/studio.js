@@ -295,7 +295,6 @@ async function mountFlow(root, flowId) {
 /** Studio 画布页：会话与画布（既有）＋ 附加面（[`T-UI-015.3`]）。 */
 export async function renderStudioPage(page, mount) {
   const root = el('div', 'page');
-  root.append(el('h2', 'page__title', page.title));
   const params = new URLSearchParams(window.location.search);
   const proposalId = params.get('proposal_id') || '';
   const flowId = params.get('flow') || '';

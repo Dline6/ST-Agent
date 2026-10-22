@@ -54,13 +54,6 @@ async function chatRequest(body) {
 
 export async function renderChatPage(page, mount) {
   const root = el('div', 'page page--chat');
-  root.append(el('h2', 'page__title', page.title));
-
-  // ② 上下文卡片（常驻首页）
-  const contextBlock = el('section', 'page__block chat__context');
-  contextBlock.append(el('h3', 'page__block-title', '当前上下文'));
-  const contextBody = el('div', 'chat__context-body');
-  contextBlock.append(contextBody);
 
   // ① 对话流
   const stream = el('div', 'chat__stream');
@@ -80,7 +73,7 @@ export async function renderChatPage(page, mount) {
   const commandMenu = el('ul', 'chat__commands');
   commandMenu.hidden = true;
 
-  root.append(contextBlock, stream, form, commandMenu);
+  root.append(stream, form, commandMenu);
   mount.replaceChildren(root);
 
   const state = { sessionId: null, commands: [] };
@@ -156,32 +149,8 @@ export async function renderChatPage(page, mount) {
     }, 150);
   });
 
-  // ── 初载：上下文卡片 + 指令清单 ──────────────────────────────────────────
-  await loadContext(contextBody);
+  // ── 初载：指令清单（上下文卡片在 `/` 主区，归 overview.js） ────────────────
   await loadCommands(state);
-}
-
-/** ② 上下文卡片：取 `context_card` 描述交既有渲染件（[05 §2]）。
- *
- * 卡片旁挂**同一枚**「钉到工作区」动作（同一回环路由、同一落点）。理由：上下文卡片本身
- * 就是一份经注册表渲染的 UI 描述，且它是本期**唯一**有只读重解析来源（`chat.context`）的
- * 型——「钉」在这里，「刷新」才真能跑通，而不只是「钉得住但刷不动」。
- */
-async function loadContext(body) {
-  let payload;
-  try {
-    payload = await getJson('/api/chat/context');
-  } catch (error) {
-    body.replaceChildren(
-      el('p', 'state state--error', `无法取上下文卡片：${error.message}`),
-    );
-    return;
-  }
-  renderEnvelope(payload, body);
-  if (payload.status !== 'ok') return;
-  const actions = el('div', 'chat__actions');
-  actions.append(pinButton(payload));
-  body.append(actions);
 }
 
 async function loadCommands(state) {
@@ -377,7 +346,7 @@ function lensNameMap(envelope) {
  * **动作不进描述**（[01 §12]）——按钮由本渲染件发固定回环路由的写请求，描述里既没有 URL
  * 也没有方法。结果**如实**回给用户：没可钉的生成物、服务端拒收、服务不可达，三态各说各话。
  */
-function pinButton(envelope) {
+export function pinButton(envelope) {
   const button = el('button', 'chat__action', '钉到工作区');
   button.type = 'button';
   button.addEventListener('click', async () => {

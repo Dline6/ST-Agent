@@ -15,13 +15,13 @@
 // 本表为 19 条（＝ §2.2 声明的 19 条路径），其中 8 条是分区根。未被 `render` 填上的页走
 // `main.js` 的**六态可用性探针**（只证「路由通、端口在不在」，不冒充业务内容）。
 
-import { renderChatPage } from './pages/chat.js';
 import { renderDeliveryPage } from './pages/delivery.js';
 import { renderDeliberationPage } from './pages/deliberation.js';
 import { renderEcoPage, renderImportPage, renderImportsPage, renderIndexPage, renderSecurityPage } from './pages/eco.js';
 import { renderEvolutionPage, renderChangesPage } from './pages/evolution.js';
 import { renderMemoryPage } from './pages/memory.js';
 import { renderMcpPage } from './pages/mcp.js';
+import { renderOverviewPage } from './pages/overview.js';
 import { renderReflectionPage, singleBlockPage } from './pages/reflection.js';
 import { renderSettingsPage } from './pages/settings.js';
 import { renderSkillsPage } from './pages/skills.js';
@@ -30,9 +30,9 @@ import { renderWorkspacePage } from './pages/workspace.js';
 
 export const PAGES = [
   // ── Chat 主界面 ────────────────────────────────────────────────────────
-  { path: '/', title: '总览', statusPath: '/api/health', render: renderChatPage, root: true },
+  { path: '/', title: '总览', statusPath: '/api/health', render: renderOverviewPage, root: true, partition: 'Chat 主界面' },
   // ── 工作区 ────────────────────────────────────────────────────────────
-  { path: '/workspace', title: '工作区', statusPath: '/api/workspace/status', render: renderWorkspacePage, root: true },
+  { path: '/workspace', title: '工作区', statusPath: '/api/workspace/status', render: renderWorkspacePage, root: true, partition: '工作区' },
   // ── 记忆 ──────────────────────────────────────────────────────────────
   {
     path: '/memory',
@@ -40,25 +40,28 @@ export const PAGES = [
     statusPath: '/api/memory/holdings',
     render: renderMemoryPage,
     root: true,
+    partition: '记忆',
   },
   // ── 能力 ──────────────────────────────────────────────────────────────
-  { path: '/skills', title: 'Skill 库', statusPath: '/api/skills/status', render: renderSkillsPage, root: true },
+  { path: '/skills', title: 'Skill 库', statusPath: '/api/skills/status', render: renderSkillsPage, root: true, partition: '能力' },
   {
     path: '/studio',
     title: 'Studio 画布',
     statusPath: '/api/studio/sessions',
     render: renderStudioPage,
+    partition: '能力',
   },
-  { path: '/mcp', title: 'MCP Hub', statusPath: '/api/mcp/status', render: renderMcpPage },
-  { path: '/eco', title: '导入导出', statusPath: '/api/eco/status', render: renderEcoPage },
-  { path: '/eco/import', title: '导入校验', statusPath: '/api/eco/status', render: renderImportPage },
-  { path: '/eco/index', title: '官方索引', statusPath: '/api/eco/status', render: renderIndexPage },
-  { path: '/eco/imports', title: '来源追溯', statusPath: '/api/eco/status', render: renderImportsPage },
+  { path: '/mcp', title: 'MCP Hub', statusPath: '/api/mcp/status', render: renderMcpPage, partition: '能力' },
+  { path: '/eco', title: '导入导出', statusPath: '/api/eco/status', render: renderEcoPage, partition: '能力' },
+  { path: '/eco/import', title: '导入校验', statusPath: '/api/eco/status', render: renderImportPage, partition: '能力' },
+  { path: '/eco/index', title: '官方索引', statusPath: '/api/eco/status', render: renderIndexPage, partition: '能力' },
+  { path: '/eco/imports', title: '来源追溯', statusPath: '/api/eco/status', render: renderImportsPage, partition: '能力' },
   {
     path: '/eco/security',
     title: '越界警示',
     statusPath: '/api/eco/status',
     render: renderSecurityPage,
+    partition: '能力',
   },
   // ── 推理 ──────────────────────────────────────────────────────────────
   {
@@ -67,6 +70,7 @@ export const PAGES = [
     statusPath: '/api/deliberation/status',
     render: renderDeliberationPage,
     root: true,
+    partition: '推理',
   },
   // ── 触达 ──────────────────────────────────────────────────────────────
   {
@@ -75,6 +79,7 @@ export const PAGES = [
     statusPath: '/api/delivery/status',
     render: renderDeliveryPage,
     root: true,
+    partition: '触达',
   },
   // ── 反思 ──────────────────────────────────────────────────────────────
   {
@@ -83,24 +88,28 @@ export const PAGES = [
     statusPath: '/api/reflection/status',
     render: renderReflectionPage,
     root: true,
+    partition: '反思',
   },
   {
     path: '/reflection/changes',
     title: '变更历史',
     statusPath: '/api/evolution/status',
     render: renderChangesPage,
+    partition: '反思',
   },
   {
     path: '/reflection/experiments',
     title: 'A/B 实验日志',
     statusPath: '/api/reflection/status',
     render: singleBlockPage('/api/reflection/experiments', 'A/B 实验日志'),
+    partition: '反思',
   },
   {
     path: '/reflection/training',
     title: '训练与回访',
     statusPath: '/api/reflection/status',
     render: singleBlockPage('/api/reflection/training', '训练对话留痕'),
+    partition: '反思',
   },
   // ── 设置 ──────────────────────────────────────────────────────────────
   {
@@ -109,12 +118,15 @@ export const PAGES = [
     statusPath: '/api/settings/status',
     render: renderSettingsPage,
     root: true,
+    partition: '设置',
   },
   {
     path: '/settings/evolution',
     title: '演进授权',
     statusPath: '/api/evolution/status',
     render: renderEvolutionPage,
+    // 屏归「反思」、路径取设置前缀（[11-sitemap §2.2] 的分区列写 `反思 → 设置`）。
+    partition: '反思',
   },
 ];
 

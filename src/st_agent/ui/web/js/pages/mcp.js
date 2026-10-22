@@ -216,7 +216,6 @@ async function mountPermissions(root, serverId) {
 /** MCP Hub 页：清单 ＋ 添加表单 ＋（选中时）详情 / tool 浏览器 / 权限与动作。 */
 export async function renderMcpPage(page, mount) {
   const root = el('div', 'page page--mcp');
-  root.append(el('h2', 'page__title', page.title));
   mount.replaceChildren(root);
 
   const active = currentServer();

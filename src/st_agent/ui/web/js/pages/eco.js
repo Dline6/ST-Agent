@@ -110,7 +110,6 @@ async function exportBlocks(root) {
 /** 导入校验页：文件名（chrome）→ 四段审核 + 逐项批准 + 安装（chrome）。 */
 export async function renderImportPage(page, mount) {
   const root = el('div', 'page');
-  root.append(el('h2', 'page__title', page.title));
 
   const picker = block('待导入文件');
   const name = input('收件目录里的文件名（如 shared-skill.stskill）');
@@ -187,7 +186,6 @@ export async function renderImportPage(page, mount) {
 /** 生态面主页：导出面板 + 收件目录。 */
 export async function renderEcoPage(page, mount) {
   const root = el('div', 'page');
-  root.append(el('h2', 'page__title', page.title));
   await exportBlocks(root);
 
   const inbox = block('导入收件目录');
@@ -202,7 +200,6 @@ export async function renderEcoPage(page, mount) {
 /** 越界警示页：最新一条（可禁用）+ 全部留痕。 */
 export async function renderSecurityPage(page, mount) {
   const root = el('div', 'page');
-  root.append(el('h2', 'page__title', page.title));
   for (const [title, path] of [
     ['越界行为警示', '/api/eco/violations'],
     ['越界行为留痕', '/api/eco/violations/history'],

@@ -92,7 +92,6 @@ export const renderChangesPage = singleBlockPage('/api/evolution/changes', '变�
 /** 演进授权设置页：授权面板（服务端描述）+ 出厂重置（页面 chrome）。 */
 export async function renderEvolutionPage(page, mount) {
   const root = el('div', 'page');
-  root.append(el('h2', 'page__title', page.title));
 
   const panel = el('section', 'page__block');
   panel.append(el('h3', 'page__block-title', '演进授权'));

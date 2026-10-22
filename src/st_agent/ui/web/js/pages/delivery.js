@@ -20,8 +20,9 @@ function el(tag, className, text) {
   return node;
 }
 
-const VIEWS = ['report', 'history', 'config', 'fatigue'];
-const VIEW_TITLES = {
+/** 四视图的键与标签——左栏二级与页内取数共用这一份（不另造词表）。 */
+export const VIEWS = ['report', 'history', 'config', 'fatigue'];
+export const VIEW_TITLES = {
   report: '日报',
   history: '推送历史',
   config: '预算与渠道',
@@ -38,22 +39,6 @@ function params() {
 function readView() {
   const value = params().get('view') || 'report';
   return VIEWS.includes(value) ? value : 'report';
-}
-
-/** 跳本页另一视图：把当前 fragment（令牌）与 `?view=` 一并拼回。 */
-function viewHref(view) {
-  return `/delivery?view=${encodeURIComponent(view)}${window.location.hash}`;
-}
-
-function viewNav(active) {
-  const nav = el('nav', 'page__tabs');
-  for (const view of VIEWS) {
-    const link = el('a', 'page__tab', VIEW_TITLES[view]);
-    link.href = viewHref(view);
-    if (view === active) link.setAttribute('aria-current', 'page');
-    nav.append(link);
-  }
-  return nav;
 }
 
 /** 取一条信封渲染进 `mount`（失败即错误态，不静默）。 */
@@ -250,12 +235,11 @@ function feedbackChrome(root) {
   return block;
 }
 
-/** 触达区页面：按 `?view=` 装配当前视图。 */
+/** 触达区页面：按 `?view=` 装配当前视图（视图入口在左栏二级）。 */
 export async function renderDeliveryPage(page, mount) {
   const view = readView();
   const root = el('div', 'page');
-  root.append(el('h2', 'page__title', `${page.title} · ${VIEW_TITLES[view]}`));
-  root.append(viewNav(view));
+  root.append(el('h2', 'page__section-title', VIEW_TITLES[view]));
 
   if (view === 'report') {
     await renderReport(root);
