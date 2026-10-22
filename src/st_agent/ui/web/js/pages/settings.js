@@ -14,6 +14,9 @@
 
 import { getJson, postJson } from '../api.js';
 import { renderEnvelope } from '../render.js';
+import { openDialog } from '../components/dialog.js';
+import { showToast } from '../components/toast.js';
+import { runBusy } from '../busy.js';
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -111,12 +114,12 @@ function actionBlock(title, hint, fields, buttonLabel, submit) {
   button.type = 'button';
   for (const node of fields) box.append(node);
   button.addEventListener('click', async () => {
-    button.disabled = true;
     try {
-      const payload = await submit();
+      const payload = await runBusy(button, submit);
       if (payload.status === 'ok') {
         status.textContent = describeResult(payload.data || {});
         status.className = 'component__meta';
+        showToast('动作已完成', { type: 'success' });
       } else if (payload.status === 'validation_failed' || payload.status === 'failed') {
         status.textContent = `未完成（${payload.status}）：${payload.reason || ''}${
           payload.log_ref ? `（日志入口 ${payload.log_ref}）` : ''
@@ -129,8 +132,6 @@ function actionBlock(title, hint, fields, buttonLabel, submit) {
     } catch (error) {
       status.textContent = `请求失败：${error.message}`;
       status.className = 'state state--error';
-    } finally {
-      button.disabled = false;
     }
   });
   box.append(button, status);
@@ -225,26 +226,25 @@ function maintenanceChrome(mount) {
   const box = el('section', 'page__block');
   box.append(el('h3', 'page__block-title', '完全清空'));
   box.append(el('p', 'component__meta',
-    '删除全部分区 + 派生数据 + 缓存 + 日志（存储根整目录）。三次确认逐步收紧，不可一步到位；'
-    + '备份归档在存储根之外，由用户自行处理。'));
-  const progress = el('p', 'component__meta', `确认进度：0 / ${WIPE_TOKENS.length}`);
+    '删除全部分区 + 派生数据 + 缓存 + 日志（存储根整目录）。点击后须在对话框中确认删除范围'
+    + '并输入确认词；服务端仍按三枚有序令牌拒绝任何不完整的清空请求。备份归档在存储根之外，'
+    + '由用户自行处理。'));
   const status = el('p', 'component__meta', '');
-  const confirm = el('button', 'feedback__button', '确认清空');
-  const cancel = el('button', 'feedback__button', '重置确认进度');
-  confirm.type = 'button';
-  cancel.type = 'button';
-  let count = 0;
-  const paint = () => { progress.textContent = `确认进度：${count} / ${WIPE_TOKENS.length}`; };
-  confirm.addEventListener('click', async () => {
-    count += 1;
-    paint();
-    if (count < WIPE_TOKENS.length) return;
-    confirm.disabled = true;
+  const open = el('button', 'feedback__button', '完全清空…');
+  open.type = 'button';
+
+  async function wipe() {
+    status.textContent = '正在清空…';
+    status.className = 'component__meta';
     try {
-      const payload = await postJson('/api/settings/wipe', { confirmations: WIPE_TOKENS.slice() });
+      const payload = await runBusy(
+        open,
+        () => postJson('/api/settings/wipe', { confirmations: WIPE_TOKENS.slice() }),
+        { backgroundMessage: '清空已转入后台：可离开本面，完成时会通知。' },
+      );
       if (payload.status === 'ok') {
         status.textContent = describeResult(payload.data || {});
-        status.className = 'state state--error';
+        showToast('已清空本机数据', { type: 'success' });
       } else {
         status.textContent = `未清空（${payload.status}）：${payload.reason || ''}`;
         status.className = 'state state--error';
@@ -252,20 +252,31 @@ function maintenanceChrome(mount) {
     } catch (error) {
       status.textContent = `请求失败：${error.message}`;
       status.className = 'state state--error';
-    } finally {
-      confirm.disabled = false;
-      count = 0;
-      paint();
     }
+  }
+
+  open.addEventListener('click', () => {
+    openDialog({
+      title: '完全清空本机数据',
+      description: '该动作删除存储根整目录，不可撤销；请先确认备份归档已另行处置。',
+      scope: [
+        '删除全部分区：memory / config / chat_history / reflection',
+        '删除派生数据、市场数据缓存、日志与出网留痕',
+        '删除存储根内的凭据分区（不可恢复）',
+        '存储根之外的备份归档不受影响',
+      ],
+      requirePhrase: '清空',
+      confirmLabel: '确认清空',
+      destructive: true,
+      onConfirm: () => {
+        wipe();
+      },
+    });
   });
-  cancel.addEventListener('click', () => {
-    count = 0;
-    paint();
-    status.textContent = '';
-  });
+
   const row = el('div', 'feedback__actions');
-  row.append(confirm, cancel);
-  box.append(row, progress, status);
+  row.append(open);
+  box.append(row, status);
   mount.append(box);
 }
 
@@ -300,22 +311,43 @@ function credentialChrome(mount) {
   const revoke = el('button', 'feedback__button', '吊销');
   revoke.type = 'button';
   const revokeStatus = el('p', 'component__meta', '');
-  revoke.addEventListener('click', async () => {
-    revoke.disabled = true;
+
+  async function revokeNow(credentialId) {
+    revokeStatus.textContent = '正在吊销…';
+    revokeStatus.className = 'component__meta';
     try {
-      const payload = await postJson('/api/settings/credential', {
-        action: 'revoke', credential_id: id.value,
-      });
-      revokeStatus.textContent = payload.status === 'ok'
-        ? describeResult(payload.data || {})
-        : `未完成（${payload.status}）：${payload.reason || ''}`;
-      revokeStatus.className = payload.status === 'ok' ? 'component__meta' : 'state state--error';
+      const payload = await runBusy(revoke, () => postJson('/api/settings/credential', {
+        action: 'revoke', credential_id: credentialId,
+      }));
+      if (payload.status === 'ok') {
+        revokeStatus.textContent = describeResult(payload.data || {});
+        revokeStatus.className = 'component__meta';
+        showToast('凭据已吊销', { type: 'success' });
+      } else {
+        revokeStatus.textContent = `未完成（${payload.status}）：${payload.reason || ''}`;
+        revokeStatus.className = 'state state--error';
+      }
     } catch (error) {
       revokeStatus.textContent = `请求失败：${error.message}`;
       revokeStatus.className = 'state state--error';
-    } finally {
-      revoke.disabled = false;
     }
+  }
+
+  revoke.addEventListener('click', () => {
+    const credentialId = id.value.trim();
+    openDialog({
+      title: '吊销凭据',
+      description: '吊销会删除凭据本体，使用记录保留可查。',
+      scope: [
+        credentialId ? `凭据标识：${credentialId}` : '尚未填写凭据标识（提交后服务端会拒绝）',
+        '旧值不可恢复；如需继续使用须重新添加',
+      ],
+      confirmLabel: '吊销',
+      destructive: true,
+      onConfirm: () => {
+        revokeNow(credentialId);
+      },
+    });
   });
   const row = el('div', 'feedback__actions');
   row.append(revoke);

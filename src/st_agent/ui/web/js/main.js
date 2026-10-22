@@ -15,6 +15,11 @@ import { pageFor } from './pages.js';
 import { PARTITIONS, activeScreen, partitionByName } from './nav.js';
 import { renderEnvelope } from './render.js';
 import { renderChatPage } from './pages/chat.js';
+import { openDialog } from './components/dialog.js';
+import { showToast } from './components/toast.js';
+import { openPalette, togglePalette } from './palette.js';
+import { installShortcuts, SHORTCUTS, DEFERRED_SHORTCUTS } from './shortcuts.js';
+import { openFind } from './find.js';
 
 const root = document.getElementById('root');
 const nav = document.getElementById('nav');
@@ -33,6 +38,7 @@ const navSplitter = document.getElementById('nav-splitter');
 const chatSplitter = document.getElementById('chat-splitter');
 const navToggle = document.getElementById('nav-toggle');
 const chatToggle = document.getElementById('chat-toggle');
+const paletteEntry = document.getElementById('palette-entry');
 
 const KEYS = {
   navWidth: 'st.shell.nav.w',
@@ -422,6 +428,101 @@ async function mountChat() {
   }
 }
 
+// ── 交互底座：快捷键 / 命令面板 / 面内查找 / 当前面重渲染 ───────────────────
+// 词表见 14 册 §8.1；`Ctrl+W` / `Ctrl+Q` 归 T-UI-027，本叶不接。
+
+function go(path) {
+  window.location.assign(pageHref(path));
+}
+
+function switchPartition(index) {
+  const partition = PARTITIONS[index - 1];
+  if (partition) go(partition.root.path);
+}
+
+function focusChatInput() {
+  const input = chatRoot.querySelector('.chat__input');
+  if (input) input.focus();
+}
+
+function submitChat() {
+  const form = chatRoot.querySelector('.chat__composer');
+  if (!form) return;
+  if (typeof form.requestSubmit === 'function') form.requestSubmit();
+  else form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+}
+
+async function refreshCurrentPage() {
+  const page = pageFor(window.location.pathname);
+  if (!page) return;
+  try {
+    await renderPage(page);
+    mountChat();
+    paintHealth();
+    paintBanner();
+    showToast('已刷新当前面', { type: 'info' });
+  } catch (error) {
+    showToast(`刷新失败：${error.message}`, { type: 'error' });
+  }
+}
+
+function shortcutTable() {
+  const table = el('table', 'dialog__shortcuts');
+  const head = el('thead');
+  const headRow = el('tr');
+  headRow.append(el('th', null, '按键'), el('th', null, '动作'));
+  head.append(headRow);
+  const body = el('tbody');
+  for (const item of [...SHORTCUTS, ...DEFERRED_SHORTCUTS]) {
+    const row = el('tr');
+    row.append(el('td', null, item.keys), el('td', null, item.owner ? `${item.label}（归 ${item.owner}）` : item.label));
+    body.append(row);
+  }
+  table.append(head, body);
+  return table;
+}
+
+function showShortcutHelp() {
+  openDialog({
+    title: '快捷键',
+    description: '全部功能可纯键盘完成；浮层内焦点被困住。',
+    body: shortcutTable(),
+    confirmLabel: null,
+    cancelLabel: '关闭',
+  });
+}
+
+function shellActions() {
+  return [
+    { label: '切换左栏', hint: 'Ctrl+B', run: () => navToggle.click() },
+    { label: '切换右栏', hint: 'Ctrl+J', run: () => chatToggle.click() },
+    { label: '打开设置', hint: 'Ctrl+,', run: () => go('/settings') },
+    { label: '刷新当前面', hint: 'F5', run: refreshCurrentPage },
+    { label: '快捷键表', hint: 'F1', run: showShortcutHelp },
+    { label: '面内查找', hint: 'Ctrl+F', run: openFind },
+    { label: '聚焦对话输入', hint: '/', run: focusChatInput },
+  ];
+}
+
+function initInteractionBase() {
+  if (paletteEntry) {
+    paletteEntry.addEventListener('click', () => openPalette({ actions: shellActions(), go }));
+  }
+  installShortcuts({
+    palette: () => togglePalette({ actions: shellActions(), go }),
+    partition: switchPartition,
+    nav: () => navToggle.click(),
+    chat: () => chatToggle.click(),
+    settings: () => go('/settings'),
+    submit: submitChat,
+    refresh: refreshCurrentPage,
+    help: showShortcutHelp,
+    history: (delta) => window.history.go(delta),
+    find: openFind,
+    focusInput: focusChatInput,
+  });
+}
+
 async function boot() {
   if (!readToken()) {
     showFailure('地址缺少启动令牌：请使用服务启动时打印的地址打开本界面。');
@@ -442,6 +543,7 @@ async function boot() {
   buildNav(partition, activeItem);
   paintSummary();
   initRails();
+  initInteractionBase();
   paintHealth();
   mountChat();
 

@@ -12,6 +12,9 @@
 // 校验门，[D-064]）。写面只有两处（导出确认 / Onboarding 提交），都是**显式确认后**才发。
 
 import { getJson, postJson } from '../api.js';
+import { openDialog } from '../components/dialog.js';
+import { showToast } from '../components/toast.js';
+import { runBusy } from '../busy.js';
 import { renderEnvelope } from '../render.js';
 
 function el(tag, className, text) {
@@ -60,25 +63,49 @@ function link(text, href) {
   return node;
 }
 
-/** 导出面板（[11-sitemap §2 记忆]：清单 + 确认门；未经确认不导出）。 */
+/** 导出面板（[11-sitemap §2 记忆]：清单 + 确认门；未经确认不导出）。
+ *
+ * 导出的是一份**明文隐私数据**，故确认形态取真对话框（14 册 §8.2）：列明导出范围与落点，
+ * 服务端仍按 `confirmed_by=user` 的显式确认门校验。
+ */
 function buildExportPanel() {
   const section = el('section', 'page__block');
   section.append(el('h3', 'page__block-title', '导出记忆片段'));
   const body = el('div', 'page__block-body');
   section.append(body);
   const confirm = el('button', 'feedback__button', '确认导出');
-  confirm.addEventListener('click', async () => {
-    confirm.disabled = true;
+
+  async function runExport() {
+    body.append(el('p', 'state state--loading', '正在导出…'));
     try {
-      const result = await postJson('/api/memory/export', { confirmed_by: 'user' });
+      const result = await runBusy(confirm, () => postJson('/api/memory/export', { confirmed_by: 'user' }), {
+        backgroundMessage: '导出已转入后台：可离开本面，完成时会通知。',
+      });
       const line = el('p', result.status === 'ok' ? 'state state--ok' : 'state state--error',
         result.status === 'ok'
           ? `已导出 ${result.data.node_count} 个节点、${result.data.edge_count} 条边。`
           : `导出未完成：${result.reason || result.status}`);
       body.append(line);
+      if (result.status === 'ok') showToast('记忆片段已导出', { type: 'success' });
     } catch (error) {
       body.append(el('p', 'state state--error', `导出失败：${error.message}`));
     }
+  }
+
+  confirm.addEventListener('click', () => {
+    openDialog({
+      title: '导出记忆片段',
+      description: '导出文件为明文，写到本机导出目录；请自行保管。',
+      scope: [
+        '导出内容：全部记忆节点与边',
+        '落点：本机导出目录（明文文件）',
+        '不导出：凭据、出网留痕、对话原文',
+      ],
+      confirmLabel: '导出',
+      onConfirm: () => {
+        runExport();
+      },
+    });
   });
   return { section, body, confirm };
 }

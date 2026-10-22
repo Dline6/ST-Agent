@@ -33,7 +33,7 @@ body {
   position: absolute;
   top: -100px;
   left: var(--space-3);
-  z-index: 100;
+  z-index: var(--z-tooltip);
   padding: var(--space-1) var(--space-2);
   color: var(--accent);
   background: var(--card);
@@ -192,7 +192,7 @@ body {
 .summary-anchor {
   position: sticky;
   top: 0;
-  z-index: 10;
+  z-index: var(--z-sticky);
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -464,7 +464,7 @@ body {
 .feedback__button:hover,
 .proposal-actions__button:hover { border-color: var(--fg-muted); }
 .feedback__button:disabled,
-.proposal-actions__button:disabled { opacity: .5; cursor: progress; }
+.proposal-actions__button:disabled { opacity: .5; cursor: default; }
 .feedback__reason {
   font: inherit;
   width: 100%;
@@ -499,7 +499,7 @@ body {
 .change-actions__button:hover,
 .setting-actions__button:hover { border-color: var(--fg-muted); }
 .change-actions__button:disabled,
-.setting-actions__button:disabled { opacity: .5; cursor: progress; }
+.setting-actions__button:disabled { opacity: .5; cursor: default; }
 
 /* setting_panel（01 §12 / 08 §5）：逐条设置项，候选值 + 应用动作 */
 .component--setting { padding: var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-surface); }
@@ -529,7 +529,7 @@ body {
   cursor: pointer;
 }
 .violation-actions__button:hover { background: var(--error); color: var(--card); }
-.violation-actions__button:disabled { opacity: .5; cursor: progress; }
+.violation-actions__button:disabled { opacity: .5; cursor: default; }
 
 /* ── graph_view / heatmap / trend_chart（01 §12；11-sitemap §2 记忆 · 看板读面） ──
    三型于 T-UI-010.1 落地：均为「结构 + 数值」件。共性——并列单元用 --card 底 + 1px --line +
@@ -755,13 +755,264 @@ body {
   cursor: pointer;
 }
 .workspace__action:hover { border-color: var(--fg-muted); }
-.workspace__action:disabled { opacity: .5; cursor: progress; }
+.workspace__action:disabled { opacity: .5; cursor: default; }
 .workspace__note:empty { display: none; }
 .workspace__note .state { margin: var(--space-2) 0 0; font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
 
-/* 减弱动效：该偏好下所有时长归零（13 册 §7 / 14 册 §5）。
-   现行样式表尚无 transition / animation 消费方（浮层与动效令牌随 P2 落地），故本规则当前
-   是**空操作的前置**——先把基线立住，免得动效一落地就漏掉这条系统偏好。 */
+/* ── 浮层与反馈（T-UI-025.1；14 册 §5 / §6.1 / §8.2–§8.4）────────────
+   层级只在真需要压过别层时消费；对话框遮罩覆盖外壳，sheet 从右侧滑出但不遮主区，
+   toast 右下堆叠，右键菜单与查找条走 popover 层。 */
+
+.overlay {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding: var(--space-8) var(--space-4);
+  overflow-y: auto;
+  background: rgba(0, 0, 0, .32);
+}
+.overlay--palette { padding-top: var(--space-8); }
+
+.dialog {
+  width: min(560px, 100%);
+  padding: var(--space-5);
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-overlay);
+  box-shadow: var(--shadow-3);
+}
+.dialog__title { margin: 0 0 var(--space-2); font-size: var(--text-subtitle); line-height: var(--leading-subtitle); }
+.dialog__desc { margin: 0 0 var(--space-3); color: var(--fg-muted); }
+.dialog__scope { margin: 0 0 var(--space-3); padding-left: var(--space-5); }
+.dialog__scope li { margin: var(--space-1) 0; }
+.dialog__field { display: block; margin: 0 0 var(--space-3); }
+.dialog__field-label { display: block; margin-bottom: var(--space-1); color: var(--fg-muted); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
+.dialog__input {
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  color: var(--fg);
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+}
+.dialog__error { margin: var(--space-1) 0 0; color: var(--error); }
+.dialog__actions { display: flex; justify-content: flex-end; gap: var(--space-2); margin-top: var(--space-4); }
+.dialog__button {
+  padding: var(--space-1) var(--space-3);
+  font: inherit;
+  color: var(--fg);
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.dialog__button:hover { border-color: var(--fg-muted); }
+.dialog__button--primary { color: var(--card); background: var(--accent); border-color: var(--accent); }
+.dialog__button--danger { color: var(--card); background: var(--error); border-color: var(--error); }
+.dialog__button:disabled { opacity: .5; cursor: default; }
+.dialog__shortcuts { width: 100%; border-collapse: collapse; margin: 0 0 var(--space-3); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
+.dialog__shortcuts th,
+.dialog__shortcuts td { padding: var(--space-1) var(--space-2); border-bottom: 1px solid var(--line); text-align: left; }
+.dialog__shortcuts th { color: var(--fg-muted); font-weight: 600; }
+.dialog__shortcuts kbd { font-family: var(--font-num); }
+
+.sheet {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: var(--z-modal);
+  display: flex;
+  flex-direction: column;
+  width: min(420px, 100%);
+  background: var(--card);
+  border-left: 1px solid var(--line-strong);
+  box-shadow: var(--shadow-3);
+}
+.sheet__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+.sheet__title { margin: 0; font-size: var(--text-subtitle); line-height: var(--leading-subtitle); }
+.sheet__close,
+.toast__action,
+.toast__close {
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  color: var(--fg);
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.sheet__body { flex: 1 1 auto; min-height: 0; padding: var(--space-3); overflow-y: auto; }
+
+.toast-region {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-8);
+  z-index: var(--z-toast);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  width: min(360px, calc(100vw - var(--space-8)));
+}
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-surface);
+  box-shadow: var(--shadow-2);
+  animation: toast-in var(--dur-base) var(--ease-out);
+}
+.toast--success { border-left-color: var(--ok); }
+.toast--error { border-left-color: var(--error); }
+.toast__message { flex: 1 1 auto; margin: 0; }
+.toast__action { color: var(--accent); border-color: var(--accent); }
+
+.context-menu {
+  position: fixed;
+  z-index: var(--z-popover);
+  min-width: 160px;
+  padding: var(--space-1);
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-overlay);
+  box-shadow: var(--shadow-2);
+}
+.context-menu__item {
+  display: block;
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.context-menu__item:hover,
+.context-menu__item:focus-visible { background: var(--accent-weak); }
+.context-menu__item--destructive { color: var(--error); }
+.context-menu__sep { height: 1px; margin: var(--space-1) 0; background: var(--line); border: 0; }
+
+.palette {
+  display: flex;
+  flex-direction: column;
+  width: min(640px, 100%);
+  max-height: 70vh;
+  overflow: hidden;
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-overlay);
+  box-shadow: var(--shadow-2);
+}
+.palette__input {
+  width: 100%;
+  padding: var(--space-3);
+  font: inherit;
+  font-size: var(--text-body-lg);
+  line-height: var(--leading-body-lg);
+  color: var(--fg);
+  background: var(--card);
+  border: 0;
+  border-bottom: 1px solid var(--line);
+}
+.palette__list { flex: 1 1 auto; margin: 0; padding: var(--space-1); overflow-y: auto; list-style: none; }
+.palette__group { margin: var(--space-2) var(--space-2) var(--space-1); color: var(--fg-muted); font-size: var(--text-caption); line-height: var(--leading-caption); }
+.palette__item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.palette__item[aria-selected="true"] { background: var(--accent-weak); outline: 1px solid var(--accent); }
+.palette__hint { margin-left: auto; color: var(--fg-faint); font-size: var(--text-caption); line-height: var(--leading-caption); }
+.palette__note { padding: var(--space-1) var(--space-2); color: var(--delayed); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
+.palette__empty { padding: var(--space-2); color: var(--fg-muted); }
+
+.find-bar {
+  position: fixed;
+  top: var(--space-4);
+  right: var(--space-4);
+  z-index: var(--z-popover);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-overlay);
+  box-shadow: var(--shadow-2);
+}
+.find-bar__input {
+  padding: var(--space-1) var(--space-2);
+  font: inherit;
+  color: var(--fg);
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+}
+.find-bar__status { color: var(--fg-muted); font-size: var(--text-caption); line-height: var(--leading-caption); }
+
+/* 忙碌态与不可用态分开：`.is-busy` 是「正在忙，可显示进度」；`:disabled` 是「不可用」。
+   两者不再共用 `opacity: .5 + cursor: progress`（14 册 §8.4）。 */
+.is-busy { cursor: progress; }
+.is-busy::before {
+  content: "";
+  display: inline-block;
+  width: .9rem;
+  height: .9rem;
+  margin-right: var(--space-1);
+  vertical-align: -2px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: var(--radius-pill);
+  animation: busy-spin 700ms linear infinite;
+}
+@keyframes busy-spin { to { transform: rotate(360deg); } }
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* 高对比度（14 册 §5 / §9）：浮层改实线边界、去掉阴影，动作件走系统按钮色。 */
+@media (forced-colors: active) {
+  .dialog,
+  .sheet,
+  .toast,
+  .context-menu,
+  .palette,
+  .find-bar { border: 1px solid CanvasText; box-shadow: none; }
+  .dialog__button,
+  .sheet__close,
+  .toast__action,
+  .toast__close,
+  .context-menu__item,
+  .palette__item { border: 1px solid ButtonText; }
+}
+
+/* 减弱动效：该偏好下所有时长归零（13 册 §7 / 14 册 §5）。 */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     animation-duration: .01ms !important;

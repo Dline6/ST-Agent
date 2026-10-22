@@ -1,12 +1,15 @@
 // 演进面的页面本体（/reflection/changes 与 /settings/evolution）。
 //
 // 页面只做**取数与装配**（同 `pages/reflection.js` 的分工）：内容一律经 `renderEnvelope`
-// → 组件注册表渲染；下面唯一的**页面级 chrome** 是出厂重置的「三次确认」控件——它是确认
-// 流程本身（计数 + 提交），**不解析任何数据**。确认次数以服务端为准（不足即拒，08 §6），
-// 页面的 `NEEDED` 只是把同一口径渲染出来。
+// → 组件注册表渲染；下面唯一的**页面级 chrome** 是出厂重置——它把「连点 3 次」改为
+// **真对话框 + 列明影响范围 + 输入确认词**（14 册 §8.2）。确认次数以服务端为准
+// （不足即拒，08 §6），页面的 `NEEDED` 只是把同一口径渲染出来。
 
 import { getJson, postJson } from '../api.js';
 import { renderEnvelope } from '../render.js';
+import { openDialog } from '../components/dialog.js';
+import { showToast } from '../components/toast.js';
+import { runBusy } from '../busy.js';
 import { singleBlockPage } from './reflection.js';
 
 function el(tag, className, text) {
@@ -23,25 +26,17 @@ function resetBlock() {
   const box = el('section', 'page__block');
   box.append(el('h3', 'page__block-title', '回滚到出厂设置'));
 
-  const status = el('p', 'component__meta', `确认进度：0 / ${NEEDED}`);
   const message = el('p', 'component__meta', '');
-  const confirm = el('button', 'feedback__button', '确认回滚');
-  const cancel = el('button', 'feedback__button', '重置确认进度');
-  confirm.type = 'button';
-  cancel.type = 'button';
+  const open = el('button', 'feedback__button', '回滚到出厂设置…');
+  open.type = 'button';
 
-  let count = 0;
-  const progress = () => {
-    status.textContent = `确认进度：${count} / ${NEEDED}`;
-  };
-
-  confirm.addEventListener('click', async () => {
-    count += 1;
-    progress();
-    if (count < NEEDED) return;
-    confirm.disabled = true;
+  async function reset() {
+    message.textContent = '正在回滚…';
+    message.className = 'component__meta';
     try {
-      const payload = await postJson(RESET_ROUTE, { confirmations: NEEDED });
+      const payload = await runBusy(open, () => postJson(RESET_ROUTE, { confirmations: NEEDED }), {
+        backgroundMessage: '出厂回滚已转入后台：可离开本面，完成时会通知。',
+      });
       if (payload.status === 'ok') {
         const data = payload.data || {};
         const replayed = (data.replayed || []).length;
@@ -50,6 +45,9 @@ function resetBlock() {
           ? `已重置：回放 ${replayed} 条、停止 ${stopped} 个实验、档位复位。`
           : `未重置：${data.reason || '条件不满足'}`;
         message.className = 'component__meta';
+        showToast(data.performed ? '已回滚到出厂设置' : '条件不满足，未重置', {
+          type: data.performed ? 'success' : 'info',
+        });
       } else {
         message.textContent = `未重置（${payload.status}）：${payload.reason || ''}`;
         message.className = 'state state--error';
@@ -57,21 +55,30 @@ function resetBlock() {
     } catch (error) {
       message.textContent = `请求失败：${error.message}`;
       message.className = 'state state--error';
-    } finally {
-      confirm.disabled = false;
-      count = 0;
-      progress();
     }
-  });
+  }
 
-  cancel.addEventListener('click', () => {
-    count = 0;
-    progress();
-    message.textContent = '';
+  open.addEventListener('click', () => {
+    openDialog({
+      title: '回滚到出厂设置',
+      description: '该动作重置演进状态，不可撤销；Memory 原始数据保留。',
+      scope: [
+        'Skill 参数恢复默认值',
+        '进行中的 A/B 实验停止',
+        '演进授权档复位',
+        '变更历史归档后仍可查；Memory 原始数据不动',
+      ],
+      requirePhrase: '回滚',
+      confirmLabel: '确认回滚',
+      destructive: true,
+      onConfirm: () => {
+        reset();
+      },
+    });
   });
 
   const row = el('div', 'feedback__actions');
-  row.append(confirm, cancel);
+  row.append(open);
   box.append(
     el(
       'p',
@@ -80,7 +87,6 @@ function resetBlock() {
       + 'Memory 原始数据保留、变更历史归档后仍可查。',
     ),
     row,
-    status,
     message,
   );
   return box;
