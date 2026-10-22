@@ -33,7 +33,6 @@ async function mountBlock(root, { path, label }) {
 /** 反思中心主页：周报 → 留痕锚点 → 反馈采集 → 建议与提案。 */
 export async function renderReflectionPage(page, mount) {
   const root = el('div', 'page');
-  root.append(el('h2', 'page__title', page.title));
   for (const block of [
     { path: '/api/reflection/reports', label: '本周反思报告' },
     { path: '/api/reflection/reports/trace', label: '留痕锚点（完整 Trace）' },
@@ -49,8 +48,7 @@ export async function renderReflectionPage(page, mount) {
 export function singleBlockPage(path, label) {
   return async (page, mount) => {
     const root = el('div', 'page');
-    root.append(el('h2', 'page__title', page.title));
-    await mountBlock(root, { path, label });
+      await mountBlock(root, { path, label });
     mount.replaceChildren(root);
   };
 }

@@ -3,20 +3,49 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ST Agent · 本机界面</title>
+<title>ST Agent</title>
 <link rel="stylesheet" href="/css/tokens.css">
 <link rel="stylesheet" href="/css/app.css">
 </head>
 <body>
-<header class="masthead">
-  <h1>ST Agent</h1>
-  <p class="hint">本机回环界面 · 数据不出本机 · 只经本机服务取数</p>
-</header>
-<nav id="nav" class="nav" aria-label="页面导航"></nav>
-<div id="banner" class="banner" aria-live="polite" hidden></div>
-<main id="root" aria-live="polite">
-  <p class="state state--loading">正在连接本机服务…</p>
-</main>
+<a class="skip-link" href="#main">跳到主区</a>
+<div class="app-shell" id="app-shell">
+  <header class="command-bar" id="command-bar" aria-label="命令栏">
+    <nav class="command-bar__crumbs" id="crumbs" aria-label="位置"></nav>
+    <div class="command-bar__actions">
+      <button type="button" class="command-bar__button" id="nav-toggle" aria-expanded="true" aria-controls="nav">导航</button>
+      <button type="button" class="command-bar__button" id="palette-entry" disabled title="命令面板随交互底座（T-UI-025）落地">命令面板 Ctrl+K</button>
+      <span class="command-bar__conn" id="conn-state">连接中…</span>
+      <button type="button" class="command-bar__button" id="chat-toggle" aria-expanded="true" aria-controls="chat-rail">对话</button>
+    </div>
+  </header>
+  <div id="banner" class="banner" aria-live="polite" hidden></div>
+  <div class="app-body">
+    <nav id="nav" class="nav-rail" aria-label="分区导航"></nav>
+    <div class="rail-splitter" id="nav-splitter" role="separator" aria-orientation="vertical"
+         aria-label="调整左栏宽度" aria-valuemin="200" aria-valuemax="240" aria-valuenow="220" tabindex="0"></div>
+    <main id="main" class="main-area" tabindex="-1">
+      <div class="summary-anchor" id="summary-anchor" aria-label="摘要锚点">
+        <div class="summary-anchor__items" id="summary-items"></div>
+        <p class="summary-anchor__note" id="summary-note"></p>
+      </div>
+      <h1 class="page-title" id="page-title"></h1>
+      <div id="root"></div>
+    </main>
+    <div class="rail-splitter" id="chat-splitter" role="separator" aria-orientation="vertical"
+         aria-label="调整右栏宽度" aria-valuemin="320" aria-valuemax="420" aria-valuenow="360" tabindex="0"></div>
+    <aside id="chat-rail" class="chat-rail" aria-label="对话">
+      <div class="chat-rail__head">
+        <h2 class="chat-rail__title">对话</h2>
+      </div>
+      <div id="chat-root" class="chat-rail__body"></div>
+    </aside>
+  </div>
+  <footer class="status-bar" id="status-bar" aria-label="状态栏">
+    <span class="status-bar__line" id="status-line" role="status" aria-live="polite">就绪</span>
+    <span class="status-bar__items" id="status-items"></span>
+  </footer>
+</div>
 <!--ST_DEV_SCRIPT-->
 <script type="module" src="/js/main.js"></script>
 </body>

@@ -22,8 +22,9 @@ function el(tag, className, text) {
   return node;
 }
 
-const VIEWS = ['storage', 'llm', 'sources', 'privacy', 'maintenance', 'network'];
-const VIEW_TITLES = {
+/** 六视图的键与标签——左栏二级与页内取数共用这一份（不另造词表）。 */
+export const VIEWS = ['storage', 'llm', 'sources', 'privacy', 'maintenance', 'network'];
+export const VIEW_TITLES = {
   storage: '存储',
   llm: 'LLM 提供方',
   sources: '数据源',
@@ -41,22 +42,6 @@ function params() {
 function readView() {
   const value = params().get('view') || 'storage';
   return VIEWS.includes(value) ? value : 'storage';
-}
-
-/** 跳本页另一视图：把当前 fragment（令牌）与 `?view=` 一并拼回。 */
-function viewHref(view) {
-  return `/settings?view=${encodeURIComponent(view)}${window.location.hash}`;
-}
-
-function viewNav(active) {
-  const nav = el('nav', 'page__tabs');
-  for (const view of VIEWS) {
-    const link = el('a', 'page__tab', VIEW_TITLES[view]);
-    link.href = viewHref(view);
-    if (view === active) link.setAttribute('aria-current', 'page');
-    nav.append(link);
-  }
-  return nav;
 }
 
 /** 取一条信封渲染进 `mount`（失败即错误态，不静默）。 */
@@ -351,12 +336,11 @@ async function renderNetwork(mount) {
   ));
 }
 
-/** 设置区页面：按 `?view=` 装配当前视图。 */
+/** 设置区页面：按 `?view=` 装配当前视图（视图入口在左栏二级）。 */
 export async function renderSettingsPage(page, mount) {
   const view = readView();
   const root = el('div', 'page');
-  root.append(el('h2', 'page__title', `${page.title} · ${VIEW_TITLES[view]}`));
-  root.append(viewNav(view));
+  root.append(el('h2', 'page__section-title', VIEW_TITLES[view]));
 
   if (view === 'storage') {
     await renderParts('/api/settings/storage', root, ['summary', 'partitions']);

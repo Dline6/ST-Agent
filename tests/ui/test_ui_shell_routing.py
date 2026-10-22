@@ -301,3 +301,103 @@ def test_every_registered_status_path_resolves_to_a_route() -> None:
         assert match, f"{path} 未点名可用性探针路径"
         probe = match.group(1)
         assert probe in _GET_ROUTES, f"{path} 的探针 {probe} 不在路由表里（首屏会拿不到信封）"
+
+
+# ── 三栏外壳与常驻滚动（T-UI-024） ─────────────────────────────────────────────
+#
+# 本组是 [14 册 §15] 的 P1 验收口径的机器半边：**静态**断言外壳五区、无整页滚动、
+# 每个栏位各自滚动、唯一 h1 与 skip link、以及左栏两级由 `nav.js` 从登记表派生。
+# 浏览器走查（滚动到底后 .nav 仍在视口）另见执行日志的验证行。
+
+_INDEX = _UI / "web" / "index.html"
+_MAIN_JS = _UI / "web" / "js" / "main.js"
+_NAV_JS = _UI / "web" / "js" / "nav.js"
+_APP_CSS = _UI / "web" / "css" / "app.css"
+_PAGE_MODULES = _UI / "web" / "js" / "pages"
+
+
+def _rule_block(css: str, selector: str) -> str:
+    """取一条 CSS 规则的声明块（选择器按字面量精确匹配）。"""
+    match = re.search(rf"(?m)^\s*{re.escape(selector)}\s*\{{(.*?)\}}", css, re.S)
+    assert match, f"app.css 里找不到规则 {selector}"
+    return match.group(1)
+
+
+def test_shell_declares_the_five_zones() -> None:
+    """GWT-1：命令栏 / 左栏 / 主区 / 右栏 / 状态栏五区齐备，且有 skip link 直达主区。"""
+    html = _INDEX.read_text(encoding="utf-8")
+    for marker in (
+        'id="command-bar"',
+        'id="nav"',
+        'id="main"',
+        'id="chat-rail"',
+        'id="status-bar"',
+    ):
+        assert marker in html, f"index.html 缺少外壳区：{marker}"
+    assert 'class="skip-link"' in html and 'href="#main"' in html
+
+
+def test_shell_never_scrolls_as_a_page() -> None:
+    """GWT-1：`documentElement` 不出现整页滚动——body 与外壳都锁 overflow，外壳占满视口。"""
+    css = _APP_CSS.read_text(encoding="utf-8")
+    assert "overflow: hidden" in _rule_block(css, "body")
+    shell = _rule_block(css, ".app-shell")
+    assert "overflow: hidden" in shell
+    assert "100vh" in shell
+
+
+def test_each_rail_has_its_own_scroll() -> None:
+    """GWT-1/2：左栏、主区、右栏（对话流）各自 `overflow-y: auto`，外壳本身不滚。"""
+    css = _APP_CSS.read_text(encoding="utf-8")
+    for selector in (".nav-rail", ".main-area", ".chat-rail__body .chat__stream"):
+        assert "overflow-y: auto" in _rule_block(css, selector), f"{selector} 未声明独立滚动"
+
+
+def test_aria_live_lives_only_in_the_status_regions() -> None:
+    """GWT-4：`aria-live` 不挂在主内容容器上（翻页不重播整页）。"""
+    html = _INDEX.read_text(encoding="utf-8")
+    root_tag = re.search(r'<div id="root"[^>]*>', html)
+    assert root_tag, "index.html 里找不到主内容容器 #root"
+    assert "aria-live" not in root_tag.group(0)
+    status_tag = re.search(r'<span[^>]*id="status-line"[^>]*>', html)
+    assert status_tag and 'aria-live="polite"' in status_tag.group(0), "状态行未声明 aria-live"
+
+
+def test_one_h1_owned_by_the_shell() -> None:
+    """GWT-4：每页唯一 `h1` ＝ 页面标题；页面模块不再各写一个标题。"""
+    html = _INDEX.read_text(encoding="utf-8")
+    assert html.count("<h1") == 1, "index.html 须只有一个 h1（页面标题由外壳产出）"
+    offenders = [
+        path.name
+        for path in sorted(_PAGE_MODULES.glob("*.js"))
+        if re.search(r"el\(\s*'h1'", path.read_text(encoding="utf-8"))
+    ]
+    assert not offenders, f"页面模块自带 h1（会与外壳的唯一 h1 重复）：{offenders}"
+    main = _MAIN_JS.read_text(encoding="utf-8")
+    assert "pageTitle.textContent = page.title" in main, "外壳未把页面标题写进唯一 h1"
+
+
+def test_nav_has_two_levels_built_from_the_registry() -> None:
+    """GWT-3：左栏一级＝分区根（既有回归断言在上）、二级＝同分区屏 / 页内视图，展开态持久化。"""
+    nav = _NAV_JS.read_text(encoding="utf-8")
+    assert "export const PARTITIONS" in nav
+    assert "export function activeScreen" in nav
+    main = _MAIN_JS.read_text(encoding="utf-8")
+    assert "PARTITIONS" in main and "activeScreen" in main
+    assert "st.shell.nav.open" in main, "二级展开态未持久化（跳页后会丢）"
+
+
+def test_every_page_registry_entry_declares_a_partition() -> None:
+    """每条页面登记都归一个分区——左栏两级完全由登记表派生，不另造映射。"""
+    for path, block in _frontend_entries():
+        assert re.search(r"partition:\s*'[^']+'", block), f"{path} 未声明 partition"
+
+
+def test_page_view_switchers_are_lifted_to_the_rail() -> None:
+    """页内视图切换器已移除，视图元数据由各页导出、左栏复用（同一份词表）。"""
+    nav = _NAV_JS.read_text(encoding="utf-8")
+    for module in ("memory.js", "settings.js", "delivery.js"):
+        text = (_PAGE_MODULES / module).read_text(encoding="utf-8")
+        assert "export const VIEWS" in text and "export const VIEW_TITLES" in text, module
+        assert "function viewNav" not in text and "function buildSwitcher" not in text, module
+        assert f"from './pages/{module}'" in nav, f"nav.js 未复用 {module} 的视图词表"

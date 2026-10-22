@@ -15,47 +15,252 @@ h1, h2, h3, h4, h5, h6 { font-weight: 600; }
    其余全靠浏览器默认环。不得 `outline: none`。 */
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
+html, body { height: 100%; }
+
 body {
   margin: 0;
-  padding: var(--space-7) var(--space-5) var(--space-9);
   background: var(--bg);
   color: var(--fg);
   font-family: var(--font-ui);
   font-size: var(--text-body);
   line-height: var(--leading-body);
+  /* 外壳永不滚动（14 册 §2 硬规则 1）——滚动的只有三个栏位各自。 */
+  overflow: hidden;
 }
 
-.masthead { max-width: 46rem; margin: 0 auto var(--space-6); }
-.masthead h1 { margin: 0 0 var(--space-1); font-size: var(--text-title); line-height: var(--leading-title); letter-spacing: .01em; }
-.hint { margin: 0; color: var(--fg-muted); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
-
-/* 页面导航（壳）：与主区同宽；跳页链接由 main.js 拼回 fragment 里的令牌。 */
-.nav { max-width: 46rem; margin: 0 auto var(--space-3); }
-.nav__list { display: flex; flex-wrap: wrap; gap: var(--space-1) var(--space-2); margin: 0; padding: 0; list-style: none; }
-.nav__link {
-  display: inline-block;
+/* 跳过导航：首焦点可见，越过左栏直达主区（14 册 §9）。 */
+.skip-link {
+  position: absolute;
+  top: -100px;
+  left: var(--space-3);
+  z-index: 100;
   padding: var(--space-1) var(--space-2);
+  color: var(--accent);
+  background: var(--card);
+  border: 1px solid var(--accent);
   border-radius: var(--radius-control);
+}
+.skip-link:focus { top: var(--space-1); }
+
+/* 外壳三行：命令栏（40px）/ 主体 / 状态栏（24px） */
+.app-shell {
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr) auto;
+  height: 100vh;
+  overflow: hidden;
+}
+
+.command-bar {
+  grid-row: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 40px;
+  padding: 0 var(--space-3);
+  background: var(--card);
+  border-bottom: 1px solid var(--line);
+}
+.command-bar__crumbs { display: flex; align-items: center; gap: var(--space-1); min-width: 0; }
+.command-bar__partition { font-weight: 600; }
+.command-bar__page,
+.command-bar__screen { color: var(--fg-muted); }
+.command-bar__sep { color: var(--fg-faint); }
+.command-bar__actions { display: flex; align-items: center; gap: var(--space-2); }
+.command-bar__button {
+  min-height: 28px;
+  padding: 0 var(--space-2);
+  font: inherit;
+  font-size: var(--text-body-sm);
+  line-height: var(--leading-body-sm);
+  color: var(--fg);
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.command-bar__button:hover { border-color: var(--fg-muted); }
+.command-bar__button:disabled { opacity: .5; cursor: default; }
+.command-bar__conn { color: var(--fg-muted); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
+
+/* 三栏主体：左栏 / 拖拽线 / 主区 / 拖拽线 / 右栏——各自独立滚动 */
+.app-body { grid-row: 3; display: flex; min-height: 0; overflow: hidden; }
+
+.rail-splitter {
+  flex: 0 0 6px;
+  width: 6px;
+  background: var(--bg);
+  border: 0;
+  border-right: 1px solid var(--line);
+  cursor: col-resize;
+}
+.rail-splitter:hover,
+.rail-splitter:focus-visible { border-right-color: var(--accent); }
+
+/* 左栏：一级分区 + 二级屏 / 页内视图（`nav.js` 派生） */
+.nav-rail {
+  flex: 0 0 auto;
+  width: 220px;
+  padding: var(--space-2) var(--space-1);
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: var(--card);
+  border-right: 1px solid var(--line);
+}
+.nav__list,
+.nav__screens { margin: 0; padding: 0; list-style: none; }
+.nav__row { display: flex; align-items: center; gap: var(--space-1); }
+.nav__link {
+  display: flex;
+  flex: 1 1 auto;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: 32px;
+  padding: 0 var(--space-1);
+  color: var(--fg-muted);
+  text-decoration: none;
+  border-radius: var(--radius-control);
+}
+.nav__link:hover { color: var(--fg); background: var(--line); }
+.nav__link[aria-current="page"] { color: var(--fg); font-weight: 600; background: var(--accent-weak); }
+.nav__glyph {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  color: var(--fg-muted);
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+}
+.nav__label {
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  font-size: var(--text-body-sm);
+  line-height: var(--leading-body-sm);
+}
+.nav__toggle {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font: inherit;
+  color: var(--fg-muted);
+  background: none;
+  border: 0;
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.nav__toggle:hover { color: var(--fg); background: var(--line); }
+.nav__screens { padding-left: var(--space-6); }
+.nav__sublink {
+  display: flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 0 var(--space-1);
   color: var(--fg-muted);
   font-size: var(--text-body-sm);
   line-height: var(--leading-body-sm);
   text-decoration: none;
+  border-radius: var(--radius-control);
 }
-.nav__link:hover { color: var(--fg); background: var(--line); }
-.nav__link[aria-current="page"] { color: var(--fg); font-weight: 600; background: var(--line); }
+.nav__sublink:hover { color: var(--fg); background: var(--line); }
+.nav__sublink[aria-current="page"] { color: var(--fg); font-weight: 600; background: var(--accent-weak); }
 
-/* 未实现页面的可用性探针占位（只证明路由通、端口在不在，不冒充业务内容）。 */
-.page-probe__title { margin: 0 0 var(--space-1); font-size: var(--text-title); line-height: var(--leading-title); }
-.page-probe__body { margin-top: var(--space-3); }
+/* 折叠态（< 1024px 自动，或点「导航」）：48px 图标条，只留代号 */
+.is-nav-collapsed .nav-rail { padding: var(--space-2) 0; }
+.is-nav-collapsed .nav__label,
+.is-nav-collapsed .nav__toggle,
+.is-nav-collapsed .nav__screens { display: none; }
+.is-nav-collapsed .nav__row { justify-content: center; }
+.is-nav-collapsed .nav__link { justify-content: center; padding: 0; }
 
-main {
-  max-width: 46rem;
-  margin: 0 auto;
+/* 主区：自适应容器（最小 480px；分栏交互归 T-UI-026），自身滚动 */
+.main-area {
+  flex: 1 1 auto;
+  min-width: 480px;
   padding: var(--space-5);
+  overflow-y: auto;
+  background: var(--bg);
+}
+.page-title { margin: 0 0 var(--space-4); font-size: var(--text-title); line-height: var(--leading-title); }
+
+/* 摘要锚点：主区顶部 sticky，最重要的数字不随页面滚走 */
+.summary-anchor {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-2) var(--space-5);
+  margin: 0 0 var(--space-4);
+  padding: var(--space-2) var(--space-3);
   background: var(--card);
   border: 1px solid var(--line);
   border-radius: var(--radius-surface);
 }
+.summary-anchor__items { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-5); }
+.summary-anchor__item { display: flex; flex-direction: column; min-width: 4rem; }
+.summary-anchor__label { color: var(--fg-muted); font-size: var(--text-caption); line-height: var(--leading-caption); }
+.summary-anchor__value {
+  font-family: var(--font-num);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--text-metric);
+  line-height: var(--leading-metric);
+}
+.summary-anchor__note { margin: 0; color: var(--fg-muted); font-size: var(--text-caption); line-height: var(--leading-caption); }
+
+/* 右栏：Chat 伴随栏（320–420px，可拖宽 / 可折叠），自身滚动 */
+.chat-rail {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  width: 360px;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--card);
+  border-left: 1px solid var(--line);
+}
+.chat-rail[hidden] { display: none; }
+.chat-rail__head {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+.chat-rail__title { margin: 0; font-size: var(--text-subtitle); line-height: var(--leading-subtitle); }
+.chat-rail__body { flex: 1 1 auto; min-height: 0; padding: var(--space-3); overflow: hidden; }
+.chat-rail__body .page--chat { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.chat-rail__body .chat__stream { flex: 1 1 auto; min-height: 0; overflow-y: auto; }
+.chat-rail__body .chat__commands { flex: 0 0 auto; max-height: 40%; overflow-y: auto; }
+
+/* 状态栏：本机回环 · 数据源 · 最后同步 · 网络活动（24px 常驻） */
+.status-bar {
+  grid-row: 4;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  min-height: 24px;
+  padding: 0 var(--space-3);
+  overflow: hidden;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  background: var(--card);
+  border-top: 1px solid var(--line);
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+}
+.status-bar__items { display: flex; gap: var(--space-3); overflow: hidden; text-overflow: ellipsis; }
+.status-bar__item { white-space: nowrap; }
+.status-bar__label { color: var(--fg-muted); }
+.status-bar__value { color: var(--fg); }
 
 .state { margin: 0 0 var(--space-2); font-weight: 600; }
 .state--loading { color: var(--fg-muted); font-weight: 400; }
@@ -82,8 +287,7 @@ main {
 }
 
 #dev-panel {
-  max-width: 46rem;
-  margin: var(--space-4) auto 0;
+  margin: var(--space-4) 0 0;
   padding: var(--space-4) var(--space-5);
   background: var(--card);
   border: 1px dashed var(--line);
@@ -218,8 +422,9 @@ main {
 .divergence__nodes { list-style: none; padding-left: 0; }
 .divergence__conflict { padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-surface); }
 
-/* 反思中心的页面装配（/reflection 及其子页）：块与块自上而下并列 */
-.page__title { margin: 0 0 var(--space-2); font-size: var(--text-title); line-height: var(--leading-title); }
+/* 反思中心的页面装配（/reflection 及其子页）：块与块自上而下并列。
+   页面标题由外壳的唯一 h1 承载；页内视图标题用本类。 */
+.page__section-title { margin: 0 0 var(--space-2); font-size: var(--text-title); line-height: var(--leading-title); }
 .page__block { margin: 0 0 var(--space-5); }
 .page__block-title { margin: 0 0 var(--space-1); font-size: var(--text-subtitle); line-height: var(--leading-subtitle); color: var(--fg-muted); }
 
@@ -396,7 +601,7 @@ main {
 /* ── Chat 主界面（首页 `/`；[T-UI-012] 三叶） ─────────────────────────────────
    对话流 + 上下文卡片 + 澄清/确认 + 生成式 UI 宿主。层级仍靠线与留白（D-104 ①），
    不用阴影；六态色一律「色 + 文字」双写。 */
-.page--chat { max-width: 46rem; }
+.page--chat { min-width: 0; }
 .chat__context-body { margin-top: var(--space-1); }
 .chat__stream { margin: 0 0 var(--space-4); display: flex; flex-direction: column; gap: var(--space-3); }
 .chat__turn { border-left: 2px solid var(--line); padding-left: var(--space-3); }
@@ -513,15 +718,13 @@ main {
   line-height: var(--leading-body-sm);
 }
 
-/* 离线横幅（全局要素；[11-sitemap §2.1] 判为壳面）——与主区同宽，只在离线时出现。 */
+/* 离线横幅（全局要素；[11-sitemap §2.1] 判为壳面）——横跨主体，只在离线时出现。 */
 .banner {
-  max-width: 46rem;
-  margin: 0 auto var(--space-3);
+  grid-row: 2;
   padding: var(--space-2) var(--space-3);
-  border: 1px solid var(--delayed);
-  border-left-width: 3px;
-  border-radius: var(--radius-surface);
   background: var(--card);
+  border-bottom: 1px solid var(--delayed);
+  border-left: 3px solid var(--delayed);
 }
 .banner__line { margin: 0 0 var(--space-1); color: var(--delayed); font-weight: 600; }
 .banner__body .state { margin: 0 0 var(--space-1); }
@@ -529,7 +732,7 @@ main {
 
 /* 工作区（/workspace；[11-sitemap §2 工作区] / [05 §6]）——钉住的持久组件一件一块，
    每块自带一条动作行（刷新 / 下钻 / 取消钉住）与一行**就地**消息（成功 / 降级原因）。 */
-.page--workspace { max-width: 46rem; }
+.page--workspace { min-width: 0; }
 .workspace__item {
   margin: 0 0 var(--space-4);
   padding: var(--space-3);

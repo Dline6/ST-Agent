@@ -75,7 +75,8 @@ function mountDevPanel() {
   }
 
   panel.append(heading, statusRow, descriptionRow);
-  document.body.append(panel);
+  // 挂进主区（外壳是固定三行的 grid，直接挂 body 会多出一行并挤坏栏位）。
+  (document.getElementById('main') || document.body).append(panel);
 }
 
 mountDevPanel();

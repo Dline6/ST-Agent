@@ -20,6 +20,7 @@ import pytest
 
 _UI = Path(__file__).resolve().parents[2] / "src" / "st_agent" / "ui"
 _PAGES_JS = _UI / "web" / "js" / "pages.js"
+_MAIN_JS = _UI / "web" / "js" / "main.js"
 _CHAT_JS = _UI / "web" / "js" / "pages" / "chat.js"
 
 
@@ -38,9 +39,13 @@ def test_root_page_has_a_render() -> None:
     assert "render:" in _entry_block("/"), "首页登记项缺少 render（仍是占位态）"
 
 
-def test_chat_page_module_is_imported_and_exported() -> None:
-    """宿主模块被 `pages.js` 静态 import，且导出一枚 `renderChatPage`。"""
-    text = _PAGES_JS.read_text(encoding="utf-8")
+def test_chat_rail_module_is_imported_and_exported() -> None:
+    """Chat 升为右栏伴随面后，宿主模块由 `main.js` 静态 import，且导出一枚 `renderChatPage`。
+
+    `T-UI-024` 起 `/` 主区是总览页（`overview.js`），对话流挂在右栏（`main.js` 的 `mountChat`）——
+    故「谁 import chat.js」从页面登记表改为外壳；导出名保持不变。
+    """
+    text = _MAIN_JS.read_text(encoding="utf-8")
     assert "from './pages/chat.js'" in text
     module = _CHAT_JS.read_text(encoding="utf-8")
     assert "export async function renderChatPage" in module

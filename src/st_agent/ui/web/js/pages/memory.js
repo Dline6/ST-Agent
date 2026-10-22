@@ -36,7 +36,9 @@ function readNode() {
   return params().get('node') || '';
 }
 
-const VIEW_LABELS = { graph: '图谱视图', list: '列表视图', timeline: '时间线视图' };
+/** 三视图的键与标签——左栏二级与页内取数共用这一份（不另造词表）。 */
+export const VIEWS = ['graph', 'list', 'timeline'];
+export const VIEW_TITLES = { graph: '图谱视图', list: '列表视图', timeline: '时间线视图' };
 
 const POSITION_BLOCKS = [
   { path: '/api/memory/holdings', label: '持仓' },
@@ -56,17 +58,6 @@ function link(text, href) {
   const node = el('a', 'view-switch__item', text);
   node.href = href + window.location.hash;
   return node;
-}
-
-/** 三视图切换器（保留 fragment 令牌）。 */
-function buildSwitcher(active) {
-  const bar = el('div', 'view-switch');
-  for (const view of ['graph', 'list', 'timeline']) {
-    const item = link(VIEW_LABELS[view], `?view=${view}`);
-    if (view === active) item.classList.add('is-active');
-    bar.append(item);
-  }
-  return bar;
 }
 
 /** 导出面板（[11-sitemap §2 记忆]：清单 + 确认门；未经确认不导出）。 */
@@ -115,7 +106,6 @@ async function renderOverview(root) {
   const browse = el('section', 'page__block');
   const head = el('div', 'page__block-head');
   head.append(el('h3', 'page__block-title', '记忆图谱'));
-  head.append(buildSwitcher(view));
   browse.append(head);
   const browseBody = el('div', 'page__block-body');
   browse.append(browseBody);
@@ -189,7 +179,6 @@ async function renderNode(root, nodeId, revisions) {
 
 export async function renderMemoryPage(page, mount) {
   const root = el('div', 'page');
-  root.append(el('h2', 'page__title', page.title));
 
   const nodeId = readNode();
   const revisions = params().get('view') === 'revisions';

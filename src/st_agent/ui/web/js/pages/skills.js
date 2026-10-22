@@ -75,7 +75,6 @@ async function mountBlock(root, title, path) {
 /** Skill 库页：清单 ＋（选中时）详情 / 参数面板 / 执行日志。 */
 export async function renderSkillsPage(page, mount) {
   const root = el('div', 'page page--skills');
-  root.append(el('h2', 'page__title', page.title));
   mount.replaceChildren(root);
 
   const active = currentSkill();

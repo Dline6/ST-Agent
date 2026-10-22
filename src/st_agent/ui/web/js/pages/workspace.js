@@ -137,7 +137,6 @@ function buildItem(description, reload) {
 
 export async function renderWorkspacePage(page, mount) {
   const root = el('div', 'page page--workspace');
-  root.append(el('h2', 'page__title', page.title));
   const chrome = el('div', 'workspace__chrome');
   const list = el('div', 'workspace__list');
   root.append(chrome, list);

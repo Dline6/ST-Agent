@@ -398,7 +398,6 @@ async function renderDecisions(root) {
 
 export async function renderDeliberationPage(page, mount) {
   const root = el('div', 'page');
-  root.append(el('h2', 'page__title', page.title));
 
   const view = readView();
   const switcher = el('div', 'view-switch');
