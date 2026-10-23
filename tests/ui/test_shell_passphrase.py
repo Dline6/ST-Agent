@@ -363,11 +363,20 @@ class MiniWindow:
     def __init__(self) -> None:
         self.urls: list[str] = []
 
-    def create(self, url: str, *, on_close_requested: Any) -> None:
+    def create(
+        self,
+        url: str,
+        *,
+        on_close_requested: Any,
+        geometry: Any = None,
+        on_geometry_changed: Any = None,
+    ) -> None:
         self.urls.append(url)
 
     def show(self) -> None: ...
     def hide(self) -> None: ...
+    def load_url(self, url: str) -> None: ...
+    def open_secondary(self, url: str) -> None: ...
     def destroy(self) -> None: ...
     def run(self) -> None: ...
 

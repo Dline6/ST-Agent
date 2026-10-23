@@ -12,6 +12,13 @@ dependencies = [
     "cryptography>=42.0",
 ]
 
+[project.gui-scripts]
+# 默认启动路径＝桌面壳（[14 册 §1]；[`T-UI-027.1`] GWT-5）。用 **gui-scripts** 而非
+# scripts：Windows 上生成无控制台的启动器（壳是 GUI 应用，不该先弹一个黑框）。
+# 浏览器面（`python -m st_agent.ui`）降级为开发 / CI 面，`start-st-agent.bat` 保留为
+# 试用 / 开发入口。系统入口（开始菜单 / 快捷方式）由 `T-UI-019` 的安装器消费冻结产物接线。
+st-agent = "st_agent.ui.shell.__main__:main"
+
 [project.optional-dependencies]
 # T-L0-005.1 真实抓取器：联网可选依赖，缺失时走 unavailable 显式分支（见 03 §1.2 / T-L0-005.1）。
 # 安装：pip install -e ".[market]"
@@ -51,6 +58,9 @@ exclude = ["st_agent.ui.dev"]
     "web/**/*.css",
     "web/**/*.js",
 ]
+# 壳的图标资源（[`T-UI-027.1`]）：`.ico` 与深浅两套托盘 PNG。随包走，缺了托盘会回落
+# 程序绘制、`.ico` 不会被安装器取到——故由 `tests/ui/test_ui_shell_desktop.py` 钉住。
+"st_agent.ui.shell" = ["assets/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

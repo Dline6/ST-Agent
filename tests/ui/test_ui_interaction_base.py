@@ -82,11 +82,13 @@ def test_every_shortcut_in_the_spec_is_registered() -> None:
     assert not missing, f"14 册 §8.1 有、shortcuts.js 未登记的键：{missing}"
 
 
-def test_shell_shortcuts_are_deferred_not_wired() -> None:
-    """`Ctrl+W` / `Ctrl+Q` 显式归 `T-UI-027`，本叶不得接（也不得拦浏览器默认）。"""
+def test_shell_shortcuts_are_wired_only_in_shell_sessions() -> None:
+    """`Ctrl+W` / `Ctrl+Q` 归壳叶（[`T-UI-027.1`]）——只在壳会话内接管，浏览器面不拦默认。"""
     text = _read(_SHORTCUTS)
-    assert "Ctrl+W / Ctrl+Q" in text and "T-UI-027" in text
-    assert "'w'" not in text and "'q'" not in text, "壳级快捷键被本叶接管了"
+    assert "Ctrl+W / Ctrl+Q" in text
+    assert "attached()" in text and "intent(" in text, "壳级快捷键未按壳会话门控"
+    main = _read(_JS / "main.js")
+    assert "shellAttached" in main and "/api/shell/intent" in main
 
 
 def test_partition_switch_covers_all_eight_partitions() -> None:

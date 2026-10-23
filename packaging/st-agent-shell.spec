@@ -21,7 +21,16 @@ SRC = ROOT / "src"
 webview_datas, webview_binaries, webview_hidden = collect_all("webview")
 pystray_datas, pystray_binaries, pystray_hidden = collect_all("pystray")
 
-datas = [*webview_datas, *pystray_datas]
+# 壳的图标资源（[`T-UI-027.1`]）：多尺寸 `.ico`（EXE 图标 + `T-UI-019` 安装器消费）与
+# 深浅两套托盘 PNG（pystray 运行时读盘，故必须随包）。由 `packaging/make_icons.py` 生成。
+ASSETS = SRC / "st_agent" / "ui" / "shell" / "assets"
+APP_ICON = ASSETS / "st-agent.ico"
+
+datas = [
+    *webview_datas,
+    *pystray_datas,
+    (str(ASSETS), "st_agent/ui/shell/assets"),
+]
 binaries = [*webview_binaries, *pystray_binaries]
 hiddenimports = [*webview_hidden, *pystray_hidden, "clr", "clr_loader", "pythonnet"]
 
@@ -52,6 +61,7 @@ exe = EXE(                                      # noqa: F821
     [],
     exclude_binaries=True,
     name="st-agent-shell",
+    icon=str(APP_ICON) if APP_ICON.exists() else None,
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,

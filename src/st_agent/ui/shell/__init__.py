@@ -5,11 +5,15 @@
 HTTP 取。进程边界见 [00 §1.1](../../../../docs/技术架构-v2/00-架构总览.md)——壳与后端是
 两个进程，后端是主体。
 
-包内分层：`backend`（拉起 / 握手 / 回收）· `autostart`（三平台登录项）· `notify`（最小
-通知接线）· `passphrase`（口令索取 / 记忆 / 回传）· `app`（装配与生命周期，**全部语义在此**）·
-`window` / `tray`（pywebview / pystray 薄边，惰性导入）。图形依赖收在 extra ``[shell]``、
-口令记忆收在 ``[keyring]``，本包在**未装**它们时仍可导入（只有真正开窗 / 装托盘 / 弹口令框
-时才抛 :class:`ShellSurfaceUnavailable`）。
+包内分层：`backend`（拉起 / 握手 / 回收 / stdout 意图回流）· `autostart`（三平台登录项）·
+`notify`（最小通知接线）· `passphrase`（口令索取 / 记忆 / 回传）· `prefs`（窗口态与一次性
+标记，纯函数）· `assets/`（多尺寸 `.ico` 与深浅两套托盘 PNG）· `app`（装配与生命周期，
+**全部语义在此**）· `window` / `tray`（pywebview / pystray 薄边，惰性导入）。图形依赖收在
+extra ``[shell]``、口令记忆收在 ``[keyring]``，本包在**未装**它们时仍可导入（只有真正开窗 /
+装托盘 / 弹口令框时才抛 :class:`ShellSurfaceUnavailable`）。
+
+`Ctrl+W` / `Ctrl+Q` 的意图**不新增壳专有通道**：前端经回环端点交给后端，后端沿既有
+stdout 控制管道回传壳（[`T-UI-027.1`]）。
 """
 
 from __future__ import annotations

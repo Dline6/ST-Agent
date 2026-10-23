@@ -152,6 +152,7 @@ def start_backend(
     parent_pid: int | None = None,
     cwd: str | os.PathLike[str] | None = None,
     resolve_passphrase: Callable[[PassphraseRequest], str | None] | None = None,
+    on_shell_event: Callable[[str], None] | None = None,
 ) -> BackendHandle:
     """拉起后端并等它的就绪握手；失败即抛 :class:`ShellError`（点名后端给的原因）。
 
@@ -160,6 +161,9 @@ def start_backend(
 
     ``resolve_passphrase`` 是**口令索取端口**：后端请求口令时由它去拿（查凭据库 / 弹框 /
     回写）。它为 ``None`` 而仍需口令，后端会自己显式失败——壳不代它决定。
+
+    ``on_shell_event`` 是**壳意图端口**（[`T-UI-027.1`]）：就绪后后端仍会沿同一条 stdout
+    管道回 ``event=shell``（`hide` / `quit`）；不传则不读后续行。
     """
     command: list[str] = list(spec.argv)
     command += ["--handshake", "json", "--control-stdin", "--ask-passphrase"]
@@ -181,6 +185,8 @@ def start_backend(
     tail: deque[str] = deque(maxlen=_STDERR_LINES)
     _drain_stderr(process, tail)
     payload = _negotiate(process, spec.ready_timeout, tail, resolve_passphrase)
+    if on_shell_event is not None:
+        _watch_shell_events(process, on_shell_event)
     return BackendHandle(
         process=process,
         host=str(payload["host"]),
@@ -206,6 +212,38 @@ def _drain_stderr(process: subprocess.Popen[str], sink: deque[str]) -> threading
             pass
 
     thread = threading.Thread(target=loop, name="st-agent-shell-stderr", daemon=True)
+    thread.start()
+    return thread
+
+
+def _watch_shell_events(
+    process: subprocess.Popen[str], callback: Callable[[str], None]
+) -> threading.Thread:
+    """就绪后继续读 stdout：``event=shell`` 交给壳（`hide` / `quit`），其余行忽略。
+
+    这条管道本就是壳与后端之间的控制面（握手、`passphrase_required`、`stopped`），
+    壳意图沿它回流，**不新增专有通道**（[00 §1.1]；[`T-UI-027.1`] A3）。
+    """
+
+    def loop() -> None:
+        stream = process.stdout
+        if stream is None:
+            return
+        try:
+            for line in stream:
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if payload.get("event") != "shell":
+                    continue
+                action = str(payload.get("action") or "")
+                if action:
+                    callback(action)
+        except (OSError, ValueError):
+            pass
+
+    thread = threading.Thread(target=loop, name="st-agent-shell-events", daemon=True)
     thread.start()
     return thread
 

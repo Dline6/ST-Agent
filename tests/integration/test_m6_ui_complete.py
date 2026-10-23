@@ -403,7 +403,8 @@ def test_the_entry_injects_exactly_the_serve_port_map(m6, monkeypatch) -> None:
     )
     assert exit_code == 0
     assert captured.pop("sentinel") is m6.m5, "入口未透传 ui_ports 的那张表"
-    assert set(captured) == {"host", "port", "dev"}
+    assert set(captured) == {"host", "port", "dev", "shell", "shell_control"}
+    assert captured["shell"] is True, "控制通道开启时未向表现层声明壳会话"
 
 
 def test_the_production_root_carries_every_port_and_every_probe_is_ok(m6) -> None:

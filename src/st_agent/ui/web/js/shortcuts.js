@@ -2,7 +2,9 @@
 //
 // **词表唯一出处是 14 册 §8.1**：本表的 `keys` 与规范表逐条对位，守卫
 // `tests/ui/test_ui_interaction_base.py` 按规范表解析并逐键断言（漂移即红）。
-// `Ctrl+W` / `Ctrl+Q` 是**壳行为**，归 T-UI-027，本叶不接、也不拦截浏览器默认。
+// `Ctrl+W` / `Ctrl+Q` 是**壳行为**（[`T-UI-027.1`]）：壳没有 JS 桥，故前端只在
+// **壳会话内**（`/api/health` 的 `data.shell`）接管它们，经回环端点 `/api/shell/intent`
+// 交给后端、再由后端沿 stdout 管道回传壳；浏览器直开时**不拦默认**（Ctrl+W 仍是关标签页）。
 
 import { closeTopOverlay, hasModalOverlay } from './components/overlay.js';
 
@@ -18,11 +20,10 @@ export const SHORTCUTS = [
   { keys: 'F1', label: '快捷键表' },
   { keys: 'Alt+← / Alt+→', label: '面内前进 / 后退' },
   { keys: 'Ctrl+F', label: '面内查找' },
+  { keys: 'Ctrl+W / Ctrl+Q', label: '收进托盘 / 退出' },
 ];
 
-export const DEFERRED_SHORTCUTS = [
-  { keys: 'Ctrl+W / Ctrl+Q', label: '收进托盘 / 退出', owner: 'T-UI-027' },
-];
+export const DEFERRED_SHORTCUTS = [];
 
 function isEditable(node) {
   if (!node) return false;
@@ -35,11 +36,23 @@ function isEditable(node) {
  *
  * handlers 需提供：`palette` / `partition(n)` / `nav` / `chat` / `settings` / `submit` /
  * `refresh` / `help` / `history(delta)` / `find` / `focusInput`。
+ *
+ * options 提供壳会话两面：`shell()` 返回是否由桌面壳拉起，`intent(action)` 投递
+ * `hide` / `quit`。缺省（浏览器直开）不接管 `Ctrl+W` / `Ctrl+Q`。
  */
-export function installShortcuts(handlers) {
+export function installShortcuts(handlers, options = {}) {
+  const attached = typeof options.shell === 'function' ? options.shell : () => false;
+  const intent = typeof options.intent === 'function' ? options.intent : () => {};
   const onKeyDown = (event) => {
     const mod = event.ctrlKey || event.metaKey;
     const key = event.key;
+
+    if (mod && (key.toLowerCase() === 'w' || key.toLowerCase() === 'q')) {
+      if (!attached()) return;
+      event.preventDefault();
+      intent(key.toLowerCase() === 'w' ? 'hide' : 'quit');
+      return;
+    }
 
     if (key === 'Escape') {
       if (closeTopOverlay()) {
