@@ -107,6 +107,8 @@ def check(target: str) -> list[str]:
     if any(name.startswith("st_agent.ui.dev") for name in names):
         problems.append("产物含 dev 面（[D-060] ④I 要求物理剔除）")
     if target == "shell":
+        if not _on_disk(root, "st_agent/ui/shell/assets/st-agent.ico"):
+            problems.append("壳产物缺图标资源（st_agent/ui/shell/assets/st-agent.ico）")
         for layer in ("l0", "l1", "l2", "l3", "l4"):
             if any(name.startswith(f"st_agent.{layer}") for name in names):
                 problems.append(f"壳产物含业务层 st_agent.{layer}（壳不含业务逻辑）")

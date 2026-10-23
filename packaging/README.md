@@ -19,6 +19,15 @@ python packaging/build.py --target all --smoke --clean
 壳按**摆放惯例**找后端（同目录，或同级目录下的 `st-agent-server/`），找不到才回落
 `python -m st_agent`；也可用 `st-agent-shell --backend <路径>` 显式指定。
 
+**默认启动路径是壳**（[14 册 §1](../docs/PRD-v2-Agent/14-desktop-form.md)；[`T-UI-027.1`](../项目管理/tasks/T-UI-027.1-窗口规格记忆与桌面壳闭合.md)）：
+源码安装后 `st-agent` 命令直接打开壳窗口；浏览器面（`python -m st_agent.ui`）与仓库根的
+`start-st-agent.bat` 保留为开发 / CI / 试用入口。系统入口（开始菜单 / 桌面快捷方式）由
+[`T-UI-019`](../项目管理/tasks/T-UI-019-Windows安装器与安装体验.md) 的安装器接线。
+
+**图标资源**：`src/st_agent/ui/shell/assets/` 下的多尺寸 `.ico`（16 / 32 / 256）与浅深两套
+托盘 PNG 由 `python packaging/make_icons.py` 生成并入库；壳产物用 `.ico` 作 EXE 图标，
+安装器（`T-UI-019`）消费同一份。
+
 ## 自检
 
 `build.py` 在构建后做三件事（`--check-only` 可只查不建）：

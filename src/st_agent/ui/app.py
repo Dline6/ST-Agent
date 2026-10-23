@@ -1841,6 +1841,16 @@ class UiApp:
     一份枚举。由组合根注入 `M1Runtime.commands`；`ui` 不 import `l3` 的类型。
     """
 
+    shell: bool = False
+    """本进程是否由**桌面壳**拉起（[`T-UI-027.1`]）。
+
+    为真时前端才接管 `Ctrl+W` / `Ctrl+Q`——浏览器直开（dev / CI 面）必须让这两个键维持
+    浏览器自己的语义，否则会把用户的标签页按住。
+    """
+
+    shell_control: Any = None
+    """壳意图端口（鸭子类型 ``(action) -> None``；`hide` / `quit`）；缺省 ``None`` → 显式不可用。"""
+
     @property
     def dev_enabled(self) -> bool:
         """dev 面是否**在本进程内真实可用**（开关打开 **且** 子包在盘上）。"""
@@ -2349,12 +2359,49 @@ class UiApp:
         )
 
     def api_health(self) -> dict[str, Any]:
-        """健康面：恒为 `ok`——本叶不接真实数据（任务假设 `A5`）。"""
+        """健康面：恒为 `ok`——本叶不接真实数据（任务假设 `A5`）。
+
+        `shell` 标记（[`T-UI-027.1`]）告诉前端「本进程由桌面壳拉起」——只有此时才接管
+        `Ctrl+W` / `Ctrl+Q`；浏览器面必须让这两个键维持浏览器语义。
+        """
         return envelope_payload(
             ResultEnvelope.ok(
-                {"service": "st-agent-ui", "version": _VERSION, "dev": self.dev_enabled}
+                {
+                    "service": "st-agent-ui",
+                    "version": _VERSION,
+                    "dev": self.dev_enabled,
+                    "shell": self.shell,
+                }
             )
         )
+
+    def api_shell_intent(self, body: dict[str, Any]) -> dict[str, Any]:
+        """壳意图（[`T-UI-027.1`]）：`Ctrl+W` → `hide`（收托盘）、`Ctrl+Q` → `quit`（退出）。
+
+        壳没有 JS 桥（[00 §1.1]「壳不提供任何专有通道」），故动作经回环面到后端、再由后端
+        沿既有 stdout 控制管道回传壳。非壳会话（浏览器直开）显式 `unavailable`，不静默。
+        """
+        action = body.get("action")
+        if action not in ("hide", "quit"):
+            return envelope_payload(
+                ResultEnvelope.validation_failed(
+                    f"壳意图动作非法：{action!r}（须为 hide / quit）"
+                )
+            )
+        if not self.shell or self.shell_control is None:
+            return envelope_payload(
+                ResultEnvelope.unavailable(
+                    "当前不是桌面壳会话：收起 / 退出由壳执行，浏览器面不接管该按键",
+                    last_updated_at=_now(),
+                )
+            )
+        try:
+            self.shell_control(action)
+        except Exception as exc:                     # noqa: BLE001 —— 端点须回信封
+            return envelope_payload(
+                ResultEnvelope.failed(f"壳意图投递失败：{exc}", log_ref="st-agent/ui/shell")
+            )
+        return envelope_payload(ResultEnvelope.ok({"action": action}))
 
     def api_face_status(self, face: str) -> dict[str, Any]:
         """面可用性探针：端口在 ⇒ `ok`；不在 ⇒ `unavailable` + 点名。
@@ -5847,6 +5894,8 @@ def build_ui(
     studio: Any = None,
     commands: Any = None,
     restart_gate: RestartGate | None = None,
+    shell: bool = False,
+    shell_control: Any = None,
 ) -> UiApp:
     """按已绑定的 ``host`` / ``port`` 装配表现层。
 
@@ -5885,4 +5934,6 @@ def build_ui(
         studio=studio,
         commands=commands,
         restart_gate=restart_gate if restart_gate is not None else RestartGate(),
+        shell=shell,
+        shell_control=shell_control,
     )

@@ -250,6 +250,9 @@ _POST_ROUTES: dict[str, Callable[[UiApp, dict], dict]] = {
     "/api/delivery/report/build": lambda app, body: app.api_delivery_report_build(body),
     "/api/delivery/config": lambda app, body: app.api_delivery_config_apply(body),
     "/api/delivery/fatigue/answer": lambda app, body: app.api_delivery_fatigue_answer(body),
+    # 壳意图（[`T-UI-027.1`]）：`Ctrl+W` 收托盘 / `Ctrl+Q` 退出——动作到后端，再由后端沿
+    # 既有 stdout 控制管道回传壳（壳无 JS 桥，不开专有通道）。非壳会话显式 unavailable。
+    "/api/shell/intent": lambda app, body: app.api_shell_intent(body),
 }
 """`POST` 数据面的路由表：路径 → `(UiApp, body)` → 载荷。**非本表内的 POST 一律 404**。
 
@@ -538,6 +541,8 @@ def serve(
     settings: object = None,
     studio: object = None,
     commands: object = None,
+    shell: bool = False,
+    shell_control: Callable[[str], None] | None = None,
 ) -> RunningUi:
     """绑定 → 按**实际端口**装配 → 起服务线程 → 返回句柄。
 
@@ -566,6 +571,8 @@ def serve(
         settings=settings,
         studio=studio,
         commands=commands,
+        shell=shell,
+        shell_control=shell_control,
     )
     server.RequestHandlerClass = type("BoundUiRequestHandler", (UiRequestHandler,), {"app": app})
     threading.Thread(target=server.serve_forever, name="st-agent-ui", daemon=True).start()

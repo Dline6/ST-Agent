@@ -47,8 +47,8 @@ __all__ = [
 SHELL_PATHS: frozenset[str] = PAGE_PATHS | {"/"}
 """声明页面集：``/`` ＋ ``PAGE_PATHS`` 的 18 条 ＝ [11-sitemap §2.2] 的 19 条（[`T-UI-011.2`]）。"""
 
-_NON_PORT_PARAMS = frozenset({"host", "port", "dev", "token"})
-"""``serve`` 上不属于「面端口」的形参（绑定 / 开发开关 / 启动令牌）。"""
+_NON_PORT_PARAMS = frozenset({"host", "port", "dev", "token", "shell", "shell_control"})
+"""``serve`` 上不属于「面端口」的形参（绑定 / 开发开关 / 启动令牌 / 壳会话与意图通道）。"""
 
 
 def serve_port_names() -> frozenset[str]:

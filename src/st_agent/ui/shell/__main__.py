@@ -11,6 +11,7 @@ import argparse
 from collections.abc import Sequence
 
 from st_agent.ui.shell.app import run_shell
+from st_agent.ui.shell.prefs import state_path
 
 __all__ = ["main"]
 
@@ -30,7 +31,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    return run_shell(backend_executable=args.backend, dev=args.dev)
+    return run_shell(
+        backend_executable=args.backend, dev=args.dev, prefs_path=state_path()
+    )
 
 
 if __name__ == "__main__":      # pragma: no cover - 手动入口

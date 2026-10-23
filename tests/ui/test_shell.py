@@ -35,22 +35,41 @@ def _child_env() -> dict[str, str]:
 
 
 class FakeWindow:
-    """窗口替身：记下开窗地址与每一次显隐 / 销毁。"""
+    """窗口替身：记下开窗地址、窗口态与每一次显隐 / 销毁。"""
 
     def __init__(self) -> None:
         self.urls: list[str] = []
+        self.secondaries: list[str] = []
+        self.loaded: list[str] = []
         self.close_handler: Any = None
+        self.geometry: Any = None
+        self.geometry_handler: Any = None
         self.calls: list[str] = []
 
-    def create(self, url: str, *, on_close_requested: Any) -> None:
+    def create(
+        self,
+        url: str,
+        *,
+        on_close_requested: Any,
+        geometry: Any = None,
+        on_geometry_changed: Any = None,
+    ) -> None:
         self.urls.append(url)
         self.close_handler = on_close_requested
+        self.geometry = geometry
+        self.geometry_handler = on_geometry_changed
 
     def show(self) -> None:
         self.calls.append("show")
 
     def hide(self) -> None:
         self.calls.append("hide")
+
+    def load_url(self, url: str) -> None:
+        self.loaded.append(url)
+
+    def open_secondary(self, url: str) -> None:
+        self.secondaries.append(url)
 
     def destroy(self) -> None:
         self.calls.append("destroy")
@@ -123,6 +142,7 @@ class Rig:
         self.login = FakeLoginItem()
         self.handle = FakeHandle()
         self.notes: list[tuple[str, str]] = []
+        self.shell_events: Any = None
         self.shell = Shell(
             backend=BackendSpec.default(),
             window=self.window,
@@ -135,9 +155,11 @@ class Rig:
         )
 
     def _fake_starter(
-        self, spec: Any, *, parent_pid: Any = None, resolve_passphrase: Any = None
+        self, spec: Any, *, parent_pid: Any = None, resolve_passphrase: Any = None,
+        on_shell_event: Any = None,
     ) -> Any:
         """后端拉起件替身（端口签名须与 `start_backend` 一致；本类只断言生命周期语义）。"""
+        self.shell_events = on_shell_event
         return self.handle
 
 
@@ -248,7 +270,8 @@ def test_start_opens_window_at_handshake_url_and_installs_tray() -> None:
     rig.shell.start()
     assert rig.window.urls == [rig.handle.client_url]
     assert [item.label for item in rig.tray.items] == [
-        "显示窗口", "开机自启", "发送测试通知", "清除已记住的凭据口令", "退出",
+        "显示主窗口", "新建窗口", "主动触达设置…", "开机自启", "发送测试通知",
+        "清除已记住的凭据口令", "退出",
     ]
     assert rig.tray.calls == ["install", "run_detached"]
 

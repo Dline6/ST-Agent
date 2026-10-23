@@ -60,6 +60,10 @@ const state = {
   chatCollapsed: readFlag(KEYS.chatCollapsed),
 };
 
+// 本进程是否由桌面壳拉起（`/api/health` 的 `data.shell`）：只有壳会话才接管
+// `Ctrl+W` / `Ctrl+Q`——浏览器直开时那两个键必须维持浏览器语义（[`T-UI-027.1`]）。
+let shellAttached = false;
+
 function el(tag, className, text) {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -264,6 +268,7 @@ async function paintHealth() {
   try {
     const payload = await getJson('/api/health');
     const ok = payload && payload.status === 'ok';
+    shellAttached = Boolean(payload && payload.data && payload.data.shell);
     const label = ok ? '已连接' : `不可用（${(payload && payload.status) || '未知'}）`;
     connState.textContent = label;
     paintStatus(label);
@@ -429,7 +434,7 @@ async function mountChat() {
 }
 
 // ── 交互底座：快捷键 / 命令面板 / 面内查找 / 当前面重渲染 ───────────────────
-// 词表见 14 册 §8.1；`Ctrl+W` / `Ctrl+Q` 归 T-UI-027，本叶不接。
+// 词表见 14 册 §8.1；`Ctrl+W` / `Ctrl+Q` 是壳行为（[`T-UI-027.1`]），只在壳会话内接管。
 
 function go(path) {
   window.location.assign(pageHref(path));
@@ -504,6 +509,14 @@ function shellActions() {
   ];
 }
 
+async function shellIntent(action) {
+  try {
+    await postJson('/api/shell/intent', { action });
+  } catch (error) {
+    showToast(`壳动作未送达：${error.message}`, { type: 'error' });
+  }
+}
+
 function initInteractionBase() {
   if (paletteEntry) {
     paletteEntry.addEventListener('click', () => openPalette({ actions: shellActions(), go }));
@@ -520,7 +533,7 @@ function initInteractionBase() {
     history: (delta) => window.history.go(delta),
     find: openFind,
     focusInput: focusChatInput,
-  });
+  }, { shell: () => shellAttached, intent: shellIntent });
 }
 
 async function boot() {

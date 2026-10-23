@@ -354,6 +354,20 @@ def _emit(stream: TextIO, text: str) -> None:
     print(text, file=stream, flush=True)
 
 
+def _shell_control_port(stream: TextIO, lock: Any) -> Any:
+    """壳意图端口（[`T-UI-027.1`]）：把 ``hide`` / ``quit`` 写成 ``event=shell`` 回给壳。
+
+    两者共用同一条 stdout 控制管道（握手 / 口令 / ``stopped`` 都在它上面），故与收尾行
+    共用一把锁——不新增专有通道，也不会把两行写串。
+    """
+
+    def control(action: str) -> None:
+        with lock:
+            _emit(stream, json.dumps({"event": "shell", "action": action}, ensure_ascii=False))
+
+    return control
+
+
 def _client_url(running: Any) -> str:
     """带令牌的客户端地址（令牌走 URL fragment——不进服务端、不进 Referer）。"""
     return f"{running.base_url}/#t={running.token}"
@@ -627,7 +641,16 @@ def run_backend(
                     json_handshake=json_handshake)
         return _EXIT_STARTUP_FAILED
     try:
-        running = serve_ui(host=host, port=port, dev=dev, **ui_ports(runtime))
+        line_lock = threading.Lock()
+        shell_control = _shell_control_port(stream, line_lock) if control_stdin else None
+        running = serve_ui(
+            host=host,
+            port=port,
+            dev=dev,
+            shell=control_stdin,
+            shell_control=shell_control,
+            **ui_ports(runtime),
+        )
     except Exception as exc:                     # noqa: BLE001 —— 入口须给出机器可读失败行
         traceback.print_exc()
         _emit_error(stream, f"{type(exc).__name__}: {exc}", code="serve_failed",
@@ -652,10 +675,11 @@ def run_backend(
             ambient.join(timeout=_AMBIENT_JOIN_SECONDS)
         running.shutdown()
         flush_audit(runtime)
-        if json_handshake:
-            _emit(stream, json.dumps({"event": "stopped"}, ensure_ascii=False))
-        else:
-            _emit(stream, "已退出。")
+        with line_lock:
+            if json_handshake:
+                _emit(stream, json.dumps({"event": "stopped"}, ensure_ascii=False))
+            else:
+                _emit(stream, "已退出。")
     return 0
 
 
