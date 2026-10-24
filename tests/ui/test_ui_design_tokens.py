@@ -54,7 +54,9 @@ _SPACING_PROPS = frozenset({
     "padding", "padding-top", "padding-right", "padding-bottom", "padding-left",
     "gap", "row-gap", "column-gap",
 })
-_SPACE_TOKEN = re.compile(r"var\(--space-[1-9]\)")
+# 单元格内距是**密度双档**的变量（14 册 §3.2），与受控间距同属盒模型间距面：
+# 数据表的 padding 消费 `--cell-x` / `--cell-y`，其值另由 test_density_tokens_* 钉住。
+_SPACE_TOKEN = re.compile(r"var\(--(?:space-[1-9]|cell-[xy])\)")
 
 
 def _declared(block: str) -> dict[str, str]:
@@ -201,6 +203,31 @@ def test_space_tokens_are_on_the_four_px_grid() -> None:
         assert pixels % 4 == 0, f"{name} = {pixels}px 不在 4px 网格上"
         steps.append(pixels)
     assert steps == sorted(steps) and len(set(steps)) == 9, f"间距档未递增：{steps}"
+
+
+def test_density_tokens_are_on_the_four_px_grid() -> None:
+    """密度双档的 `--row-h` / `--cell-y` / `--cell-x` 三值都在 4px 网格上（14 册 §3.2）。
+
+    与间距档同一条理由：受控的密度才可机器校验。`:root` 取 comfortable 缺省，
+    `[data-density="compact"]` 覆盖成 compact 档——两档都必须落网格。
+    """
+    text = _COMMENT.sub("", _TOKENS.read_text(encoding="utf-8"))
+    blocks = {
+        "comfortable": _LIGHT_BLOCK.search(text),
+        "compact": re.search(r'\[data-density="compact"\]\s*\{(.*?)\}', text, re.S),
+    }
+    values: dict[str, tuple[str, str]] = {}
+    for name, match in blocks.items():
+        assert match, f"tokens.css 缺少 {name} 档的声明块"
+        declared = _declared(match.group(1))
+        for token in ("--row-h", "--cell-y", "--cell-x"):
+            assert token in declared, f"{name} 档未声明 {token}"
+            values[f"{name}{token}"] = (token, declared[token])
+    for label, (token, value) in values.items():
+        found = re.fullmatch(r"(\d+)px", value)
+        assert found and int(found.group(1)) % 4 == 0, f"{label} = {value!r} 不在 4px 网格上"
+    assert values["comfortable--row-h"][1] == "32px"
+    assert values["compact--row-h"][1] == "24px"
 
 
 def test_app_css_has_no_bare_spacing_values() -> None:
