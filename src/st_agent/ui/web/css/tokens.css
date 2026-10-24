@@ -86,6 +86,13 @@
   --space-8: 48px;
   --space-9: 64px;
 
+  /* ── 密度双档（14 册 §3.2）：**同一套组件换变量**，不是两套组件 ──
+     `:root` 取 comfortable（全局缺省）；数据读面由渲染件挂
+     `[data-density="compact"]`，用户也可在设置里改默认。三值都在 4px 网格上。 */
+  --row-h: 32px;
+  --cell-y: 8px;
+  --cell-x: 12px;
+
   /* ── 圆角：四档**按层级**取（控件 / 块 / 浮层 / 徽标胶囊）── */
   --radius-control: 4px;
   --radius-surface: 8px;
@@ -111,6 +118,18 @@
   --dur-base: 160ms;
   --dur-slow: 240ms;
   --ease-out: cubic-bezier(.2,.8,.2,1);
+}
+
+/* 密度双档：只在渲染件挂 `data-density` 的容器内生效（数据读面），改动的是变量而非结构。 */
+[data-density="comfortable"] {
+  --row-h: 32px;
+  --cell-y: 8px;
+  --cell-x: 12px;
+}
+[data-density="compact"] {
+  --row-h: 24px;
+  --cell-y: 4px;
+  --cell-x: 8px;
 }
 
 @media (prefers-color-scheme: dark) {

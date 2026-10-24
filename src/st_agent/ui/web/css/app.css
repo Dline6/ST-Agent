@@ -204,13 +204,22 @@ body {
   border-radius: var(--radius-surface);
 }
 .summary-anchor__items { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-5); }
-.summary-anchor__item { display: flex; flex-direction: column; min-width: 4rem; }
-.summary-anchor__label { color: var(--fg-muted); font-size: var(--text-caption); line-height: var(--leading-caption); }
-.summary-anchor__value {
+/* 指标块（14 册 §6.1 / T-UI-026.2）：标签在上、数字居中、口径在下；数字走等宽 + tabular。 */
+.metric { display: flex; flex-direction: column; min-width: 6rem; max-width: 12rem; }
+.metric__label { color: var(--fg-muted); font-size: var(--text-caption); line-height: var(--leading-caption); }
+.metric__value {
   font-family: var(--font-num);
   font-variant-numeric: tabular-nums;
   font-size: var(--text-metric);
   line-height: var(--leading-metric);
+}
+.metric__note {
+  overflow: hidden;
+  color: var(--fg-muted);
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+  white-space: nowrap;
+  text-overflow: ellipsis;
 }
 .summary-anchor__note { margin: 0; color: var(--fg-muted); font-size: var(--text-caption); line-height: var(--leading-caption); }
 
@@ -335,6 +344,150 @@ body {
 .component-table .num--flat { color: var(--flat); }
 /* 无数据**不是**一个方向：取占位墨（不冒充「平」），并带说明性 title（规范 §6 不静默留白）。 */
 .component-table .num--none { color: var(--fg-faint); }
+
+/* ── data-table 交互面（T-UI-026.1；14 册 §7）─────────────────────────────
+   密度双档只换 `[data-density]` 下的 `--row-h` / `--cell-y` / `--cell-x`，组件结构不变。
+   表头 sticky 的 `top` 由渲染件按摘要锚点实际高度写入（摘要锚点同样 sticky，不能互相压住）。 */
+.data-table { margin: var(--space-1) 0; }
+.data-table__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-1);
+  color: var(--fg-muted);
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+}
+.data-table__density { display: flex; align-items: center; gap: var(--space-1); }
+.data-table__density-select {
+  padding: 0 var(--space-1);
+  font: inherit;
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+  color: var(--fg);
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+}
+.data-table__grid th,
+.data-table__grid td { padding: var(--cell-y) var(--cell-x); }
+.data-table__grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+  background: var(--card);
+  border-bottom: 1px solid var(--line-strong);
+}
+.data-table__sort {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  width: 100%;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: var(--fg-muted);
+  text-align: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.data-table__grid th.num .data-table__sort { justify-content: flex-end; }
+.data-table__sort:hover,
+.data-table__sort.is-sorted { color: var(--fg); }
+.data-table__mark { color: var(--accent); font-size: var(--text-caption); line-height: var(--leading-caption); }
+.data-table__resize {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--space-2);
+  cursor: col-resize;
+  border-right: 1px solid var(--line-strong);
+}
+.data-table__resize:hover { border-right-color: var(--accent); }
+.data-table__row { height: var(--row-h); scroll-margin-top: var(--space-8); }
+.data-table__row:hover td { background: var(--accent-weak); }
+.data-table__row.is-selected { background: var(--accent-weak); outline: 1px solid var(--accent); outline-offset: -1px; }
+.data-table__row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.data-table__empty { color: var(--fg-muted); text-align: center; }
+.data-table__detail {
+  margin: var(--space-2) 0 0;
+  padding: var(--space-2) var(--space-3);
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-surface);
+}
+.data-table__detail[hidden] { display: none; }
+.data-table__detail-title { margin: 0 0 var(--space-1); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
+.data-table__detail-list { display: grid; grid-template-columns: max-content 1fr; gap: var(--space-1) var(--space-3); margin: 0; }
+.data-table__detail-list dt { color: var(--fg-muted); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
+.data-table__detail-list dd { margin: 0; font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
+.data-table__pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-2);
+  margin: var(--space-2) 0 0;
+  color: var(--fg-muted);
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+}
+.data-table__pager[hidden] { display: none; }
+.data-table__page-button {
+  min-height: 24px;
+  padding: 0 var(--space-2);
+  font: inherit;
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+  color: var(--fg);
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.data-table__page-button:hover { border-color: var(--fg-muted); }
+.data-table__page-button:disabled { opacity: .5; cursor: default; }
+
+/* ── split-pane 分栏（T-UI-026.2；14 册 §6.1）─────────────────────────────
+   两栏同权、各自滚动；铁律 4 的结构载体——本件不产生任何「合并后」的块。 */
+.split-pane { margin: var(--space-2) 0; }
+.split-pane__bar { display: flex; align-items: center; gap: var(--space-1); margin: 0 0 var(--space-1); }
+.split-pane__button {
+  min-height: 24px;
+  padding: 0 var(--space-2);
+  font: inherit;
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+  color: var(--fg);
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.split-pane__button:hover { border-color: var(--fg-muted); }
+.split-pane__button[aria-pressed="true"] { background: var(--accent-weak); border-color: var(--accent); }
+.split-pane__frame { display: flex; min-height: 0; background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-surface); }
+.split-pane__pane { display: flex; flex-basis: 0; flex-shrink: 1; flex-direction: column; min-width: 0; }
+.split-pane__pane[hidden] { display: none; }
+.split-pane__head { padding: var(--space-1) var(--space-2); border-bottom: 1px solid var(--line); }
+.split-pane__title { margin: 0; font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
+.split-pane__body { min-height: 0; padding: var(--space-2); overflow: auto; }
+.split-pane__divider {
+  flex: 0 0 6px;
+  cursor: col-resize;
+  background: var(--bg);
+  border-left: 1px solid var(--line-strong);
+  border-right: 1px solid var(--line-strong);
+}
+.split-pane__divider:hover,
+.split-pane__divider:focus-visible { background: var(--accent-weak); }
+.split-pane[data-collapsed="left"] .split-pane__pane[data-side="left"],
+.split-pane[data-collapsed="right"] .split-pane__pane[data-side="right"],
+.split-pane[data-collapsed="left"] .split-pane__divider,
+.split-pane[data-collapsed="right"] .split-pane__divider { display: none; }
+.split-pane__detail { margin: var(--space-1) 0 0; }
 
 .component-report h3 { margin: 0 0 var(--space-2); font-size: var(--text-subtitle); line-height: var(--leading-subtitle); }
 .component-report h4 { margin: var(--space-3) 0 var(--space-1); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); color: var(--fg-muted); }
@@ -580,6 +733,44 @@ body {
 .trend__line--1 { stroke: var(--notice); background: var(--notice); }
 .trend__line--2 { stroke: var(--delayed); background: var(--delayed); }
 .trend__line--3 { stroke: var(--fg-muted); background: var(--fg-muted); }
+.trend__dot { stroke-width: 4; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.trend__ranges { display: flex; gap: var(--space-1); margin: 0 0 var(--space-1); }
+.trend__range {
+  min-height: 24px;
+  padding: 0 var(--space-2);
+  font: inherit;
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+  color: var(--fg-muted);
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  cursor: pointer;
+}
+.trend__range[aria-pressed="true"] { color: var(--fg); background: var(--accent-weak); border-color: var(--accent); }
+.trend__range:disabled { opacity: .5; cursor: default; }
+.trend__canvas-wrap { position: relative; }
+.trend__crosshair { stroke: var(--fg-muted); stroke-width: 1; stroke-dasharray: 2 2; vector-effect: non-scaling-stroke; pointer-events: none; }
+.trend__overlay { fill: transparent; cursor: crosshair; }
+.trend__tooltip {
+  position: absolute;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+  background: var(--card);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-1);
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: var(--z-popover);
+}
+.trend__tooltip[hidden] { display: none; }
+.trend__tooltip-title { font-weight: 600; }
 .trend__block { margin: var(--space-2) 0; }
 .trend__block h4 { margin: var(--space-1) 0; font-size: var(--text-body-sm); line-height: var(--leading-body-sm); color: var(--fg-muted); }
 .trend__legend { margin: var(--space-1) 0; padding-left: 0; list-style: none; }

@@ -17,6 +17,7 @@ import { renderEnvelope } from '../render.js';
 import { openDialog } from '../components/dialog.js';
 import { showToast } from '../components/toast.js';
 import { runBusy } from '../busy.js';
+import { readDensityDefault, writeDensityDefault } from '../prefs.js';
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -369,12 +370,39 @@ async function renderNetwork(mount) {
 }
 
 /** 设置区页面：按 `?view=` 装配当前视图（视图入口在左栏二级）。 */
+/** 界面偏好：本机 UI 态（与栏宽 / 折叠态同类，存 `localStorage`，不进服务端配置）。 */
+function densityChrome(mount) {
+  const box = el('section', 'page__block');
+  box.append(el('h3', 'page__block-title', '界面偏好'));
+  box.append(el('p', 'component__meta',
+    '数据表的默认密度存本机（与栏宽同类，不进服务端配置）；每张表也可在表头工具条里临时切换。'));
+  const row = el('label', 'settings-field');
+  row.append(el('span', 'settings-field__label', '数据表默认密度'));
+  const select = el('select', 'settings-field__input');
+  for (const [value, label] of [['compact', '紧凑（数据读面缺省）'], ['comfortable', '舒适']]) {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = label;
+    select.append(option);
+  }
+  select.value = readDensityDefault();
+  const status = el('p', 'component__meta', '');
+  select.addEventListener('change', () => {
+    writeDensityDefault(select.value);
+    status.textContent = '已保存；下次渲染数据表时生效。';
+  });
+  row.append(select);
+  box.append(row, status);
+  mount.append(box);
+}
+
 export async function renderSettingsPage(page, mount) {
   const view = readView();
   const root = el('div', 'page');
   root.append(el('h2', 'page__section-title', VIEW_TITLES[view]));
 
   if (view === 'storage') {
+    densityChrome(root);
     await renderParts('/api/settings/storage', root, ['summary', 'partitions']);
     convertChrome(root);
   } else if (view === 'llm') {

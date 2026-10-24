@@ -15,6 +15,7 @@
 
 import { getJson, postJson } from '../api.js';
 import { renderEnvelope } from '../render.js';
+import { createSplitPane } from '../components/split_pane.js';
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -258,6 +259,48 @@ function fillFollowup(body, parts) {
   body.append(bar, detail);
 }
 
+/** 并排对照：两栏各取一个本次参与视角，等权并列、可拖宽 / 交换 / 折叠（铁律 4 的结构载体）。 */
+function fillComparison(body, parts) {
+  body.replaceChildren();
+  if (parts.length < 2) {
+    body.append(el('p', 'state state--empty',
+      '本次参与视角少于两个，无法并排对照（不合并、不补位）。'));
+    return;
+  }
+  const label = (part) => part.name || part.lens_id;
+  const pane = createSplitPane({
+    storageKey: 'deliberation.compare',
+    titles: [label(parts[0]), label(parts[1])],
+  });
+  const sides = [
+    { side: 'left', element: pane.left, part: parts[0] },
+    { side: 'right', element: pane.right, part: parts[1] },
+  ];
+  for (const item of sides) {
+    const select = el('select', 'setting__select');
+    parts.forEach((part) => {
+      const option = document.createElement('option');
+      option.value = part.lens_id;
+      option.textContent = label(part);
+      select.append(option);
+    });
+    select.value = item.part.lens_id;
+    const detail = el('div', 'split-pane__detail');
+    const load = () => {
+      const part = parts.find((entry) => entry.lens_id === select.value) || parts[0];
+      // 标题按**当前 DOM 所在的栏**取，而不是按建栏时的侧别——交换之后侧别会漂。
+      const section = select.closest('.split-pane__pane');
+      const heading = section ? section.querySelector('.split-pane__title') : null;
+      if (heading) heading.textContent = label(part);
+      renderLensBlock(detail, part.lens_id, part);
+    };
+    select.addEventListener('change', load);
+    item.element.append(select, detail);
+    load();
+  }
+  body.append(pane.element);
+}
+
 /** 触发与进度视图（并承载分歧图、追问、决策提交）。 */
 async function renderRun(root, lensId) {
   if (lensId) {
@@ -284,6 +327,11 @@ async function renderRun(root, lensId) {
   divergenceBody.append(el('p', 'state state--empty', '尚未触发本次编排。'));
 
   const followup = buildFollowup();
+  const comparisonBody = el('div', 'page__block-body');
+  const comparison = el('section', 'page__block');
+  comparison.append(el('h3', 'page__block-title', '并排对照'), comparisonBody);
+  comparisonBody.append(el('p', 'state state--empty',
+    '触发一次编排后，可在此并排查看两个参与视角；两栏同权、各自独立滚动，不产出合并块。'));
   const decisionHost = el('div', 'page__block');
 
   const trigger = buildTrigger((payload) => {
@@ -294,10 +342,11 @@ async function renderRun(root, lensId) {
       ...entry, name: names[entry.lens_id],
     }));
     fillFollowup(followup.body, parts);
+    fillComparison(comparisonBody, parts);
     decisionHost.replaceChildren(buildDecisionForm(parts));
   });
 
-  root.append(trigger, progress, divergence, followup.section, decisionHost);
+  root.append(trigger, progress, divergence, followup.section, comparison, decisionHost);
 }
 
 /** 视角阵容视图：创建表单 + 阵容面板（启停 / 删除，动作路由由面键解析）。 */

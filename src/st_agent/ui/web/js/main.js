@@ -20,6 +20,7 @@ import { showToast } from './components/toast.js';
 import { openPalette, togglePalette } from './palette.js';
 import { installShortcuts, SHORTCUTS, DEFERRED_SHORTCUTS } from './shortcuts.js';
 import { openFind } from './find.js';
+import { metricBlock } from './components/metric.js';
 
 const root = document.getElementById('root');
 const nav = document.getElementById('nav');
@@ -211,19 +212,17 @@ function buildNav(activePartition, activeItem) {
 // ── 摘要锚点与状态栏（数据面未接入时显式标注，不显示推算数字）──────────────
 
 const SUMMARY_SLOTS = [
-  { label: '总值', note: '未接入：缺持仓数量与成本基数' },
-  { label: '当日', note: '未接入：缺持仓数量与成本基数' },
-  { label: '累计', note: '未接入：缺持仓数量与成本基数' },
-  { label: '最后更新', note: '未接入：L0 同步水位尚未接到表现层' },
+  { label: '总值', note: '未接入：缺数量与成本' },
+  { label: '当日', note: '未接入：缺数量与成本' },
+  { label: '累计', note: '未接入：缺数量与成本' },
+  { label: '最后更新', note: '未接入：缺同步水位' },
 ];
 
 function paintSummary() {
   summaryItems.replaceChildren();
   for (const slot of SUMMARY_SLOTS) {
-    const item = el('div', 'summary-anchor__item');
+    const item = metricBlock({ label: slot.label, value: '—', note: slot.note });
     item.title = slot.note;
-    item.append(el('span', 'summary-anchor__label', slot.label));
-    item.append(el('span', 'summary-anchor__value', '—'));
     summaryItems.append(item);
   }
   summaryNote.textContent =
