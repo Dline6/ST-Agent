@@ -33,6 +33,10 @@ venv/
 Thumbs.db
 desktop.ini
 
+# ─── Claude Code 本地态（团队共享的预览启动配置除外） ───
+.claude/*
+!.claude/launch.json
+
 # ─── 临时脚手架与测试产物 ───
 *.tmp
 tmp/

@@ -58,10 +58,20 @@ from st_agent.eco import (
     ShareImporter,
 )
 from st_agent.l0 import backup as l0_backup
+from st_agent.l0.bootstrap.root import (
+    RootBoot,
+    bootstrap_path,
+    platform_default_root,
+)
 from st_agent.l0.storage import Store
+from st_agent.l0.sync_runner import DataSyncRunner
 from st_agent.l1.events import EventBus
 from st_agent.l1.pack import OfficialPack, ResourceEntry, load_official_pack
-from st_agent.l1.runtime import L1Runtime, open_runtime
+from st_agent.l1.runtime import (
+    DOTENV_NAME,
+    L1Runtime,
+    open_runtime,
+)
 from st_agent.l1.skills.ids import parse_skill_id
 from st_agent.l1.skills.pack import ensure_official_pack
 from st_agent.l1.studio import (
@@ -3359,6 +3369,14 @@ class SettingsFacade:
     """明密双向转换口（``Store.convert`` 类方法）——**源不动、写新根**（02 §2.2）。"""
     """在线态翻转口（``L1Runtime.set_online``）——**带离线补跑**：由离翻回在线时按策略
     处置待补到期点（03 §6）。表现层经它把浏览器的 `online` / `offline` 事件同步过来。"""
+    llm_runtime: Any = None
+    """L1 运行时（设置页改 LLM 引导配置时调 :meth:`L1Runtime.apply_llm_bootstrap`）。"""
+    dotenv_path: Any = None
+    """启动引导 ``.env`` 的实际路径（读面显示、写面原地改写；[D-129]）。"""
+    root_boot: Any = None
+    """:class:`~st_agent.l0.bootstrap.root.RootBoot`——存储根指针的读写面。"""
+    data_sync: Any = None
+    """:class:`~st_agent.l0.sync_runner.DataSyncRunner`——数据总览与手动同步。"""
 
 
 @dataclass(frozen=True)
@@ -3389,6 +3407,15 @@ class M5Runtime:
     必须挂在运行时对象上（而不是每次取门面时新建）——否则「单步 → 暂停 → 继续」跨请求
     就丢了会话（见 :class:`TrialSessions`）。
     """
+
+    data_sync: DataSyncRunner | None = None
+    """数据总览与手动同步的**运行时唯一实例**（批次状态必须跨请求存活；[D-129]）。"""
+
+    dotenv_path: Path | None = None
+    """启动引导 ``.env`` 的实际路径（装配入口给出的值；[D-129]）。"""
+
+    bootstrap_file: Path | None = None
+    """存储根启动指针文件（缺省见 :func:`~st_agent.l0.bootstrap.root.bootstrap_path`）。"""
 
     # ── 与 M1–M4 同形的便捷取用 ──────────────────────────────────────────
 
@@ -3545,6 +3572,13 @@ class M5Runtime:
             backups_dir=root.parent / f"{root.name}{BACKUP_DIR_SUFFIX}",
             set_online=runtime.set_online,
             convert_store=Store.convert,
+            llm_runtime=runtime,
+            dotenv_path=self.dotenv_path,
+            root_boot=RootBoot(
+                path=self.bootstrap_file or bootstrap_path(),
+                default=platform_default_root(),
+            ),
+            data_sync=self.data_sync,
         )
 
     @property
@@ -3589,6 +3623,8 @@ def build_m5_runtime(
     passphrase: str,
     *,
     market_query: Any = None,
+    dotenv_path: Path | str | None = None,
+    bootstrap_file: Path | str | None = None,
     **kwargs: Any,
 ) -> M5Runtime:
     """装配 M5 全栈（＝ M4 的 L0–L6 + ECO + **受控自主运行时**；[`T-INT-006`] 的**生产组合根**）。
@@ -3625,10 +3661,24 @@ def build_m5_runtime(
         return port
 
     m4 = build_m4_runtime(
-        root, passphrase, market_query=market_query, investigations_of=investigations_of, **kwargs
+        root, passphrase, market_query=market_query, dotenv_path=dotenv_path,
+        investigations_of=investigations_of, **kwargs
     )
+    memory = MemoryPositionsFacade(reader=m4.m1.reader, market=market_query)
+    data_sync = DataSyncRunner(
+        store=m4.m1.store,
+        gateway=m4.m1.runtime.gateway,
+        watchlist=lambda: (
+            memory.codes("holdings") + memory.codes("watchlist")
+        ),
+    )
+    # 与 open_runtime 的取值口径一致：显式路径优先，缺省 `<cwd>/.env`（[T-L1-011]）。
+    resolved_dotenv = Path(dotenv_path) if dotenv_path is not None else Path.cwd() / DOTENV_NAME
     return M5Runtime(
         m4=m4,
         investigations=holder[0],
-        memory=MemoryPositionsFacade(reader=m4.m1.reader, market=market_query),
+        memory=memory,
+        data_sync=data_sync,
+        dotenv_path=resolved_dotenv,
+        bootstrap_file=Path(bootstrap_file) if bootstrap_file is not None else None,
     )

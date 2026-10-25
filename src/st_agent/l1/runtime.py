@@ -24,13 +24,14 @@
 from __future__ import annotations
 
 import os
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from st_agent.l0.bootstrap.dotenv import read_dotenv
+from st_agent.l0.llm.boot_config import load_boot_config
 from st_agent.l0.llm.client import LlmClient
 from st_agent.l0.llm.errors import LlmNotFoundError
 from st_agent.l0.llm.http_transport import (
@@ -278,6 +279,66 @@ class L1Runtime:
             return ()
         return self.scheduler.catch_up(now if now is not None else _local_now())
 
+    def apply_llm_bootstrap(
+        self, config: LlmBootstrap, *, rotate_key: bool = True,
+        post: Any | None = None, probe: bool = True,
+    ) -> dict[str, Any]:
+        """把设置页的引导配置**立即**用于运行中的运行时（[02 §4]；[D-129]）。
+
+        顺序固定：校验 ``base_url`` / ``model`` → 轮换凭据（或确认已有凭据）→ 更新端点与
+        ``provider → host`` → 重建 transport 并替换 → 重探能力档位。任一步失败即抛出，
+        调用方据此回 ``validation_failed`` / ``failed``；**不静默保留旧传输**。
+
+        :param rotate_key: ``False`` 表示 ``config.api_key`` 只是占位、不落库——用于
+            「只改 base_url / model、Key 留空」的保存；此时凭据必须已存在。
+        :param post: 真实发送器的 HTTP 发送口（缺省 ``urllib``；测试注入替身）。
+        :param probe: 是否重建后立即重探能力档位（缺省是；测试可关掉以免触网）。
+        :raises ValueError: 取值非法 / 首次配置却未给 Key（输入类失败）
+        """
+        route = OpenAiRoute(base_url=config.base_url, model=config.model)
+        if rotate_key:
+            try:
+                self.vault.rotate(LLM_CREDENTIAL_ID, config.api_key)
+            except CredentialNotFoundError:
+                self.vault.add(LLM_CREDENTIAL_ID, "llm_api_key", config.api_key)
+        else:
+            try:
+                self.vault.get_view(LLM_CREDENTIAL_ID)
+            except CredentialNotFoundError as exc:
+                raise ValueError(
+                    "首次配置须填写 API Key（凭据库中尚无可用凭据）"
+                ) from exc
+        try:
+            self.endpoints.replace(
+                LLM_ENDPOINT_ID, kind="cloud", provider=LLM_PROVIDER,
+                credential_id=LLM_CREDENTIAL_ID,
+            )
+        except LlmNotFoundError:
+            self.endpoints.register(
+                LLM_ENDPOINT_ID, kind="cloud", provider=LLM_PROVIDER,
+                capability=dict(LLM_CAPABILITY), priority=10,
+                purpose="日常（设置页引导配置）", credential_id=LLM_CREDENTIAL_ID,
+            )
+        current_host = self.provider_hosts.resolve(LLM_PROVIDER)
+        if current_host is None:
+            self.provider_hosts.register(LLM_PROVIDER, route.host)
+        elif current_host != route.host:
+            self.provider_hosts.update(LLM_PROVIDER, route.host)
+        transport = _bootstrap_llm_transport(
+            config, endpoints=self.endpoints, vault=self.vault,
+            provider_hosts=self.provider_hosts, gateway=self.gateway, post=post,
+        )
+        self.llm.set_transport(transport)
+        if probe:
+            _probe_endpoint_capabilities(endpoints=self.endpoints, llm=self.llm)
+        return {
+            "endpoint_id": LLM_ENDPOINT_ID,
+            "provider": LLM_PROVIDER,
+            "host": route.host,
+            "model": route.model,
+            "key_rotated": bool(rotate_key),
+        }
+
 
 def build_l1_runtime(
     store: Store,
@@ -499,8 +560,27 @@ def open_runtime(
     **运行期不再重新解锁**，也不在进程内另设密钥缓存。
     """
     store = Store.create(root, passphrase) if create else Store.open(root, passphrase)
-    env = llm_env if llm_env is not None else llm_env_from_ambient(dotenv_path)
-    kwargs.setdefault("llm_config", LlmBootstrap.from_env(env))
+    explicit_env = llm_env is not None
+    env = llm_env if explicit_env else llm_env_from_ambient(dotenv_path)
+    config = LlmBootstrap.from_env(env)
+    if config is None and not explicit_env:
+        # `.env` / 环境变量不齐时，回退到设置页写入的引导配置（[D-129]）：base_url / model
+        # 在 `config/llm-boot.json`，Key 只在加密凭据库。凭据分区未解锁 → 保持 fail-closed。
+        stored = load_boot_config(store)
+        if stored is not None:
+            key = str(env.get("LLM_API_KEY") or "").strip()
+            if not key:
+                try:
+                    key = CredentialVault(store).use(
+                        LLM_CREDENTIAL_ID, initiator="startup", purpose="引导配置回退"
+                    )
+                except Exception:      # noqa: BLE001 — 凭据未解锁 / 缺失都只表示「无 Key」
+                    key = ""
+            if key:
+                config = LlmBootstrap(
+                    api_key=key, base_url=stored.base_url, model=stored.model
+                )
+    kwargs.setdefault("llm_config", config)
     return build_l1_runtime(store, **kwargs)
 
 
@@ -511,7 +591,6 @@ def _local_now() -> datetime:
 
 # ───────────────────────── 引导装载：LLM 端点与会话（T-L1-011） ─────────────────────────
 
-_INLINE_COMMENT = re.compile(r"\s+#")
 
 
 @dataclass(frozen=True)
@@ -541,30 +620,8 @@ class LlmBootstrap:
 
 
 def load_dotenv(path: Path | str) -> dict[str, str]:
-    """读 ``KEY=VALUE`` 行（整行注释 / 行尾注释 / 成对引号剥除）。
-
-    文件不存在或不可读 → 空字典——缺省路径下没有 ``.env`` 是常态，不是错误。
-    """
-    try:
-        text = Path(path).read_text(encoding="utf-8")
-    except OSError:
-        return {}
-    values: dict[str, str] = {}
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        value = value.strip()
-        if value.startswith("#"):
-            value = ""
-        else:
-            value = _INLINE_COMMENT.split(value, maxsplit=1)[0].strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
-            value = value[1:-1]
-        if key.strip():
-            values[key.strip()] = value
-    return values
+    """读 ``KEY=VALUE`` 行（实现已下移 L0 ``bootstrap.dotenv``，此处保留公共入口）。"""
+    return read_dotenv(path)
 
 
 def llm_env_from_ambient(dotenv_path: Path | str | None = None) -> dict[str, str]:

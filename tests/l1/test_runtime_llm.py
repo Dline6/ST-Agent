@@ -277,3 +277,86 @@ class TestEnvResolution:
 
     def test_no_dotenv_and_no_env_is_empty(self, tmp_path: Path):
         assert llm_env_from_ambient(tmp_path / "nope.env") == {}
+
+
+# ───────────────────────── 设置页热更新引导配置（[D-129]） ─────────────────────────
+
+NEW_BASE = "https://new.example.com/v1"
+NEW_KEY = "sk-new-abcdef1234567890-NEWSECRET"
+NEW_MODEL = "new-model"
+
+
+class TestApplyLlmBootstrap:
+    def test_new_endpoint_and_key_take_effect_immediately(self, store: Store):
+        post = Post("ok")
+        rt = _build(store, llm_post=post)
+
+        applied = rt.apply_llm_bootstrap(
+            LlmBootstrap(api_key=NEW_KEY, base_url=NEW_BASE, model=NEW_MODEL),
+            post=post, probe=False,
+        )
+        events = list(rt.llm.invoke(LLM_ENDPOINT_ID, "hi", initiator="t", purpose="t"))
+
+        assert events[-1].kind == "done"
+        call = post.calls[-1]
+        assert call["url"] == f"{NEW_BASE}/chat/completions"
+        assert call["headers"]["Authorization"] == f"Bearer {NEW_KEY}"
+        assert json.loads(call["body"].decode("utf-8"))["model"] == NEW_MODEL
+        assert rt.provider_hosts.resolve("openai-compatible") == "new.example.com"
+        assert applied["host"] == "new.example.com"
+        assert applied["key_rotated"] is True
+        assert rt.vault.get_view(LLM_CREDENTIAL_ID).masked.endswith("CRET")
+
+    def test_invalid_base_url_leaves_records_untouched(self, store: Store):
+        rt = _build(store, llm_post=Post("ok"))
+        before = rt.vault.get_view(LLM_CREDENTIAL_ID)
+
+        with pytest.raises(ValueError):
+            rt.apply_llm_bootstrap(
+                LlmBootstrap(api_key=NEW_KEY, base_url="not-a-url", model=NEW_MODEL),
+                probe=False,
+            )
+
+        assert rt.vault.get_view(LLM_CREDENTIAL_ID) == before
+        assert rt.provider_hosts.resolve("openai-compatible") == "api.example.com"
+
+    def test_rotate_without_key_requires_an_existing_credential(self, store: Store):
+        rt = _build(store, llm_config=None)
+
+        with pytest.raises(ValueError):
+            rt.apply_llm_bootstrap(
+                LlmBootstrap(api_key="unchanged", base_url=NEW_BASE, model=NEW_MODEL),
+                rotate_key=False, probe=False,
+            )
+
+    def test_rotate_without_key_keeps_the_existing_version(self, store: Store):
+        rt = _build(store, llm_post=Post("ok"))
+        before = rt.vault.get_view(LLM_CREDENTIAL_ID)
+
+        rt.apply_llm_bootstrap(
+            LlmBootstrap(api_key="unchanged", base_url=NEW_BASE, model=NEW_MODEL),
+            rotate_key=False, probe=False, post=Post("ok"),
+        )
+
+        assert rt.vault.get_view(LLM_CREDENTIAL_ID) == before
+        assert rt.provider_hosts.resolve("openai-compatible") == "new.example.com"
+
+
+def test_store_boot_config_is_used_when_dotenv_is_absent(tmp_path: Path):
+    """`.env` 三键不齐时，回退到设置页写入的 `llm-boot.json` + 加密凭据（[D-129]）。"""
+    from st_agent.l0.llm.boot_config import save_boot_config
+
+    root = tmp_path / "root"
+    store = Store.create(root, PASS)
+    save_boot_config(store, base_url="https://stored.example.com/v1", model="stored-model")
+    store.unlock_secrets(PASS)
+    from st_agent.l0.secrets.vault import CredentialVault
+    CredentialVault(store).add(LLM_CREDENTIAL_ID, "llm_api_key", "sk-stored-key-123456")
+
+    rt = open_runtime(
+        root, PASS, market_query=_FAKE_MARKET,
+        dotenv_path=tmp_path / "missing.env", llm_post=Post("ok"),
+    )
+
+    assert rt.provider_hosts.resolve("openai-compatible") == "stored.example.com"
+    assert rt.vault.get_view(LLM_CREDENTIAL_ID).masked.endswith("3456")

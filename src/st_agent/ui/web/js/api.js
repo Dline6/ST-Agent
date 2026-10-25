@@ -11,10 +11,19 @@ const TOKEN_KEY = 't';
 
 let token = '';
 
-/** 从地址栏 fragment 里读令牌；只调用一次（启动期）。 */
+/** 从地址栏 fragment 里读令牌；只调用一次（启动期）。
+ *
+ * dev 面（发布构建物理剔除）额外支持 `<meta name="st-dev-token">`：应用内 Browser 预览
+ * 只能打开 origin、无法带 fragment，故由 dev 服务器把令牌注入同一份静态壳。生产口径
+ * 不变——没有该 meta 时仍只认 fragment。
+ */
 export function readToken() {
   const raw = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '';
   token = new URLSearchParams(raw).get(TOKEN_KEY) || '';
+  if (!token) {
+    const meta = document.querySelector('meta[name="st-dev-token"]');
+    token = meta ? meta.getAttribute('content') || '' : '';
+  }
   return token;
 }
 

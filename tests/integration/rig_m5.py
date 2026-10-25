@@ -202,6 +202,10 @@ def seeded_m5(
     understander = DeterministicUnderstander(
         DEFAULT_RULES if rules is None else rules
     )
+    # 设置区的两个启动引导面**隔离到用例目录**：不读开发机的仓库 `.env`，也不读写
+    # `%LOCALAPPDATA%` 下的真实指针（[D-129]）。
+    l1_kwargs.setdefault("dotenv_path", root.parent / "test.env")
+    l1_kwargs.setdefault("bootstrap_file", root.parent / "test-bootstrap.json")
     m5 = build_m5_runtime(
         root, PASS, market_query=feed, sender=sender, llm_env=ENV, llm_post=endpoint,
         understander=understander, **l1_kwargs,

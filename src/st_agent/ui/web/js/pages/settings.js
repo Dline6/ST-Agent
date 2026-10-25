@@ -27,12 +27,13 @@ function el(tag, className, text) {
 }
 
 /** 六视图的键与标签——左栏二级与页内取数共用这一份（不另造词表）。 */
-export const VIEWS = ['storage', 'llm', 'sources', 'privacy', 'maintenance', 'network'];
+export const VIEWS = ['storage', 'llm', 'sources', 'privacy', 'data', 'maintenance', 'network'];
 export const VIEW_TITLES = {
   storage: '存储',
   llm: 'LLM 提供方',
   sources: '数据源',
   privacy: '隐私与留存',
+  data: '数据同步',
   maintenance: '备份 / 恢复 / 清空',
   network: '网络活动',
 };
@@ -68,7 +69,7 @@ async function renderParts(path, mount, keys) {
       const block = el('section', 'page__block');
       renderEnvelope(payload, block);
       mount.append(block);
-      return;
+      return payload;
     }
     for (const key of keys) {
       const block = el('section', 'page__block');
@@ -80,8 +81,10 @@ async function renderParts(path, mount, keys) {
       }
       mount.append(block);
     }
+    return payload;
   } catch (error) {
     mount.append(el('p', 'state state--error', `无法取数：${error.message}`));
+    return null;
   }
 }
 
@@ -157,9 +160,208 @@ function describeResult(data) {
   }
   if (data.path) parts.push(`已导出：${data.path}（${data.count} 条）`);
   if (data.credential_id) parts.push(`凭据 ${data.credential_id}：${data.action} 完成（${data.masked}）`);
+  if (data.dotenv_written !== undefined) {
+    parts.push(data.dotenv_written ? '已写回引导 .env' : '未写回引导 .env');
+  }
+  if (data.api_key_masked) parts.push(`API Key：${data.api_key_masked}`);
+  if (data.host) parts.push(`目标主机：${data.host}`);
+  if (data.mode === 'migrate') parts.push('源存储根未改动');
+  if (data.mode === 'switch') parts.push('仅写指针，未复制数据');
+  if (data.mode === 'reset') parts.push('已恢复默认位置');
   if (data.note) parts.push(data.note);
   if (data.restart_required) parts.push('本进程须重启后继续');
   return parts.join('；') || '已完成。';
+}
+
+/** 一段描述里的机器可读取值（引导配置 / 数据总览用；不解析展示文案）。 */
+function partValues(part) {
+  return (part && part.data && part.data.slots && part.data.slots.values) || {};
+}
+
+/** 存储位置：迁移 / 仅切换 / 恢复默认（[02 §2.1]；[D-129]）。 */
+function locationChrome(mount) {
+  const mode = el('select', 'settings-field__input');
+  for (const [value, label] of [
+    ['migrate', '迁移到新位置（复制，源保留）'],
+    ['switch', '仅切换指向已有存储根'],
+    ['reset', '恢复默认位置（清除启动指针）'],
+  ]) {
+    const option = el('option', null, label);
+    option.value = value;
+    mode.append(option);
+  }
+  const target = input('text', '新存储根路径（reset 时可留空）');
+  const pass = input('password', '当前主密码（加密根迁移时必填；明文根可留空）');
+  mount.append(actionBlock(
+    '更改存储位置',
+    '变更写入用户级启动指针并**须重启应用**后生效；本进程不会热切换存储句柄。'
+      + '迁移只写全新根、源根不动；仅切换要求目标已是有效存储。',
+    [field('方式', mode), field('新存储根', target), field('当前口令', pass)],
+    '应用并准备重启',
+    () => postJson('/api/settings/store/relocate', {
+      mode: mode.value,
+      target: target.value,
+      passphrase: pass.value,
+    }),
+  ));
+}
+
+/** LLM 引导配置：base_url / model / api_key（[02 §4]；[D-129]）。 */
+function llmBootChrome(mount, values) {
+  const baseUrl = input('text', '如 https://api.openai.com/v1');
+  baseUrl.value = values.base_url || '';
+  const model = input('text', '如 gpt-4o-mini');
+  model.value = values.model || '';
+  const key = input('password', '留空＝不改（当前只显示掩码）');
+  const pass = input('password', '凭据口令（凭据分区未解锁时必填）');
+  mount.append(actionBlock(
+    '引导配置（base_url / model / API Key）',
+    `当前 Key：${values.api_key_masked || '未配置'}；来源：${values.source || '未配置'}。`
+      + '保存后立即重建传输并生效；base_url / model 同时写入本地配置与引导 .env，'
+      + 'API Key 落加密凭据并按页面警告同写 .env（明文开发通道）。',
+    [field('服务地址 base_url', baseUrl), field('模型 model', model),
+     field('API Key', key), field('凭据口令', pass)],
+    '保存并生效',
+    () => postJson('/api/settings/llm/bootstrap', {
+      base_url: baseUrl.value,
+      model: model.value,
+      api_key: key.value,
+      passphrase: pass.value,
+    }),
+  ));
+}
+
+/** 数据同步：任务勾选 + 发起 + 轮询（[02 §5]；[D-129]）。 */
+function dataChrome(mount, payload) {
+  const tasks = partValues(payload && payload.tasks);
+  const box = el('section', 'page__block');
+  box.append(el('h3', 'page__block-title', '手动同步'));
+  box.append(el('p', 'component__meta',
+    '按任务选择要更新的数据；行情任务的日历 / 全量快照前置与信息面任务的安全主档会自动补入。'
+      + '同步在后端后台执行，同一时刻只允许一个批次；可离开本面，回来仍能看到进度。'));
+  if (!Array.isArray(tasks) || tasks.length === 0) {
+    box.append(el('p', 'state state--empty', '本次响应没有可选择的同步任务。'));
+    mount.append(box);
+    return;
+  }
+
+  const list = el('div', 'settings-task-groups');
+  const checkboxes = [];
+  let sawRunning = false;
+  const statusText = (value) => {
+    if (!value) return '未同步';
+    return { ok: '正常', partial: '部分完成', failed: '失败' }[value] || value;
+  };
+  const groups = new Map();
+  for (const task of tasks) {
+    if (!groups.has(task.domain)) groups.set(task.domain, []);
+    groups.get(task.domain).push(task);
+  }
+  for (const [domain, items] of groups) {
+    const group = el('div', 'settings-task-group');
+    group.append(el('p', 'component__meta', `域：${domain}`));
+    for (const task of items) {
+      const row = el('label', 'settings-field');
+      const check = el('input');
+      check.type = 'checkbox';
+      check.value = task.task_key;
+      check.dataset.taskKey = task.task_key;
+      checkboxes.push(check);
+      const status = statusText(task.status);
+      const coverage = task.coverage === 'watch' ? '（按用户关注面）' : '';
+      row.append(check, el('span', 'settings-field__label',
+        `${task.task_key}${coverage} · ${status}`));
+      group.append(row);
+    }
+    list.append(group);
+  }
+  box.append(list);
+
+  const status = el('p', 'component__meta', '');
+  const selectedKeys = () => checkboxes.filter((item) => item.checked)
+    .map((item) => item.dataset.taskKey);
+  const allKeys = () => tasks.map((task) => task.task_key);
+
+  async function start(keys, button) {
+    if (keys.length === 0) {
+      status.textContent = '未选择任何任务。';
+      status.className = 'state state--empty';
+      return;
+    }
+    try {
+      const result = await runBusy(button, () => postJson('/api/settings/data/sync', {
+        task_keys: keys,
+      }));
+      if (result && result.status === 'ok') {
+        const data = result.data || {};
+        status.textContent = `批次 ${data.job_id} 已启动（${(data.order || []).length} 个任务）`
+          + `${data.auto_added && data.auto_added.length
+            ? `；自动补入前置：${data.auto_added.join('、')}` : ''}`;
+        status.className = 'component__meta';
+        showToast('同步已转入后台', { type: 'info' });
+        poll();
+      } else {
+        status.textContent = `未启动（${(result && result.status) || '未知'}）：`
+          + `${(result && result.reason) || ''}`;
+        status.className = 'state state--error';
+      }
+    } catch (error) {
+      status.textContent = `请求失败：${error.message}`;
+      status.className = 'state state--error';
+    }
+  }
+
+  async function poll() {
+    let payloadNow;
+    try {
+      payloadNow = await getJson('/api/settings/data');
+    } catch (error) {
+      status.textContent = `进度不可读：${error.message}`;
+      status.className = 'state state--error';
+      return;
+    }
+    const job = partValues(payloadNow && payloadNow.job);
+    if (!job || !job.state) return;
+    const done = Object.keys(job.results || {}).length;
+    const total = (job.order || []).length;
+    status.textContent = `批次 ${job.job_id}：${job.state} · ${done}/${total}`
+      + `${job.current ? ` · 当前 ${job.current}` : ''}`;
+    status.className = 'component__meta';
+    if (job.state === 'running' && document.body.contains(box)) {
+      window.setTimeout(poll, 2500);
+    } else if (sawRunning && job.state !== 'running') {
+      showToast(job.state === 'done' ? '同步批次完成' : '同步批次结束（见结果）',
+        { type: job.state === 'done' ? 'success' : 'error' });
+      const page = box.closest('.page');
+      if (page && page.parentElement) renderSettingsPage(null, page.parentElement);
+    } else if (job.state !== 'running') {
+      sawRunning = false;
+    }
+    if (job.state === 'running') sawRunning = true;
+  }
+
+  const selectAll = el('button', 'feedback__button', '全选');
+  selectAll.type = 'button';
+  selectAll.addEventListener('click', () => {
+    for (const item of checkboxes) item.checked = true;
+  });
+  const clearAll = el('button', 'feedback__button', '全不选');
+  clearAll.type = 'button';
+  clearAll.addEventListener('click', () => {
+    for (const item of checkboxes) item.checked = false;
+  });
+  const selected = el('button', 'feedback__button', '同步所选');
+  selected.type = 'button';
+  selected.addEventListener('click', () => start(selectedKeys(), selected));
+  const everything = el('button', 'feedback__button', '同步全部');
+  everything.type = 'button';
+  everything.addEventListener('click', () => start(allKeys(), everything));
+
+  const actions = el('div', 'feedback__actions');
+  actions.append(selected, everything, selectAll, clearAll);
+  box.append(actions, status);
+  mount.append(box);
+  poll();
 }
 
 /** 存储页的页面级 chrome：明密双向转换（**源不动、写新根**；02 §2.2）。 */
@@ -404,14 +606,23 @@ export async function renderSettingsPage(page, mount) {
   if (view === 'storage') {
     densityChrome(root);
     await renderParts('/api/settings/storage', root, ['summary', 'partitions']);
+    locationChrome(root);
     convertChrome(root);
   } else if (view === 'llm') {
-    await renderParts('/api/settings/llm', root, ['panel', 'endpoints', 'credentials']);
+    const payload = await renderParts(
+      '/api/settings/llm', root, ['boot', 'panel', 'endpoints', 'credentials'],
+    );
+    if (payload && !payload.status) llmBootChrome(root, partValues(payload.boot));
     credentialChrome(root);
   } else if (view === 'sources') {
     await renderParts('/api/settings/sources', root, ['panel']);
   } else if (view === 'privacy') {
     await renderParts('/api/settings/privacy', root, ['panel']);
+  } else if (view === 'data') {
+    const payload = await renderParts(
+      '/api/settings/data', root, ['summary', 'tasks', 'tables', 'job'],
+    );
+    if (payload && !payload.status) dataChrome(root, payload);
   } else if (view === 'maintenance') {
     await renderParts('/api/settings/maintenance', root, ['backup', 'restore', 'wipe']);
     maintenanceChrome(root);

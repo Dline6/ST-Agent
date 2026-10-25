@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import uuid
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -32,11 +33,17 @@ from st_agent.l0.backup.errors import (
     RetentionError,
     WipeConfirmationError,
 )
+from st_agent.l0.bootstrap.dotenv import read_dotenv, write_dotenv
+from st_agent.l0.llm.boot_config import load_boot_config, save_boot_config
+from st_agent.l0.llm.http_transport import OpenAiRoute
+from st_agent.l0.secrets.masking import mask_secret
+from st_agent.l0.storage import Store
 from st_agent.l0.storage.errors import (
     CryptoError,
     StorageCorruptionError,
     StorageOpenError,
 )
+from st_agent.l1.runtime import LLM_CREDENTIAL_ID, LlmBootstrap
 from st_agent.l1.mcp.errors import (
     McpCancelledError,
     McpConnectionError,
@@ -103,6 +110,14 @@ PAGE_PATHS = frozenset({
 
 DEV_SCRIPT_MARKER = "<!--ST_DEV_SCRIPT-->"
 """`index.html` 里的 dev 脚本占位：dev 关闭时被替换为空串，故**发布产物不含 dev 引用**。"""
+
+DEV_TOKEN_MARKER = "<!--ST_DEV_TOKEN-->"
+"""dev 面把启动令牌注入静态壳的占位（仅 dev；发布构建替换为空串）。
+
+用途：应用内 Browser 预览只能打开 ``http://localhost:<port>``，**无法携带 URL fragment**，
+而令牌正典通道就是 fragment。dev 面（[D-060] ④I，发布构建物理剔除）把令牌以 meta 标签
+放进同一份静态壳，前端在 fragment 缺失时才回退读取；生产口径不变。
+"""
 
 _VERSION = __version__
 """与 `pyproject.toml` 的 `project.version` 一致——单一真相源＝包根 `st_agent.__version__`。"""
@@ -1048,6 +1063,74 @@ _STATUS_LABELS = {
 }
 """出网结果 / 六态 → 中性中文。"""
 
+_SYNC_STATUS_LABELS = {
+    "ok": "正常", "partial": "部分完成", "failed": "失败",
+}
+"""`sync_state.last_status` → 中性中文；缺行由调用方呈现为「未同步」。"""
+
+_SYNC_JOB_LABELS = {
+    "running": "进行中", "done": "已完成", "failed": "失败",
+}
+"""手动同步批次状态 → 中性中文（[D-129]）。"""
+
+
+def _llm_boot_values(face: Any) -> dict[str, Any]:
+    """LLM 引导配置的生效值（读面；Key 只出掩码；[D-129]）。"""
+    env_path = getattr(face, "dotenv_path", None)
+    env_values = read_dotenv(env_path) if env_path else {}
+    try:
+        stored = load_boot_config(face.store)
+    except Exception:          # noqa: BLE001 — 记录损坏由读面在别处显式呈现
+        stored = None
+    env_base = str(env_values.get("LLM_BASE_URL") or "").strip()
+    env_model = str(env_values.get("LLM_MODEL") or "").strip()
+    base_url = env_base or (stored.base_url if stored else "")
+    model = env_model or (stored.model if stored else "")
+    if env_base or env_model:
+        source = "引导 .env（优先）"
+    elif stored is not None:
+        source = "本地配置 llm-boot.json（.env 缺三键时的回退）"
+    else:
+        source = "未配置"
+    masked = ""
+    try:
+        masked = face.vault.get_view(LLM_CREDENTIAL_ID).masked
+    except Exception:          # noqa: BLE001 — 未解锁 / 未登记都可能，取 .env 的掩码
+        env_key = str(env_values.get("LLM_API_KEY") or "").strip()
+        masked = mask_secret(env_key) if env_key else ""
+    return {
+        "base_url": base_url,
+        "model": model,
+        "api_key_masked": masked,
+        "source": source,
+        "dotenv_path": str(env_path) if env_path else "",
+        "vault_unlocked": bool(getattr(face.store, "secrets_unlocked", False)),
+    }
+
+
+def _root_location(face: Any) -> tuple[str, str]:
+    """存储根的位置来源与启动指针（设置-存储页的两行；[D-129]）。"""
+    root = Path(str(face.store.root))
+    boot = getattr(face, "root_boot", None)
+    if boot is None:
+        return "启动指针未接入（装配归组合根）", "—"
+    pointer = boot.read()
+    default = Path(str(boot.default))
+    if pointer is None:
+        source = (
+            "平台默认（未设置启动指针）"
+            if root.resolve() == default.resolve()
+            else "启动参数或环境变量（优先于指针）"
+        )
+        pointer_text = f"未设置（默认 {default}）"
+    elif Path(pointer).resolve() == root.resolve():
+        source = "设置页启动指针"
+        pointer_text = str(pointer)
+    else:
+        source = "启动参数或环境变量（优先于指针）"
+        pointer_text = f"{pointer}（当前进程未使用）"
+    return source, pointer_text
+
 _RETENTION_OPTIONS = {
     "retention.chat_history_days": (30, 90, 180, 365, 730),
     "retention.execution_log_days": (7, 30, 90, 180, 365),
@@ -1262,6 +1345,17 @@ def _stamp(value: Any, *, compact: bool = False) -> str:
     if not compact:
         return text
     return "".join(ch for ch in text if ch.isalnum())
+
+
+def _short_stamp(value: Any) -> str:
+    """同步状态里的短时刻（`YYYY-MM-DD HH:MM`；解析不了就给原串前 16 字）。"""
+    if not value:
+        return "—"
+    try:
+        parsed = datetime.fromisoformat(str(value))
+        return parsed.strftime("%Y-%m-%d %H:%M")
+    except ValueError:
+        return str(value)[:16]
 
 
 def _coerce_value(entry: Any, value: Any) -> Any:
@@ -2434,15 +2528,16 @@ class UiApp:
         )
 
     def api_settings_llm(self) -> dict[str, Any]:
-        """设置-LLM 提供方页：提供方主机映射（`setting_panel`）+ 端点 + 凭据（掩码）。
+        """设置-LLM 提供方页：引导配置 + 提供方主机映射 + 端点 + 凭据（掩码）。
 
-        三段**并列**，不合并：端点（`EndpointRegistry`）、提供方→主机映射（`llm-provider-host/`
-        的 01 §7 条目，可改值）、凭据（`CredentialVault` 的掩码视图 + 使用记录计数）。
-        **凭据明文永不出站**——页面只拿到 `CredentialView.masked`。
+        四段**并列**，不合并：引导配置（``.env`` / ``llm-boot.json`` 生效值）、端点
+        （`EndpointRegistry`）、提供方→主机映射（`llm-provider-host/` 的 01 §7 条目，
+        可改值）、凭据（`CredentialVault` 的掩码视图 + 使用记录计数）。
+        **凭据明文永不出站**——页面只拿到掩码。
         """
         return self._settings_parts(
-            "settings-llm", ("endpoints", "vault"),
-            ("panel", "endpoints", "credentials"),
+            "settings-llm", ("endpoints", "vault", "llm_runtime"),
+            ("boot", "panel", "endpoints", "credentials"),
             lambda face: self._llm_parts(face),
         )
 
@@ -2460,6 +2555,46 @@ class UiApp:
                 text_kinds={"entries": "data", "surface": "data", "labels": "generated"},
                 title="数据源开关",
             )},
+        )
+
+    def api_settings_data(self) -> dict[str, Any]:
+        """设置-数据同步页：数据总览 + 逐表清单 + 当前批次（[02 §5]；[D-129]）。
+
+        四段并列：`summary`（库是否建立 / 任务与行数合计）、`tasks`（逐任务状态与水位）、
+        `tables`（逐表行数）、`job`（当前 / 最近一次批次的进度与结果）。读面**不触网**，
+        只读本地 `sync_state` 与各表行数。
+        """
+        return self._settings_parts(
+            "settings-data", ("data_sync",),
+            ("summary", "tasks", "tables", "job"),
+            lambda face: self._data_parts(face),
+        )
+
+    def api_settings_data_sync(self, body: dict[str, Any]) -> dict[str, Any]:
+        """发起手动同步（显式动作；后台线程执行，立即返回 ``job_id``）。"""
+        raw = body.get("task_keys")
+        keys = [str(item) for item in raw] if isinstance(raw, list) else []
+        face = None if self.settings is None else getattr(self.settings, "data_sync", None)
+        return self._call_face(
+            "settings-data-sync", face, "L0 数据同步面",
+            lambda sync: sync.start(keys),
+        )
+
+    def api_settings_store_relocate(self, body: dict[str, Any]) -> dict[str, Any]:
+        """更改存储位置：迁移 / 仅切换 / 恢复默认（[02 §2.1]；[D-129]）。
+
+        成功后置重启闸门——本进程手里的 `Store` 仍指向旧根，**不假装已切换**。
+        """
+        return self._call_face(
+            "settings-store-relocate", self.settings, "L0 存储 / 配置面",
+            lambda face: self._run_relocate(face, body),
+        )
+
+    def api_settings_llm_bootstrap(self, body: dict[str, Any]) -> dict[str, Any]:
+        """保存 LLM 引导配置（``base_url`` / ``model`` / ``api_key``）并热更新（[D-129]）。"""
+        return self._call_face(
+            "settings-llm-bootstrap", self.settings, "L0 存储 / 配置面",
+            lambda face: self._run_llm_bootstrap(face, body),
         )
 
     def api_settings_privacy(self) -> dict[str, Any]:
@@ -2689,10 +2824,13 @@ class UiApp:
         unlocked = bool(getattr(store, "secrets_unlocked", False))
         usage = store.usage()
         total = sum(item.bytes for item in usage)
+        source, pointer_text = _root_location(face)
         summary = self._part(
             "report_card",
             slots={"sections": [
                 {"title": "存储位置", "lines": [str(root)]},
+                {"title": "位置来源", "lines": [source]},
+                {"title": "启动指针", "lines": [pointer_text]},
                 {"title": "落盘格式", "lines": [_mode_line(mode)]},
                 {"title": "凭据分区", "lines": [
                     "已解锁（本次会话可读写 API Key 等凭据）" if unlocked
@@ -2808,7 +2946,159 @@ class UiApp:
                     "凭据分区已解锁，但本机尚无凭据——新增后在此列出（只显示掩码）"
                 ))
             )
-        return {"panel": panel, "endpoints": endpoints_part, "credentials": credentials_part}
+        return {"panel": panel, "endpoints": endpoints_part,
+                "credentials": credentials_part, "boot": self._llm_boot_part(face)}
+
+    def _llm_boot_part(self, face: Any) -> dict[str, Any]:
+        """LLM 引导配置的读面（``report_card`` + 供表单预填的 ``values`` 槽；[D-129]）。"""
+        values = _llm_boot_values(face)
+        lines = [
+            ["服务地址", values["base_url"] or "（未配置）"],
+            ["模型", values["model"] or "（未配置）"],
+            ["API Key", values["api_key_masked"] or "（未配置）"],
+            ["配置来源", values["source"]],
+            ["引导 .env", str(face.dotenv_path) if face.dotenv_path else "（未接入）"],
+            ["凭据分区", "已解锁" if values["vault_unlocked"] else "未解锁（保存时须给凭据口令）"],
+        ]
+        return self._part(
+            "report_card",
+            slots={
+                "sections": [
+                    {"title": "当前引导配置",
+                     "lines": [f"{label}：{value}" for label, value in lines]},
+                ],
+                "values": values,
+            },
+            text_kinds={"sections": "data", "values": "data"},
+            title="引导配置",
+        )
+
+    def _data_parts(self, face: Any) -> dict[str, Any]:
+        """数据同步页的四段（[02 §5]；[D-129]）。"""
+        overview = face.data_sync.overview()
+        meta = overview["summary"]
+        sections = [
+            {"title": "本地市场库", "lines": [
+                "已建立" if meta["db_exists"] else "尚未建立（首次同步未完成）"
+            ]},
+            {"title": "同步任务", "lines": [
+                f"{meta['ok_task_count']} / {meta['task_count']} 个任务最近一次成功"
+            ]},
+            {"title": "数据表", "lines": [
+                (f"{meta['table_count']} 张，合计 {meta['total_rows']} 行"
+                 if meta["db_exists"]
+                 else f"0 张（尚未建库；任务覆盖 {meta.get('covered_table_count', 0)} 张表）")
+            ]},
+            {"title": "最后成功", "lines": [meta["last_success_at"] or "—"]},
+        ]
+        if meta["note"]:
+            sections.append({"title": "提示", "lines": [meta["note"]]})
+        summary = self._part(
+            "report_card",
+            slots={"sections": sections, "values": meta},
+            text_kinds={"sections": "data", "values": "data"},
+            title="数据总览",
+        )
+        task_rows = [
+            {
+                "task_key": task["task_key"],
+                "tables": "、".join(
+                    f"{item['table']}（{item['rows'] if item['rows'] is not None else '—'}）"
+                    for item in task["table_rows"]
+                ),
+                "status": (
+                    _SYNC_STATUS_LABELS.get(str(task["status"]), str(task["status"]))
+                    if task["status"] else "未同步"
+                ),
+                "last_success": (
+                    "—"
+                    if not task["last_success_at"] and not task["watermark"]
+                    else f"{_short_stamp(task['last_success_at'])}"
+                         f" · 水位 {str(task['watermark'])[:20] if task['watermark'] else '—'}"
+                ),
+            }
+            for task in overview["tasks"]
+        ]
+        tasks = self._part(
+            "table",
+            slots={**table_slots(
+                (
+                    Column("task_key", "任务"),
+                    Column("tables", "目标表（行数）"),
+                    Column("status", "状态"),
+                    Column("last_success", "最近成功 · 水位"),
+                ),
+                task_rows,
+            ), "values": overview["tasks"]},
+            text_kinds={**table_text_kinds(), "values": "data"},
+            title="同步任务与状态",
+        )
+        table_rows = [
+            {
+                "table": item["table"],
+                "rows": item["rows"],
+                "domains": "、".join(item["domains"]),
+                "tasks": "、".join(item["tasks"]),
+            }
+            for item in overview["tables"]
+        ]
+        tables = (
+            self._part(
+                "table",
+                slots=table_slots(
+                    (
+                        Column("table", "数据表"),
+                        Column("rows", "行数", "number", digits=0),
+                        Column("domains", "所属域"),
+                        Column("tasks", "写入任务"),
+                    ),
+                    table_rows,
+                ),
+                text_kinds=table_text_kinds(),
+                title="本机数据清单",
+            )
+            if table_rows
+            else envelope_payload(ResultEnvelope.empty(
+                "本地市场数据库尚未建立，暂无数据表可列——先执行首次同步"
+            ))
+        )
+        job = overview.get("job")
+        if job is None:
+            job_lines = ["当前无同步批次"]
+            job_values: dict[str, Any] = {}
+        else:
+            done = sum(
+                1 for item in job["results"].values()
+                if item.get("status") in ("ok", "empty", "unavailable", "failed",
+                                          "validation_failed", "dependency_failed")
+            )
+            job_lines = [
+                f"批次 {job['job_id']}：{_SYNC_JOB_LABELS.get(job['state'], job['state'])}",
+                f"进度：{done} / {len(job['order'])}",
+                f"当前任务：{job['current'] or '—'}",
+            ]
+            if job.get("auto_added"):
+                job_lines.append(f"自动补入前置：{'、'.join(job['auto_added'])}")
+            if job.get("error"):
+                job_lines.append(f"批次错误：{job['error']}")
+            for key, result in job["results"].items():
+                reason = f"（{result['reason']}）" if result.get("reason") else ""
+                job_lines.append(
+                    f"{key}：{_STATUS_LABELS.get(str(result.get('status')), str(result.get('status')))}{reason}"
+                )
+            job_values = job
+        job_part = self._part(
+            "report_card",
+            slots={
+                "sections": [{"title": "同步批次", "lines": job_lines}],
+                "values": job_values,
+            },
+            text_kinds={"sections": "data", "values": "data"},
+            title="手动同步",
+        )
+        return {
+            "summary": summary, "tasks": tasks, "tables": tables, "job": job_part,
+        }
 
     def _network_envelope(self, gateway: Any, hours: str) -> ResultEnvelope:
         since = _window_start(hours)
@@ -2926,6 +3216,137 @@ class UiApp:
             "to_format": to_format,
             "note": "源根未改动；凭据分区原样搬运，凭据口令不变。"
                     "切换存储根须重启进程并指向新根",
+        }
+
+    def _run_relocate(self, face: Any, body: dict[str, Any]) -> Any:
+        """迁移 / 切换 / 恢复默认存储位置（[02 §2.1]；[D-129]）。"""
+        mode = str(body.get("mode") or "migrate").strip()
+        if mode not in ("migrate", "switch", "reset"):
+            raise ValueError(f"存储位置动作只认 migrate / switch / reset：{mode!r}")
+        boot = getattr(face, "root_boot", None)
+        if boot is None:
+            return ResultEnvelope.unavailable(
+                "存储根指针未接入设置面（装配归组合根）", last_updated_at=_now()
+            )
+        current = Path(str(face.store.root))
+        env_override = str(os.environ.get("ST_AGENT_ROOT") or "").strip()
+        env_note = (
+            f"；注意环境变量 ST_AGENT_ROOT={env_override} 仍优先于启动指针，"
+            "重启前请先移除它"
+            if env_override else ""
+        )
+        if mode == "reset":
+            changed = boot.clear()
+            self.restart_gate.reason = (
+                f"存储位置已恢复为平台默认 {boot.default}：请重启应用后再继续；"
+                "当前进程仍指向旧根"
+            )
+            return {
+                "target_root": str(boot.default),
+                "mode": "reset",
+                "restart_required": True,
+                "note": ("已删除启动指针" if changed else "启动指针原本就不存在") + env_note,
+            }
+        target = Path(str(_required(body, "target")).strip()).expanduser()
+        if target.resolve() == current.resolve():
+            raise ValueError("目标根不得与当前存储根相同")
+        if _is_inside(target, current):
+            raise ValueError(f"目标根不得落在当前存储根之内（{target}）")
+        if mode == "switch":
+            if not Store.exists(target):
+                raise ValueError(
+                    f"目标根不是既有存储（{target}）：请选择含 store.json / keyfile.json 的目录，"
+                    "或改用迁移"
+                )
+            boot.write(target)
+            self.restart_gate.reason = (
+                f"存储位置已切换至 {target}：请重启应用后再继续；当前进程仍指向旧根"
+            )
+            return {
+                "target_root": str(target),
+                "mode": "switch",
+                "restart_required": True,
+                "note": "只写指针，未复制任何数据" + env_note,
+            }
+        if target.exists() and any(target.iterdir()):
+            raise ValueError(f"目标根 {target} 非空：迁移只写全新根")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if face.convert_store is None:
+            return ResultEnvelope.unavailable(
+                "明密转换口未注入设置面（装配归组合根）", last_updated_at=_now()
+            )
+        source_pass = str(body.get("passphrase") or "").strip() or None
+        target_pass = source_pass if str(face.store.mode) == "encrypted" else None
+        envelope = _store_errors(lambda: face.convert_store(
+            current,
+            target,
+            to_format=str(face.store.mode),
+            source_passphrase=source_pass,
+            target_passphrase=target_pass,
+        ))
+        if isinstance(envelope, ResultEnvelope):
+            return envelope
+        boot.write(target)
+        self.restart_gate.reason = (
+            f"存储位置已迁移至 {target}：请重启应用后再继续；当前进程仍指向旧根 {current}"
+        )
+        return {
+            "target_root": str(target),
+            "mode": "migrate",
+            "restart_required": True,
+            "note": "源根未改动（可另行删除）；凭据分区原样搬运，凭据口令不变" + env_note,
+        }
+
+    def _run_llm_bootstrap(self, face: Any, body: dict[str, Any]) -> Any:
+        """保存 LLM 引导配置并热更新（[02 §4]；[D-129]）。"""
+        base_url = str(_required(body, "base_url")).strip()
+        model = str(_required(body, "model")).strip()
+        api_key = str(body.get("api_key") or "").strip()
+        passphrase = str(body.get("passphrase") or "").strip() or None
+        # 先校验 URL 形态（非法取值不得落进任何记录）
+        OpenAiRoute(base_url=base_url, model=model)
+        runtime = getattr(face, "llm_runtime", None)
+        if runtime is None:
+            return ResultEnvelope.unavailable(
+                "LLM 运行时未接入设置面（装配归组合根）", last_updated_at=_now()
+            )
+        store = face.store
+        if not bool(getattr(store, "secrets_unlocked", False)):
+            if not passphrase:
+                return ResultEnvelope.unavailable(
+                    "凭据分区未解锁（凭据恒加密）：请填写凭据口令后再保存",
+                    last_updated_at=_now(),
+                )
+            unlocked = _store_errors(lambda: store.unlock_secrets(passphrase))
+            if isinstance(unlocked, ResultEnvelope):
+                return unlocked
+        config = LlmBootstrap(
+            api_key=api_key or "unchanged", base_url=base_url, model=model
+        )
+        applied = runtime.apply_llm_bootstrap(config, rotate_key=bool(api_key))
+        save_boot_config(store, base_url=base_url, model=model)
+        updates = {"LLM_BASE_URL": base_url, "LLM_MODEL": model}
+        if api_key:
+            updates["LLM_API_KEY"] = api_key
+        dotenv_written = False
+        dotenv_note = "未接入引导 .env（跳过）"
+        if face.dotenv_path:
+            try:
+                write_dotenv(face.dotenv_path, updates)
+                dotenv_written = True
+                dotenv_note = "已写回引导 .env（明文文件，仅开发 / 自用通道）"
+            except Exception as exc:      # noqa: BLE001 —— 写不进 .env 不否定已生效的配置
+                dotenv_note = f"未能写回 .env：{exc}；配置已存入本地配置并立即生效"
+        return {
+            "base_url": base_url,
+            "model": model,
+            "api_key_masked": mask_secret(api_key) if api_key else "",
+            "host": applied.get("host"),
+            "key_rotated": bool(api_key),
+            "dotenv_written": dotenv_written,
+            "dotenv": str(face.dotenv_path) if face.dotenv_path else None,
+            "restart_required": False,
+            "note": dotenv_note,
         }
 
     def _run_backup(self, face: Any, body: dict[str, Any]) -> Any:
@@ -5861,10 +6282,14 @@ class UiApp:
         return envelope_payload(envelope)
 
     def index_html(self) -> str:
-        """`index.html` —— dev 关闭时把占位注释替换为空串。"""
+        """`index.html` —— dev 关闭时把两个 dev 占位都替换为空串。"""
         html = (self.web_root / "index.html").read_text(encoding="utf-8")
         tag = self.dev_package.dev_script_tag() if self.dev_enabled else ""
-        return html.replace(DEV_SCRIPT_MARKER, tag)
+        token_tag = (
+            f'<meta name="st-dev-token" content="{self.guard.token}">'
+            if self.dev_enabled else ""
+        )
+        return html.replace(DEV_TOKEN_MARKER, token_tag).replace(DEV_SCRIPT_MARKER, tag)
 
     def static_file(self, url_path: str) -> Path | None:
         """解析一个静态资产路径（生产根，或 dev 开启时的 dev 根）。"""

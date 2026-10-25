@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "st-agent-walk",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["packaging/preview_server.py"],
+      "port": 8765
+    }
+  ]
+}

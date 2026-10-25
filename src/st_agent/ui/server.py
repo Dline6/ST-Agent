@@ -125,6 +125,7 @@ _GET_ROUTES: dict[str, Callable[[UiApp, str], dict]] = {
     # 带参数的读面走**查询串**（[11-sitemap §2.2]：路径集仍是有限字面量集合，不引动态段）。
     "/api/settings/storage": lambda app, _q: app.api_settings_storage(),
     "/api/settings/llm": lambda app, _q: app.api_settings_llm(),
+    "/api/settings/data": lambda app, _q: app.api_settings_data(),
     "/api/settings/sources": lambda app, _q: app.api_settings_sources(),
     "/api/settings/privacy": lambda app, _q: app.api_settings_privacy(),
     "/api/settings/maintenance": lambda app, _q: app.api_settings_maintenance(),
@@ -224,6 +225,9 @@ _POST_ROUTES: dict[str, Callable[[UiApp, dict], dict]] = {
     # 设置区的写面（[`T-UI-018`]）：设置落值（经 [01 §7] 统一注册表）/ 备份 / 恢复 / 清空 /
     # 凭据增改吊销 / 网络活动导出——六条全部是**显式动作**，故进写表。
     "/api/settings/apply": lambda app, body: app.api_settings_apply(body),
+    "/api/settings/store/relocate": lambda app, body: app.api_settings_store_relocate(body),
+    "/api/settings/llm/bootstrap": lambda app, body: app.api_settings_llm_bootstrap(body),
+    "/api/settings/data/sync": lambda app, body: app.api_settings_data_sync(body),
     "/api/settings/convert": lambda app, body: app.api_settings_convert(body),
     "/api/settings/backup": lambda app, body: app.api_settings_backup_run(body),
     "/api/settings/restore": lambda app, body: app.api_settings_restore(body),

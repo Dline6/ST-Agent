@@ -16,6 +16,7 @@ from st_agent.ui.app import _bytes_text, _coerce_value, _is_inside, _window_star
 _GET_PATHS = (
     "/api/settings/storage",
     "/api/settings/llm",
+    "/api/settings/data",
     "/api/settings/sources",
     "/api/settings/privacy",
     "/api/settings/maintenance",
@@ -25,6 +26,9 @@ _GET_PATHS = (
 
 _POST_PATHS = (
     "/api/settings/apply",
+    "/api/settings/store/relocate",
+    "/api/settings/llm/bootstrap",
+    "/api/settings/data/sync",
     "/api/settings/convert",
     "/api/settings/backup",
     "/api/settings/restore",
