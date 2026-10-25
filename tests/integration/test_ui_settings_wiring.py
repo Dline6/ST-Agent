@@ -302,3 +302,97 @@ def test_wipe_needs_three_ordered_tokens_then_stops_the_data_face(m5) -> None:
         assert chat["status"] == "unavailable" and "重启" in chat["reason"]
         # 健康面**不拦**——壳要靠它判断服务是否还活着
         assert _get(running, "/api/health")["status"] == "ok"
+
+
+# ───────────────────── 启动引导配置与数据同步（[D-129]） ─────────────────────
+
+def test_storage_page_names_location_source_and_pointer(m5) -> None:
+    runtime = m5.m5
+    with serve(dev=False, settings=runtime.settings) as running:
+        sections = _get(running, "/api/settings/storage")["summary"]["data"]["slots"]["sections"]
+
+    titles = [section["title"] for section in sections]
+    assert "位置来源" in titles and "启动指针" in titles
+
+
+def test_data_page_reports_real_tasks_tables_and_rows(m5) -> None:
+    runtime = m5.m5
+    with serve(dev=False, settings=runtime.settings) as running:
+        payload = _get(running, "/api/settings/data")
+
+    assert payload["summary"]["status"] == "ok"
+    summary = payload["summary"]["data"]["slots"]["values"]
+    assert summary["db_exists"] is True
+    assert summary["total_rows"] >= 4
+    tasks = payload["tasks"]["data"]["slots"]["values"]
+    assert any(task["task_key"] == "bs_k_daily" and task["status"] == "ok"
+               for task in tasks)
+    tables = {row["table"]: row for row in payload["tables"]["data"]["slots"]["rows"]}
+    assert tables["k_line_daily"]["rows"] == 4
+    assert payload["job"]["data"]["slots"]["values"] == {}
+
+
+def test_data_sync_rejects_unknown_task_without_touching_the_network(m5) -> None:
+    runtime = m5.m5
+    with serve(dev=False, settings=runtime.settings) as running:
+        payload = _post(running, "/api/settings/data/sync", {"task_keys": ["no-such-task"]})
+
+    assert payload["status"] == "validation_failed"
+    assert "未知同步任务" in payload["reason"]
+
+
+def test_llm_page_exposes_bootstrap_values_without_plaintext_key(m5) -> None:
+    runtime = m5.m5
+    with serve(dev=False, settings=runtime.settings) as running:
+        payload = _get(running, "/api/settings/llm")
+
+    boot = payload["boot"]["data"]["slots"]["values"]
+    assert "base_url" in boot and "model" in boot
+    assert "sk-test-0123456789-abcdef" not in str(boot)
+
+
+def test_llm_bootstrap_rejects_invalid_base_url(m5) -> None:
+    runtime = m5.m5
+    with serve(dev=False, settings=runtime.settings) as running:
+        payload = _post(running, "/api/settings/llm/bootstrap", {
+            "base_url": "not-a-url", "model": "m", "api_key": "sk-new",
+        })
+
+    assert payload["status"] == "validation_failed"
+
+
+def test_store_relocate_reset_clears_pointer_and_gates_the_process(m5, tmp_path) -> None:
+    from st_agent.l0.bootstrap.root import write_store_root
+
+    runtime = m5.m5
+    pointer = runtime.bootstrap_file
+    write_store_root(tmp_path / "elsewhere", pointer)
+
+    with serve(dev=False, settings=runtime.settings) as running:
+        payload = _post(running, "/api/settings/store/relocate", {"mode": "reset"})
+        assert payload["status"] == "ok", payload.get("reason")
+        assert payload["data"]["restart_required"] is True
+        assert pointer.exists() is False
+        blocked = _get(running, "/api/settings/storage")
+        assert blocked["status"] == "unavailable"
+        assert "重启" in blocked["reason"]
+
+
+def test_store_relocate_migrate_copies_the_root_and_gates_the_process(m5, tmp_path) -> None:
+    from st_agent.l0.storage import Store
+
+    runtime = m5.m5
+    target = tmp_path / "migrated-root"
+
+    with serve(dev=False, settings=runtime.settings) as running:
+        payload = _post(running, "/api/settings/store/relocate", {
+            "mode": "migrate", "target": str(target), "passphrase": PASS,
+        })
+
+    assert payload["status"] == "ok", payload.get("reason")
+    assert payload["data"]["target_root"] == str(target)
+    assert payload["data"]["restart_required"] is True
+    assert Store.exists(target) is True
+    copied = Store.open(target, PASS)
+    assert sorted(copied.list_files("config")) == sorted(runtime.store.list_files("config"))
+    assert sorted(copied.list_files("memory")) == sorted(runtime.store.list_files("memory"))

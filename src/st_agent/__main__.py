@@ -54,6 +54,11 @@ from typing import Any, TextIO
 
 from st_agent import __version__
 from st_agent.app import build_m5_runtime
+from st_agent.l0.bootstrap.root import (
+    BootstrapConfigError,
+    platform_default_root,
+    resolve_root,
+)
 from st_agent.l0.market import MarketDb
 from st_agent.l0.storage import (
     StorageCorruptionError,
@@ -85,8 +90,6 @@ AMBIENT_INTERVAL_SECONDS = 60.0
 _ROOT_ENV = "ST_AGENT_ROOT"
 """存储根的环境变量覆盖点（优先于平台惯例）。"""
 
-_APP_DIR = "STAgent"
-_LINUX_APP_DIR = "st-agent"
 _PARENT_POLL_SECONDS = 1.0
 """看门狗轮询间隔：壳退出与后端退出之间的可见延迟上限。"""
 
@@ -148,21 +151,16 @@ def default_root(
 
     Windows ``%LOCALAPPDATA%\\STAgent`` · macOS ``~/Library/Application Support/STAgent`` ·
     其余 ``$XDG_DATA_HOME/st-agent``（缺省 ``~/.local/share/st-agent``）。
+
+    **这是「平台默认」这一档**；完整的四档解析（`--root` > 环境变量 > 设置页指针 >
+    平台默认）见 :func:`st_agent.l0.bootstrap.root.resolve_root`。
     """
     env = os.environ if env is None else env
     system = sys.platform if system is None else system
     override = str(env.get(_ROOT_ENV) or "").strip()
     if override:
         return Path(override).expanduser()
-    home = Path(str(env.get("HOME") or env.get("USERPROFILE") or Path.home()))
-    if system.startswith("win"):
-        local = str(env.get("LOCALAPPDATA") or "").strip()
-        return (Path(local) if local else home / "AppData" / "Local") / _APP_DIR
-    if system == "darwin":
-        return home / "Library" / "Application Support" / _APP_DIR
-    xdg = str(env.get("XDG_DATA_HOME") or "").strip()
-    base = Path(xdg) if xdg else home / ".local" / "share"
-    return base / _LINUX_APP_DIR
+    return platform_default_root(env=env, system=system)
 
 
 # ───────────────────────── 父进程看门狗 ─────────────────────────
@@ -740,7 +738,13 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return _EXIT_STARTUP_FAILED
 
-    root = Path(args.root).expanduser() if args.root else default_root()
+    try:
+        root, _root_source = resolve_root(args.root)
+    except BootstrapConfigError as exc:
+        _emit_error(
+            sys.stdout, str(exc), code="bootstrap_error", json_handshake=json_handshake
+        )
+        return _EXIT_STARTUP_FAILED
     return run_backend(
         root=root,
         host=args.host,

@@ -48,6 +48,7 @@ def test_dev_panel_lives_under_the_dev_package() -> None:
 def test_index_html_carries_the_dev_marker() -> None:
     html = (_UI / "web" / "index.html").read_text(encoding="utf-8")
     assert "<!--ST_DEV_SCRIPT-->" in html
+    assert "<!--ST_DEV_TOKEN-->" in html
 
 
 _RELATIVE_IMPORT = re.compile(r"""from\s+'(\.{1,2}/[^']+)'""")

@@ -123,6 +123,14 @@ class LlmClient:
         self._vault = vault
         self._transport = transport
 
+    def set_transport(self, transport: Transport | None) -> None:
+        """替换传输件（设置页改 LLM 引导配置后**立即**生效；[D-129]）。
+
+        只换「怎么发包」，不碰端点记录 / 凭据 / 用量口径——新传输由组合根按新
+        ``base_url`` / ``model`` 重建，旧传输随引用释放。
+        """
+        self._transport = transport
+
     # ───────────────────────── 统一调用（GWT-2/3/4/5） ────────────────────
 
     def invoke(

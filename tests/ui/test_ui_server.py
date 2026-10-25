@@ -62,6 +62,16 @@ def test_index_is_served_without_dev_reference(ui_server, http_get, auth) -> Non
     assert response.status == 200
     assert b"<!--ST_DEV_SCRIPT-->" not in response.body
     assert b"/dev/devpanel.js" not in response.body
+    assert b"st-dev-token" not in response.body
+
+
+def test_dev_index_injects_the_token_for_in_app_preview(ui_server_dev, http_get) -> None:
+    """应用内 Browser 预览无法带 fragment；dev 面用 meta 注入令牌（发布构建没有）。"""
+    response = http_get(ui_server_dev, "/")
+
+    assert response.status == 200
+    assert b'name="st-dev-token"' in response.body
+    assert ui_server_dev.token.encode() in response.body
 
 
 def test_static_asset_is_served(ui_server, http_get, auth) -> None:

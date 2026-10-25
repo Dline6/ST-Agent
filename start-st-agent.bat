@@ -2,7 +2,7 @@
 rem ======================================================================
 rem  ST Agent - one-click launch & try-out (local loopback UI in browser)
 rem
-rem    start-st-agent.bat            default storage root %LOCALAPPDATA%\STAgent
+rem    start-st-agent.bat            configured root (settings pointer or %LOCALAPPDATA%\STAgent)
 rem    start-st-agent.bat dev        also serve the dev panel (walkthrough samples)
 rem    start-st-agent.bat trial      use an isolated trial root, leaves real data alone
 rem    start-st-agent.bat help       this text
@@ -65,8 +65,14 @@ set "PPARG="
 if defined ST_AGENT_PASSPHRASE set "PPARG=--passphrase-env ST_AGENT_PASSPHRASE"
 
 rem -- 4. storage root + log sink ------------------------------------------
+rem Normal runs let the backend resolve the root (settings pointer > default).
+rem The trial run passes --root explicitly so it never touches real data.
 set "ROOTDIR=%LOCALAPPDATA%\STAgent"
-if defined TRIAL set "ROOTDIR=%LOCALAPPDATA%\STAgent-trial"
+set "ROOTARG="
+if defined TRIAL (
+  set "ROOTDIR=%LOCALAPPDATA%\STAgent-trial"
+  set "ROOTARG=--root "%ROOTDIR%""
+)
 
 set "LOG=%TEMP%\st-agent-launch.log"
 del /q "%LOG%" >nul 2>&1
@@ -74,7 +80,11 @@ del /q "%LOG%" >nul 2>&1
 echo.
 echo ST Agent launcher
 echo   python : %PY%
-echo   root   : %ROOTDIR%
+if defined TRIAL (
+  echo   root   : %ROOTDIR%
+) else (
+  echo   root   : configured (settings pointer or platform default)
+)
 if defined DEV echo   extra  : --dev (dev panel with walkthrough samples)
 if defined ST_AGENT_PASSPHRASE (
   echo   secret : passphrase taken from %PPARG%
@@ -84,7 +94,7 @@ if defined ST_AGENT_PASSPHRASE (
 echo.
 echo Starting backend ...
 
-start "" /b cmd /c ""%PY%" -m st_agent --handshake json %DEV% --root "%ROOTDIR%" %PPARG% > "%LOG%" 2>&1"
+start "" /b cmd /c ""%PY%" -m st_agent --handshake json %DEV% %ROOTARG% %PPARG% > "%LOG%" 2>&1"
 
 rem -- 5. wait for the ready handshake (about one second per tick) --------
 set /a TICKS=0
@@ -144,7 +154,7 @@ exit /b 0
 :usage
 echo ST Agent - launch ^& try-out
 echo.
-echo   start-st-agent.bat            default root %LOCALAPPDATA%\STAgent
+echo   start-st-agent.bat            configured root (settings pointer or default)
 echo   start-st-agent.bat dev        also serve the dev panel
 echo   start-st-agent.bat trial      isolated trial root %LOCALAPPDATA%\STAgent-trial
 echo   start-st-agent.bat help       this text

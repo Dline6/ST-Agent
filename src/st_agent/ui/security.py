@@ -72,6 +72,11 @@ class RequestGuard:
         self._port = port
 
     @property
+    def token(self) -> str:
+        """本次启动的令牌（只在进程内可见；dev 面用于把地址栏 fragment 免掉）。"""
+        return self._token
+
+    @property
     def authorities(self) -> frozenset[str]:
         """允许的 ``Host`` 值集合。
 

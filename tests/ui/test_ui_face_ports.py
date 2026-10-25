@@ -60,6 +60,9 @@ _EXPECTED_POST_ROUTES = frozenset({
     # 设置区的写面（[`T-UI-018`]）：设置落值 / 备份 / 恢复 / 清空 / 凭据增改吊销 / 在线态
     # 同步 / 网络活动导出——七条全部是显式动作，非幂等读面。
     "/api/settings/apply",
+    "/api/settings/store/relocate",
+    "/api/settings/llm/bootstrap",
+    "/api/settings/data/sync",
     "/api/settings/convert",
     "/api/settings/backup",
     "/api/settings/restore",

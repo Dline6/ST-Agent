@@ -32,7 +32,7 @@ from __future__ import annotations
 import re
 import sqlite3
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
 from importlib import resources
@@ -78,6 +78,11 @@ _FRESHNESS_SQL = (
     "SELECT task_key, table_name, last_status, last_success_at, watermark, last_error "
     "FROM sync_state WHERE last_status IS NOT 'ok' OR last_success_at IS NULL"
 )
+
+_META_TABLES: frozenset[str] = frozenset({
+    "sync_state", "data_source", "indicator_dictionary", "indicator_source_map",
+})
+"""非业务表（总览的「逐表行数」不计入）。"""
 
 
 def _now() -> datetime:
@@ -141,6 +146,53 @@ class MarketDb:
                 "SELECT name FROM sqlite_master WHERE type='view' ORDER BY name"
             ).fetchall()
         return tuple(r[0] for r in rows)
+
+    def sync_state_rows(self) -> tuple[dict[str, Any], ...]:
+        """``sync_state`` 全量行（逐任务水位 / 成功时间 / 状态；空库 → 空元组）。
+
+        与 :meth:`freshness` 的分工：后者只回**非 ok** 行（自检口径），本方法回**全部**
+        行——设置-数据同步视图要据此同时显示「已成功」与「未同步」。
+        """
+        if not self.exists():
+            return ()
+        with self._readonly() as con:
+            cur = con.execute(
+                "SELECT task_key, table_name, source_id, mode, schedule_desc, watermark,"
+                " last_success_at, last_row_count, last_status, last_error"
+                " FROM sync_state ORDER BY task_key"
+            )
+            columns = [d[0] for d in (cur.description or [])]
+            return tuple(dict(zip(columns, row)) for row in cur.fetchall())
+
+    def table_counts(
+        self, tables: Iterable[str] | None = None
+    ) -> dict[str, int]:
+        """逐表行数（**一次**只读连接内完成；[D-129]）。
+
+        ``_readonly`` 每次都会把整库 blob 解密到临时文件，逐表调用会把大库反复解密；
+        故总览面只用本方法。``tables`` 缺省＝全部业务表（排除 ``sync_state`` /
+        ``data_source`` / 指标字典等元数据表）；显式给出时只计其中**真实存在**的表，
+        不存在的表不出现在结果里（「表缺」与「表空」由调用方分开呈现）。
+        """
+        if not self.exists():
+            return {}
+        with self._readonly() as con:
+            existing = {
+                r[0]
+                for r in con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            selected = (
+                sorted(existing - _META_TABLES) if tables is None
+                else [name for name in dict.fromkeys(tables) if name in existing]
+            )
+            counts: dict[str, int] = {}
+            for name in selected:
+                quoted = '"' + str(name).replace('"', '""') + '"'
+                row = con.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()
+                counts[str(name)] = int(row[0]) if row else 0
+        return counts
 
     def last_updated_at(self) -> datetime | None:
         """全库「最后更新时间 T」（``sync_state.last_success_at`` 最大值；无则 None）。"""

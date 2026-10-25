@@ -895,8 +895,16 @@ body {
 .page__tab[aria-current="page"] { color: var(--fg); font-weight: 600; background: var(--line); }
 
 /* 设置区的输入行（备份 / 恢复 / 凭据）——标签在左、控件在右，窄屏换行。 */
-.settings-field { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-1) 0; }
-.settings-field__label { min-width: 9rem; color: var(--fg-muted); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
+.settings-task-groups { display: grid; gap: var(--space-3); margin: var(--space-3) 0; }
+.settings-task-group {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-surface);
+  background: var(--card);
+}
+.settings-task-group .component__meta { margin: 0 0 var(--space-1); }
+.settings-task-group .settings-field { margin: 0; }
+.settings-field { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-1) 0; }.settings-field__label { min-width: 9rem; color: var(--fg-muted); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
 .settings-field__input {
   flex: 1 1 14rem;
   padding: var(--space-1) var(--space-2);
