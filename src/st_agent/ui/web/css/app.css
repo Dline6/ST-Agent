@@ -904,6 +904,92 @@ body {
 }
 .settings-task-group .component__meta { margin: 0 0 var(--space-1); }
 .settings-task-group .settings-field { margin: 0; }
+
+/* 数据同步目录（[D-130]）：控制条 / 预检 / 中文大类与数据项 / 逐任务结果。 */
+.settings-sync { display: grid; gap: var(--space-2); }
+.settings-control-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  align-items: end;
+}
+.settings-control-row .settings-field { margin: 0; }
+.settings-field--inline { flex: 0 0 auto; }
+.settings-field--inline .settings-field__label { min-width: 0; }
+.settings-scope-hint { margin: 0; }
+.settings-preflight { display: grid; gap: var(--space-1); margin-top: var(--space-2); }
+.settings-preflight .state { margin: 0; }
+.settings-catalog { display: grid; gap: var(--space-3); }
+.settings-category {
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-surface);
+  background: var(--card);
+  overflow: hidden;
+}
+.settings-category__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border-bottom: 1px solid var(--line);
+}
+.settings-category__title {
+  margin: 0;
+  font-size: var(--text-body);
+  line-height: var(--leading-body);
+}
+.settings-item {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--line);
+}
+.settings-item:first-of-type { border-top: 0; }
+.settings-item__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.settings-item__label { display: flex; align-items: center; gap: var(--space-1); }
+.settings-item__name { font-weight: 600; }
+.settings-item__desc,
+.settings-item__meta {
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: var(--text-body-sm);
+  line-height: var(--leading-body-sm);
+}
+.settings-badge {
+  display: inline-block;
+  padding: 0 var(--space-1);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-control);
+  color: var(--fg-muted);
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+}
+.settings-badge--ok { color: var(--ok); border-color: var(--ok); }
+.settings-badge--partial { color: var(--delayed); border-color: var(--delayed); }
+.settings-badge--failed { color: var(--error); border-color: var(--error); }
+.settings-results__table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: var(--space-2);
+  font-size: var(--text-body-sm);
+}
+.settings-results__table th,
+.settings-results__table td {
+  padding: var(--space-1) var(--space-2);
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  vertical-align: top;
+}
+.settings-results__table th { color: var(--fg-muted); font-weight: 600; }
+.settings-details > summary { cursor: pointer; color: var(--fg-muted); }
+.settings-details > summary:hover { color: var(--fg); }
+
 .settings-field { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-1) 0; }.settings-field__label { min-width: 9rem; color: var(--fg-muted); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
 .settings-field__input {
   flex: 1 1 14rem;

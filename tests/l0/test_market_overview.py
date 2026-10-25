@@ -84,3 +84,72 @@ def test_missing_db_returns_empty_overview_inputs(store):
     assert db.exists() is False
     assert db.table_counts(["security"]) == {}
     assert db.sync_state_rows() == ()
+    assert db.overview_snapshot()["counts"] == {}
+    assert db.st_pool()["available"] is False
+
+
+def test_overview_snapshot_reads_once(market_db: MarketDb, monkeypatch):
+    with market_db.transact() as con:
+        con.execute(
+            "INSERT INTO security(code, code_name, ipo_date, out_date, type, status)"
+            " VALUES ('sh.600000', '浦发银行', '1999-11-10', NULL, 1, 1)"
+        )
+        con.execute(
+            "INSERT INTO k_line_daily(code, trade_date, open, high, low, close,"
+            " preclose, volume, amount, turn, trade_status, pct_chg,"
+            " pe_ttm, pb_mrq, ps_ttm, pcf_ncf_ttm, is_st)"
+            " VALUES ('sh.600000', '2026-10-24', 1, 1, 1, 1, 1, 1, 1, 1, 1, 0,"
+            " 1, 1, 1, 1, 1)"
+        )
+        con.commit()
+    calls = []
+    original = market_db._readonly
+
+    def counted():
+        calls.append(1)
+        return original()
+
+    monkeypatch.setattr(market_db, "_readonly", counted)
+    snapshot = market_db.overview_snapshot()
+
+    assert len(calls) == 1
+    assert snapshot["counts"]["k_line_daily"] == 1
+    assert snapshot["st"]["available"] is True
+    assert snapshot["st"]["count"] == 1
+    assert snapshot["st"]["codes"] == ("sh.600000",)
+    assert snapshot["st"]["as_of"] == "2026-10-24"
+    assert snapshot["listed_count"] == 1
+
+
+def test_st_pool_reports_missing_view(market_db: MarketDb):
+    with market_db.transact() as con:
+        con.execute("DROP VIEW v_st_universe")
+        con.commit()
+
+    pool = market_db.st_pool()
+
+    assert pool["available"] is False
+    assert "v_st_universe" in pool["reason"]
+
+
+def test_st_pool_empty_is_available_with_reason(market_db: MarketDb):
+    pool = market_db.st_pool()
+
+    assert pool["available"] is True
+    assert pool["count"] == 0
+    assert "ST" in pool["reason"]
+
+
+def test_preflight_snapshot_does_not_count_business_tables(
+    market_db: MarketDb, monkeypatch
+):
+    """预检只看状态 / ST 池 / 在市数；逐表 COUNT 留给总览，避免大库上拖慢每次勾选。"""
+    def boom(*_args, **_kwargs):
+        raise AssertionError("预检不应逐表计数")
+
+    monkeypatch.setattr(market_db, "_counts_in", boom)
+    snapshot = market_db.preflight_snapshot()
+
+    assert "states" in snapshot
+    assert snapshot["st"]["available"] is True
+    assert snapshot["listed_count"] == 0

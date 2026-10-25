@@ -279,6 +279,7 @@ class BaoStockSync:
                  watchlist: list[str] | None = None,
                  timeout_ms: int = 120_000,
                  start: str | None = None,
+                 end: str | None = None,
                  batch_size: int | None = None,
                  quarters: int | None = None,
                  cancel=None) -> ResultEnvelope:
@@ -289,8 +290,10 @@ class BaoStockSync:
         :param codes: 逐码任务的证券范围（缺省库内全量主档）
         :param watchlist: 分钟线关注池（必传，否则 ``MarketValidationError``）
         :param start: **显式窗口起点**（``YYYY-MM-DD``）——缺省＝按水位推导（行为不变）。
-            给出时本任务按 ``[start, 今日]`` 取数，**不受全库水位影响**：这是「码分片」
+            给出时本任务按 ``[start, end 或今日]`` 取数，**不受全库水位影响**：这是「码分片」
             可行的前提（分片 2 不会被分片 1 推高的水位跳成空窗口）。水位回写口径不变。
+        :param end: **显式窗口终点**（``YYYY-MM-DD``）——缺省＝今日。只对
+            ``supports_range`` 的任务生效；全量 / 快照 / 信息面任务忽略（[D-130]）。
         :param batch_size: 逐码任务的**写入批大小**（每多少只码提交一次事务）。
             ``None`` ＝逐码一次事务（既有行为，逐字节不变）；给出时按批合并，
             使整库 blob 加解密次数从「码数」降到「批数」。
@@ -303,13 +306,9 @@ class BaoStockSync:
         on = self._is_enabled(task_key, enabled)
         if not on:
             return self._disabled_envelope(task_key)
-        if start is not None:
-            try:
-                date.fromisoformat(start)
-            except ValueError:
-                return ResultEnvelope.validation_failed(
-                    f"显式窗口起点须为 YYYY-MM-DD，实际 {start!r}"
-                )
+        window_problem = _validate_window(start, end)
+        if window_problem:
+            return ResultEnvelope.validation_failed(window_problem)
         if not self._db.exists():
             now = _now()
             return ResultEnvelope.unavailable(
@@ -333,7 +332,7 @@ class BaoStockSync:
         try:
             loaded, new_watermark, expected = self._fetch_and_load(
                 task_key, watermark, day=day, codes=codes, watchlist=watchlist,
-                timeout_ms=timeout_ms, start=start, batch_size=batch_size,
+                timeout_ms=timeout_ms, start=start, end=end, batch_size=batch_size,
                 quarters=quarters, cancel=cancel,
             )
         except MarketValidationError as exc:
@@ -606,7 +605,7 @@ class BaoStockSync:
     def _fetch_and_load(self, task_key: str, watermark: str | None, *,
                         day: str | None, codes: list[str] | None,
                         watchlist: list[str] | None,
-                        timeout_ms: int, start: str | None,
+                        timeout_ms: int, start: str | None, end: str | None,
                         batch_size: int | None, quarters: int | None,
                         cancel) -> tuple[int, str | None, int | None]:
         """分发各任务的抓取 + 入库；返回 ``(入库行数, 新水位, 覆盖对账期望数)``。"""
@@ -619,27 +618,29 @@ class BaoStockSync:
             return self._load_all_stock(day or today, timeout_ms, cancel)
         if task_key == "bs_k_daily":
             return self._load_k_daily(watermark, codes, timeout_ms, cancel,
-                                      start=start, batch_size=batch_size)
+                                      start=start, end=end, batch_size=batch_size)
         if task_key == "bs_k_period":
             return self._load_k_period(watermark, codes, timeout_ms, cancel,
-                                       start=start, batch_size=batch_size)
+                                       start=start, end=end, batch_size=batch_size)
         if task_key == "bs_k_minute":
-            return self._load_k_minute(watchlist, codes, timeout_ms, cancel)
+            return self._load_k_minute(watchlist, codes, timeout_ms, cancel,
+                                       start=start, end=end)
         if task_key == "bs_adjust_factor":
             return self._load_adjust_factor(codes, timeout_ms, cancel,
-                                            start=start, batch_size=batch_size)
+                                            start=start, end=end,
+                                            batch_size=batch_size)
         if task_key == "bs_dividend":
             return self._load_dividend(watermark, codes, timeout_ms, cancel,
-                                       start=start, batch_size=batch_size)
+                                       start=start, end=end, batch_size=batch_size)
         if task_key == "bs_fin_quarter":
             return self._load_financial(codes, timeout_ms, cancel,
-                                        quarters=quarters)
+                                        start=start, end=end, quarters=quarters)
         if task_key == "bs_perf_express":
             return self._load_express(watermark, codes, timeout_ms, cancel,
-                                      start=start, batch_size=batch_size)
+                                      start=start, end=end, batch_size=batch_size)
         if task_key == "bs_forecast":
             return self._load_forecast(watermark, codes, timeout_ms, cancel,
-                                       start=start, batch_size=batch_size)
+                                       start=start, end=end, batch_size=batch_size)
         if task_key == "bs_industry":
             return self._load_industry(timeout_ms, cancel)
         if task_key in ("bs_sz50", "bs_hs300", "bs_zz500"):
@@ -678,15 +679,17 @@ class BaoStockSync:
 
     @staticmethod
     def _window(task_key: str, watermark: str | None,
-                start: str | None) -> tuple[str, str]:
-        """任务窗口：给出 ``start`` 时按 ``[start, 今日]``，否则走 05 的水位推导。
+                start: str | None, end: str | None = None) -> tuple[str, str]:
+        """任务窗口：显式起止覆盖，缺省走 05 的水位推导。
 
         **不改** ``window_for`` 的规则（05 记的水位语义原样保留）——显式起点只是
         多一个入口，供分片长跑绕开「全库水位已到今日 ⇒ 后续分片窗口为空」。
+        给出 ``end`` 时覆盖窗口终点（缺省今日），用于回补历史区间。
         """
-        if start is None:
+        if start is None and end is None:
             return window_for(task_key, watermark)
-        return (start, _now().date().isoformat())
+        derived_start, derived_end = window_for(task_key, watermark)
+        return (start or derived_start, end or derived_end)
 
     # —— 元信息类 ——
 
@@ -741,15 +744,16 @@ class BaoStockSync:
 
     def _load_k_daily(self, watermark: str | None, codes: list[str] | None,
                       timeout_ms: int, cancel, *, start: str | None = None,
+                      end: str | None = None,
                       batch_size: int | None = None,
                       ) -> tuple[int, str | None, None]:
-        window_start, end = self._window("bs_k_daily", watermark, start)
+        window_start, window_end = self._window("bs_k_daily", watermark, start, end)
         total = 0
         writer = _BatchWriter(self._write_k_daily, batch_size)
         for code in self._codes(codes):
             fields, rows = self._via_gateway(
                 "bs_k_daily", lambda code=code: self._fetcher.k_daily(
-                    code, window_start, end),
+                    code, window_start, window_end),
                 timeout_ms=timeout_ms, cancel=cancel,
             )
             mapped = map_k_daily(fields, rows)
@@ -780,10 +784,11 @@ class BaoStockSync:
 
     def _load_k_period(self, watermark: str | None, codes: list[str] | None,
                        timeout_ms: int, cancel, *, start: str | None = None,
+                       end: str | None = None,
                        batch_size: int | None = None,
                        ) -> tuple[int, str | None, None]:
         window_start = start if start is not None else _load_k_period_start(watermark)
-        end = _now().date().isoformat()
+        window_end = end or _now().date().isoformat()
         total = 0
         maxima: dict[str, str] = {}
         writer = _BatchWriter(self._write_k_period, batch_size)
@@ -792,7 +797,7 @@ class BaoStockSync:
                 fields, rows = self._via_gateway(
                     "bs_k_period",
                     lambda code=code, frequency=frequency: self._fetcher.k_period(
-                        code, frequency, window_start, end),
+                        code, frequency, window_start, window_end),
                     timeout_ms=timeout_ms, cancel=cancel,
                 )
                 mapped = map_k_period(fields, rows, frequency)
@@ -823,23 +828,29 @@ class BaoStockSync:
             con.commit()
 
     def _load_k_minute(self, watchlist: list[str] | None, codes: list[str] | None,
-                       timeout_ms: int, cancel) -> tuple[int, str | None, None]:
-        pool = watchlist if watchlist is not None else codes
+                       timeout_ms: int, cancel, *, start: str | None = None,
+                       end: str | None = None) -> tuple[int, str | None, None]:
+        # 显式 codes 优先：按 ST / 关注池等范围同步时，范围是调用方的明确意图，
+        # 不能被恒传的 watchlist 盖住（[D-130]）。
+        pool = codes if codes is not None else watchlist
         if not pool:
             raise MarketValidationError(
-                "分钟线任务需关注池（watchlist 非空；无关注池请保持禁用）"
+                "分钟线任务需关注池或指定代码（watchlist / codes 非空；无范围请保持禁用）"
             )
-        with self._db.connect() as con:
-            row = con.execute("SELECT max(bar_start) FROM k_line_minute").fetchone()
-        start = (row[0][:10] if row and row[0] else "1990-01-01")
-        end = _now().date().isoformat()
+        window_end = end or _now().date().isoformat()
+        if start is not None:
+            window_start = start
+        else:
+            with self._db.connect() as con:
+                row = con.execute("SELECT max(bar_start) FROM k_line_minute").fetchone()
+            window_start = (row[0][:10] if row and row[0] else "1990-01-01")
         total = 0
         for frequency in ("5", "15", "30", "60"):
             for code in pool:
                 fields, rows = self._via_gateway(
                     "bs_k_minute",
                     lambda code=code, frequency=frequency: self._fetcher.k_minute(
-                        code, frequency, start, end),
+                        code, frequency, window_start, window_end),
                     timeout_ms=timeout_ms, cancel=cancel,
                 )
                 mapped = map_k_minute(fields, rows, frequency)
@@ -861,9 +872,10 @@ class BaoStockSync:
 
     def _load_adjust_factor(self, codes: list[str] | None,
                             timeout_ms: int, cancel, *, start: str | None = None,
+                            end: str | None = None,
                             batch_size: int | None = None,
                             ) -> tuple[int, str | None, None]:
-        end = _now().date().isoformat()
+        window_end = end or _now().date().isoformat()
         window_start = start or "1990-01-01"   # 本任务无水位（05），缺省＝基线起点
         total = 0
         writer = _BatchWriter(self._write_adjust_factor, batch_size)
@@ -871,7 +883,7 @@ class BaoStockSync:
             fields, rows = self._via_gateway(
                 "bs_adjust_factor",
                 lambda code=code: self._fetcher.adjust_factor(
-                    code, window_start, end),
+                    code, window_start, window_end),
                 timeout_ms=timeout_ms, cancel=cancel,
             )
             mapped = map_adjust_factor(fields, rows)
@@ -897,9 +909,10 @@ class BaoStockSync:
 
     def _load_dividend(self, watermark: str | None, codes: list[str] | None,
                        timeout_ms: int, cancel, *, start: str | None = None,
+                       end: str | None = None,
                        batch_size: int | None = None,
                        ) -> tuple[int, str | None, None]:
-        years = _dividend_years(watermark, start)
+        years = _dividend_years(watermark, start, end)
         total = 0
         writer = _BatchWriter(self._write_dividend, batch_size)
         for code in self._codes(codes):
@@ -913,7 +926,7 @@ class BaoStockSync:
                 writer.add(mapped)
                 total += len(mapped)
         writer.flush()
-        return (total, "+".join(years), None)
+        return (total, "+".join(years) if years else watermark, None)
 
     def _write_dividend(self, mapped: list[tuple]) -> None:
         """写一批分红行：有操作日期的走 UPSERT，无操作日期的按公告日判重后插入。"""
@@ -964,8 +977,20 @@ class BaoStockSync:
 
     def _load_financial(self, codes: list[str] | None,
                         timeout_ms: int, cancel, *,
+                        start: str | None = None, end: str | None = None,
                         quarters: int | None = None) -> tuple[int, str | None, None]:
-        plan = last_n_quarters(quarters) if quarters else last_n_quarters(8)
+        if start is not None:
+            plan = _quarters_between(
+                start, end or _now().date().isoformat()
+            )
+        elif end is not None:
+            # 只给终点时按「最近 N 季度中不晚于终点者」取，不从 1990 起扫全历史。
+            plan = [
+                (year, quarter) for year, quarter in last_n_quarters(quarters or 8)
+                if f"{year}-{quarter * 3:02d}" <= end[:7]
+            ]
+        else:
+            plan = last_n_quarters(quarters) if quarters else last_n_quarters(8)
         merged: dict[tuple[str, str], dict[str, Any]] = {}
         for year, quarter in plan:
             for which in ("profit", "operation", "growth", "balance", "cash", "dupont"):
@@ -1008,16 +1033,19 @@ class BaoStockSync:
 
     def _load_express(self, watermark: str | None, codes: list[str] | None,
                       timeout_ms: int, cancel, *, start: str | None = None,
+                      end: str | None = None,
                       batch_size: int | None = None,
                       ) -> tuple[int, str | None, None]:
-        window_start, end = self._window("bs_perf_express", watermark, start)
+        window_start, window_end = self._window(
+            "bs_perf_express", watermark, start, end
+        )
         total = 0
         writer = _BatchWriter(self._write_express, batch_size)
         for code in self._codes(codes):
             fields, rows = self._via_gateway(
                 "bs_perf_express",
                 lambda code=code: self._fetcher.performance_express(
-                    code, window_start, end),
+                    code, window_start, window_end),
                 timeout_ms=timeout_ms, cancel=cancel,
             )
             mapped = map_performance_express(fields, rows)
@@ -1044,15 +1072,18 @@ class BaoStockSync:
 
     def _load_forecast(self, watermark: str | None, codes: list[str] | None,
                        timeout_ms: int, cancel, *, start: str | None = None,
+                       end: str | None = None,
                        batch_size: int | None = None,
                        ) -> tuple[int, str | None, None]:
-        window_start, end = self._window("bs_forecast", watermark, start)
+        window_start, window_end = self._window(
+            "bs_forecast", watermark, start, end
+        )
         total = 0
         writer = _BatchWriter(self._write_forecast, batch_size)
         for code in self._codes(codes):
             fields, rows = self._via_gateway(
                 "bs_forecast",
-                lambda code=code: self._fetcher.forecast(code, window_start, end),
+                lambda code=code: self._fetcher.forecast(code, window_start, window_end),
                 timeout_ms=timeout_ms, cancel=cancel,
             )
             mapped = map_forecast(fields, rows)
@@ -1236,6 +1267,38 @@ class BaoStockSync:
         return []
 
 
+def _validate_window(start: str | None, end: str | None) -> str:
+    """显式窗口的形状与顺序校验（空串＝通过；[D-130]）。"""
+    for label, value in (("起点", start), ("终点", end)):
+        if value is None:
+            continue
+        try:
+            date.fromisoformat(value)
+        except ValueError:
+            return f"显式窗口{label}须为 YYYY-MM-DD，实际 {value!r}"
+    if start is not None and end is not None and start > end:
+        return f"显式窗口起点 {start} 晚于终点 {end}"
+    return ""
+
+
+def _quarters_between(start: str, end: str) -> list[tuple[int, int]]:
+    """区间覆盖的季度（含两端所在季度，oldest → newest；[D-130]）。
+
+    季度财务按 ``(year, quarter)`` 逐次请求，故区间只需覆盖到季度粒度；
+    单季内部的起止日由源端按季度返回，不另行裁剪。
+    """
+    first, last = date.fromisoformat(start), date.fromisoformat(end)
+    year, quarter = first.year, (first.month - 1) // 3 + 1
+    last_year, last_quarter = last.year, (last.month - 1) // 3 + 1
+    out: list[tuple[int, int]] = []
+    while (year, quarter) <= (last_year, last_quarter):
+        out.append((year, quarter))
+        quarter += 1
+        if quarter == 5:
+            quarter, year = 1, year + 1
+    return out
+
+
 def _load_k_period_start(watermark: str | None) -> str:
     """周月线拉取起点（水位串 ``w:<d>,m:<d>`` 取较早者；缺失 → 基线起点）。"""
     if not watermark:
@@ -1252,17 +1315,20 @@ def _load_k_period_start(watermark: str | None) -> str:
         return "1990-12-19"
 
 
-def _dividend_years(watermark: str | None, start: str | None) -> list[str]:
+def _dividend_years(watermark: str | None, start: str | None,
+                    end: str | None = None) -> list[str]:
     """分红拉取年份（降序）。
 
-    给出显式起点时按「起点年 → 今年」；否则走水位年份（``2024+2025`` 形），
-    水位缺失＝今年与前一年（与既有口径一致）。
+    给出显式起点时按「起点年 → 终点年（缺省今年）」；否则走水位年份
+    （``2024+2025`` 形），水位缺失＝今年与前一年（与既有口径一致）。
+    终点只为裁剪，不改水位语义；裁剪后为空＝本次区间内无年份可拉。
     """
+    last_year = int(end[:4]) if end else _now().year
     if start is not None:
         first = int(start[:4])
-        return [str(y) for y in range(_now().year, first - 1, -1)]
+        return [str(y) for y in range(last_year, first - 1, -1)]
     years = sorted({y.strip() for y in (watermark or "").split("+")
                     if y.strip().isdigit()}, reverse=True)
     if years:
-        return years
-    return [str(_now().year), str(_now().year - 1)]
+        return [y for y in years if int(y) <= last_year]
+    return [str(last_year), str(last_year - 1)]

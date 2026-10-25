@@ -66,6 +66,7 @@ from st_agent.l5.errors import ChannelNotWiredError, L5Error
 from st_agent.l5.fatigue import ANSWERS as FATIGUE_ANSWERS
 
 from st_agent.ui.envelope import envelope_payload
+from st_agent.ui.data_catalog import catalog_payload, domain_label, table_label, task_label
 from st_agent.ui.errors import DevSurfaceUnavailable
 from st_agent.ui.neutrality_gate import NeutralityGate
 from st_agent.ui.registry import slot_gaps
@@ -1059,7 +1060,9 @@ _KIND_LABELS = {
 """两份取值面共用一张表：端点 `kind`（cloud / local）与出网请求类目（`NetworkRequestKind`）。"""
 
 _STATUS_LABELS = {
-    "ok": "完成", "unavailable": "不可用", "failed": "失败", "cancelled": "已取消",
+    "ok": "完成", "empty": "空", "partial": "部分完成",
+    "unavailable": "不可用", "failed": "失败", "cancelled": "已取消",
+    "validation_failed": "请求不合法", "dependency_failed": "前置未就绪",
 }
 """出网结果 / 六态 → 中性中文。"""
 
@@ -1069,9 +1072,59 @@ _SYNC_STATUS_LABELS = {
 """`sync_state.last_status` → 中性中文；缺行由调用方呈现为「未同步」。"""
 
 _SYNC_JOB_LABELS = {
-    "running": "进行中", "done": "已完成", "failed": "失败",
+    "running": "进行中", "done": "已完成", "failed": "失败", "cancelled": "已取消",
 }
-"""手动同步批次状态 → 中性中文（[D-129]）。"""
+"""手动同步批次状态 → 中性中文（[D-129] / [D-130]）。"""
+
+
+def _task_name(key: Any) -> str:
+    """任务键 → 中文名（目录词表；未知键回退原键，不伪造）。"""
+    text = str(key or "")
+    return task_label(text)[0] if text else ""
+
+
+def _optional_text(value: Any) -> str | None:
+    """请求体里的可选字符串（表单可能给空串 / null / 非字符串）。"""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def _st_scope_line(st: Any) -> str:
+    """总览里的 ST 池一行（可用 / 空 / 缺视图三态显式）。"""
+    if not isinstance(st, dict) or not st:
+        return "—"
+    if not st.get("available"):
+        return f"不可用：{st.get('reason') or '未知原因'}"
+    count = int(st.get("count") or 0)
+    if not count:
+        return str(st.get("reason") or "空（需先同步证券主档与日线行情）")
+    return f"{count} 只（数据截止 {st.get('as_of') or '—'}）"
+
+
+def _watch_scope_line(watch: Any) -> str:
+    """总览里的关注池一行。"""
+    if not isinstance(watch, dict) or not watch:
+        return "—"
+    count = int(watch.get("count") or 0)
+    if not count:
+        return str(watch.get("reason") or "空（持仓 + 关注均无证券）")
+    return f"{count} 只"
+
+
+def _job_scope_text(job: Mapping[str, Any]) -> str:
+    """批次的证券范围一行（[D-130]）。"""
+    scope = job.get("scope")
+    if not isinstance(scope, dict):
+        return "全市场" if not scope else str(scope)
+    kind = scope.get("scope")
+    if kind == "st":
+        return f"仅 ST（{scope.get('count')} 只，数据截止 {scope.get('as_of') or '—'}）"
+    if kind == "watchlist":
+        return f"仅关注池（{scope.get('count')} 只）"
+    count = scope.get("count")
+    return f"全市场（{count if count is not None else '—'} 只在市）"
 
 
 def _llm_boot_values(face: Any) -> dict[str, Any]:
@@ -2574,10 +2627,43 @@ class UiApp:
         """发起手动同步（显式动作；后台线程执行，立即返回 ``job_id``）。"""
         raw = body.get("task_keys")
         keys = [str(item) for item in raw] if isinstance(raw, list) else []
+        start = _optional_text(body.get("start"))
+        end = _optional_text(body.get("end"))
+        scope = _optional_text(body.get("scope")) or "market"
         face = None if self.settings is None else getattr(self.settings, "data_sync", None)
         return self._call_face(
             "settings-data-sync", face, "L0 数据同步面",
-            lambda sync: sync.start(keys),
+            lambda sync: sync.start(keys, start=start, end=end, scope=scope),
+        )
+
+    def api_settings_data_job(self) -> dict[str, Any]:
+        """轻量批次快照（运行中轮询用；不读表行数、不做整库统计；[D-130]）。"""
+        face = None if self.settings is None else getattr(self.settings, "data_sync", None)
+        return self._call_face(
+            "settings-data-job", face, "L0 数据同步面",
+            lambda sync: ResultEnvelope.ok({"job": sync.job() or {}}),
+        )
+
+    def api_settings_data_preflight(self, body: dict[str, Any]) -> dict[str, Any]:
+        """发起前预检：执行顺序 / 自动补入 / 范围解析 / 忽略项 / 警告（[D-130]）。"""
+        raw = body.get("task_keys")
+        keys = [str(item) for item in raw] if isinstance(raw, list) else []
+        start = _optional_text(body.get("start"))
+        end = _optional_text(body.get("end"))
+        scope = _optional_text(body.get("scope")) or "market"
+        face = None if self.settings is None else getattr(self.settings, "data_sync", None)
+        return self._call_face(
+            "settings-data-preflight", face, "L0 数据同步面",
+            lambda sync: sync.preflight(keys, start=start, end=end, scope=scope),
+        )
+
+    def api_settings_data_sync_cancel(self, body: dict[str, Any]) -> dict[str, Any]:
+        """请求停止当前批次（任务间与网关调用前后生效；[D-130]）。"""
+        _ = body
+        face = None if self.settings is None else getattr(self.settings, "data_sync", None)
+        return self._call_face(
+            "settings-data-sync-cancel", face, "L0 数据同步面",
+            lambda sync: sync.cancel(),
         )
 
     def api_settings_store_relocate(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -2974,12 +3060,19 @@ class UiApp:
         )
 
     def _data_parts(self, face: Any) -> dict[str, Any]:
-        """数据同步页的四段（[02 §5]；[D-129]）。"""
+        """数据同步页的四段（[02 §5]；[D-129] / [D-130]）。"""
         overview = face.data_sync.overview()
         meta = overview["summary"]
+        scope = overview.get("scope") or meta.get("scope") or {}
+        catalog = catalog_payload(overview["tasks"])
+        items = list(catalog["items"])
+        ok_items = sum(1 for item in items if item["status"] == "ok")
         sections = [
             {"title": "本地市场库", "lines": [
                 "已建立" if meta["db_exists"] else "尚未建立（首次同步未完成）"
+            ]},
+            {"title": "数据项", "lines": [
+                f"{ok_items} / {len(items)} 个数据项最近一次成功"
             ]},
             {"title": "同步任务", "lines": [
                 f"{meta['ok_task_count']} / {meta['task_count']} 个任务最近一次成功"
@@ -2989,56 +3082,67 @@ class UiApp:
                  if meta["db_exists"]
                  else f"0 张（尚未建库；任务覆盖 {meta.get('covered_table_count', 0)} 张表）")
             ]},
-            {"title": "最后成功", "lines": [meta["last_success_at"] or "—"]},
+            {"title": "ST 股票池", "lines": [_st_scope_line(scope.get("st"))]},
+            {"title": "关注池", "lines": [_watch_scope_line(scope.get("watchlist"))]},
+            {"title": "最后成功", "lines": [
+                _short_stamp(meta["last_success_at"])
+                if meta["last_success_at"] else "—"
+            ]},
         ]
         if meta["note"]:
             sections.append({"title": "提示", "lines": [meta["note"]]})
+        summary_values = {
+            **meta,
+            "catalog": {"item_count": len(items), "ok_item_count": ok_items},
+        }
         summary = self._part(
             "report_card",
-            slots={"sections": sections, "values": meta},
+            slots={"sections": sections, "values": summary_values},
             text_kinds={"sections": "data", "values": "data"},
             title="数据总览",
         )
-        task_rows = [
+        item_rows = [
             {
-                "task_key": task["task_key"],
+                "item": f"{item['category_label']} · {item['display_name']}",
                 "tables": "、".join(
-                    f"{item['table']}（{item['rows'] if item['rows'] is not None else '—'}）"
-                    for item in task["table_rows"]
+                    f"{table['display_name']}"
+                    f"（{table['rows'] if table['rows'] is not None else '—'}）"
+                    for table in item["tables"]
                 ),
                 "status": (
-                    _SYNC_STATUS_LABELS.get(str(task["status"]), str(task["status"]))
-                    if task["status"] else "未同步"
+                    _SYNC_STATUS_LABELS.get(str(item["status"]), str(item["status"]))
+                    if item["status"] else "未同步"
                 ),
                 "last_success": (
                     "—"
-                    if not task["last_success_at"] and not task["watermark"]
-                    else f"{_short_stamp(task['last_success_at'])}"
-                         f" · 水位 {str(task['watermark'])[:20] if task['watermark'] else '—'}"
+                    if not item["last_success_at"] and not item["watermark"]
+                    else f"{_short_stamp(item['last_success_at'])}"
+                         f" · 水位 {str(item['watermark'])[:20] if item['watermark'] else '—'}"
                 ),
             }
-            for task in overview["tasks"]
+            for item in items
         ]
         tasks = self._part(
             "table",
             slots={**table_slots(
                 (
-                    Column("task_key", "任务"),
+                    Column("item", "数据项"),
                     Column("tables", "目标表（行数）"),
                     Column("status", "状态"),
                     Column("last_success", "最近成功 · 水位"),
                 ),
-                task_rows,
-            ), "values": overview["tasks"]},
+                item_rows,
+            ), "values": catalog},
             text_kinds={**table_text_kinds(), "values": "data"},
-            title="同步任务与状态",
+            title="数据项与状态",
         )
         table_rows = [
             {
                 "table": item["table"],
+                "display_name": table_label(item["table"])[0],
+                "description": table_label(item["table"])[1],
                 "rows": item["rows"],
-                "domains": "、".join(item["domains"]),
-                "tasks": "、".join(item["tasks"]),
+                "domains": "、".join(domain_label(domain) for domain in item["domains"]),
             }
             for item in overview["tables"]
         ]
@@ -3047,15 +3151,15 @@ class UiApp:
                 "table",
                 slots=table_slots(
                     (
-                        Column("table", "数据表"),
+                        Column("display_name", "数据表"),
+                        Column("description", "说明"),
                         Column("rows", "行数", "number", digits=0),
                         Column("domains", "所属域"),
-                        Column("tasks", "写入任务"),
                     ),
                     table_rows,
                 ),
                 text_kinds=table_text_kinds(),
-                title="本机数据清单",
+                title="本机数据明细",
             )
             if table_rows
             else envelope_payload(ResultEnvelope.empty(
@@ -3070,21 +3174,55 @@ class UiApp:
             done = sum(
                 1 for item in job["results"].values()
                 if item.get("status") in ("ok", "empty", "unavailable", "failed",
-                                          "validation_failed", "dependency_failed")
+                                          "validation_failed", "dependency_failed",
+                                          "cancelled")
             )
             job_lines = [
                 f"批次 {job['job_id']}：{_SYNC_JOB_LABELS.get(job['state'], job['state'])}",
                 f"进度：{done} / {len(job['order'])}",
-                f"当前任务：{job['current'] or '—'}",
+                f"当前任务：{_task_name(job.get('current')) or '—'}",
+                f"本次范围：{_job_scope_text(job)}",
             ]
+            if job.get("start") or job.get("end"):
+                job_lines.append(
+                    f"本次区间：{job.get('start') or '（按水位）'} → "
+                    f"{job.get('end') or '今日'}"
+                )
             if job.get("auto_added"):
-                job_lines.append(f"自动补入前置：{'、'.join(job['auto_added'])}")
+                job_lines.append(
+                    "自动补入前置：" + "、".join(
+                        _task_name(key) for key in job["auto_added"]
+                    )
+                )
+            if job.get("range_ignored"):
+                job_lines.append(
+                    "忽略日期区间：" + "、".join(
+                        _task_name(key) for key in job["range_ignored"]
+                    )
+                )
+            if job.get("scope_ignored"):
+                job_lines.append(
+                    "始终全市场：" + "、".join(
+                        _task_name(key) for key in job["scope_ignored"]
+                    )
+                )
             if job.get("error"):
                 job_lines.append(f"批次错误：{job['error']}")
             for key, result in job["results"].items():
                 reason = f"（{result['reason']}）" if result.get("reason") else ""
+                rows = (
+                    f" · {result['rows']} 行"
+                    if result.get("rows") is not None else ""
+                )
+                took = (
+                    f" · {result['duration_ms']} ms"
+                    if result.get("duration_ms") is not None else ""
+                )
+                status = _STATUS_LABELS.get(
+                    str(result.get("status")), str(result.get("status"))
+                )
                 job_lines.append(
-                    f"{key}：{_STATUS_LABELS.get(str(result.get('status')), str(result.get('status')))}{reason}"
+                    f"{_task_name(key)}（{key}）：{status}{rows}{took}{reason}"
                 )
             job_values = job
         job_part = self._part(
@@ -3094,7 +3232,7 @@ class UiApp:
                 "values": job_values,
             },
             text_kinds={"sections": "data", "values": "data"},
-            title="手动同步",
+            title="最近一次同步",
         )
         return {
             "summary": summary, "tasks": tasks, "tables": tables, "job": job_part,

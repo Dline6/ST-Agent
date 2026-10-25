@@ -1,8 +1,13 @@
 """同步任务注册表（数据库设计 05 同步任务清单的机器可读副本）。
 
-19 个任务逐一登记：``task_key`` / 目标表 / 同步模式 / 触发节奏（人类可读）/
+20 个任务逐一登记：``task_key`` / 目标表 / 同步模式 / 触发节奏（人类可读）/
 前置依赖 / 默认禁用（分钟线）。``sync_state`` 的种子行由此生成——
 任务清单只此一处，05 文档修订时同步此处（反向亦然，收工自检覆盖行数）。
+
+能力位（2026-10-25 追加，[D-130]）：
+- ``per_code``：该任务接受证券范围（``codes``），仅逐码任务为真；
+- ``supports_range``：该任务接受显式 ``[start, end]``，全量 / 快照任务为假；
+- ``window_desc``：缺省窗口的人类可读说明（目录与预检展示，不参与取数）。
 
 水位语义（05「水位语义」列）：
 - ``bs_all_stock``：最近已拉交易日
@@ -53,38 +58,72 @@ class TaskSpec(NamedTuple):
     needs: tuple[str, ...] = ()
     """触发前置（行情/财务任务要求日历与全量快照当日已成功，05 时序前置）。"""
     default_disabled: bool = False
+    per_code: bool = False
+    """是否接受证券范围（``codes``）；仅逐码任务为真（[D-130]）。"""
+    supports_range: bool = False
+    """是否接受显式 ``[start, end]``；全量 / 快照任务为假（[D-130]）。"""
+    window_desc: str = ""
+    """缺省窗口的人类可读说明（目录与预检展示，不参与取数）。"""
 
 
 _CAL_FIN_NEEDS = ("bs_calendar", "bs_all_stock")
 
 SYNC_TASKS: tuple[TaskSpec, ...] = (
-    TaskSpec("bs_calendar", "trade_calendar", "full", "每年初全量；每季度校验"),
-    TaskSpec("bs_security_basic", "security", "full", "首次全量；此后每周全量 UPSERT"),
-    TaskSpec("bs_all_stock", "security", "incremental", "每交易日（数据可用后）"),
-    TaskSpec("bs_k_daily", "k_line_daily", "incremental", "每交易日", _CAL_FIN_NEEDS),
+    TaskSpec("bs_calendar", "trade_calendar", "full", "每年初全量；每季度校验",
+             window_desc="全量对账"),
+    TaskSpec("bs_security_basic", "security", "full", "首次全量；此后每周全量 UPSERT",
+             window_desc="全量主档（股票 / 指数 / 可转债 / ETF）"),
+    TaskSpec("bs_all_stock", "security", "incremental", "每交易日（数据可用后）",
+             window_desc="指定交易日（默认今日）"),
+    TaskSpec("bs_k_daily", "k_line_daily", "incremental", "每交易日", _CAL_FIN_NEEDS,
+             per_code=True, supports_range=True,
+             window_desc="水位次日至今日；可指定起止区间"),
     TaskSpec("bs_k_period", "k_line_period", "incremental",
-             "每周（周线）/每月（月线）最后交易日", _CAL_FIN_NEEDS),
+             "每周（周线）/每月（月线）最后交易日", _CAL_FIN_NEEDS,
+             per_code=True, supports_range=True,
+             window_desc="水位次日至今日（按周期末过滤）；可指定起止区间"),
     TaskSpec("bs_k_minute", "k_line_minute", "incremental",
-             "默认禁用，仅关注池证券按需启用", _CAL_FIN_NEEDS, True),
+             "默认禁用，仅关注池或指定代码按需启用", _CAL_FIN_NEEDS, True,
+             per_code=True, supports_range=True,
+             window_desc="按关注池或指定代码增量；可指定起止区间"),
     TaskSpec("bs_adjust_factor", "adjust_factor", "upsert_window",
-             "每周 + 关注池事件驱动", _CAL_FIN_NEEDS),
+             "每周 + 关注池事件驱动", _CAL_FIN_NEEDS,
+             per_code=True, supports_range=True,
+             window_desc="无水位，默认基线起点至今日；可指定起止区间"),
     TaskSpec("bs_dividend", "dividend", "upsert_window",
-             "每周（按年度拉取：当年 + 前 1 年）", _CAL_FIN_NEEDS),
+             "每周（按年度拉取：当年 + 前 1 年）", _CAL_FIN_NEEDS,
+             per_code=True, supports_range=True,
+             window_desc="当年 + 前 1 年；指定区间按年份展开"),
     TaskSpec("bs_fin_quarter", "financial_quarter", "upsert_window",
-             "每周（重拉最近 8 个季度）", _CAL_FIN_NEEDS),
+             "每周（重拉最近 8 个季度）", _CAL_FIN_NEEDS,
+             per_code=True, supports_range=True,
+             window_desc="最近 8 个季度；可指定起止区间"),
     TaskSpec("bs_perf_express", "performance_express", "upsert_window",
-             "每周（重拉最近 24 个月）", _CAL_FIN_NEEDS),
+             "每周（重拉最近 24 个月）", _CAL_FIN_NEEDS,
+             per_code=True, supports_range=True,
+             window_desc="最近 24 个月；可指定起止区间"),
     TaskSpec("bs_forecast", "profit_forecast", "upsert_window",
-             "每周（重拉最近 24 个月）", _CAL_FIN_NEEDS),
-    TaskSpec("bs_industry", "stock_industry", "snapshot", "每周一"),
-    TaskSpec("bs_sz50", "index_constituent", "snapshot", "每周一"),
-    TaskSpec("bs_hs300", "index_constituent", "snapshot", "每周一"),
-    TaskSpec("bs_zz500", "index_constituent", "snapshot", "每周一"),
-    TaskSpec("bs_macro_deposit", "macro_deposit_rate", "full", "每周（量小，全量对账）"),
-    TaskSpec("bs_macro_loan", "macro_loan_rate", "full", "每周"),
-    TaskSpec("bs_macro_reserve", "macro_reserve_ratio", "full", "每周"),
-    TaskSpec("bs_money_month", "macro_money_supply_month", "full", "每月"),
-    TaskSpec("bs_money_year", "macro_money_supply_year", "full", "每年"),
+             "每周（重拉最近 24 个月）", _CAL_FIN_NEEDS,
+             per_code=True, supports_range=True,
+             window_desc="最近 24 个月；可指定起止区间"),
+    TaskSpec("bs_industry", "stock_industry", "snapshot", "每周一",
+             window_desc="每周快照"),
+    TaskSpec("bs_sz50", "index_constituent", "snapshot", "每周一",
+             window_desc="每周快照"),
+    TaskSpec("bs_hs300", "index_constituent", "snapshot", "每周一",
+             window_desc="每周快照"),
+    TaskSpec("bs_zz500", "index_constituent", "snapshot", "每周一",
+             window_desc="每周快照"),
+    TaskSpec("bs_macro_deposit", "macro_deposit_rate", "full", "每周（量小，全量对账）",
+             window_desc="全量对账"),
+    TaskSpec("bs_macro_loan", "macro_loan_rate", "full", "每周",
+             window_desc="全量对账"),
+    TaskSpec("bs_macro_reserve", "macro_reserve_ratio", "full", "每周",
+             window_desc="全量对账"),
+    TaskSpec("bs_money_month", "macro_money_supply_month", "full", "每月",
+             window_desc="按月至今日全量"),
+    TaskSpec("bs_money_year", "macro_money_supply_year", "full", "每年",
+             window_desc="按年至今日全量"),
 )
 
 TASK_KEYS: tuple[str, ...] = tuple(t.task_key for t in SYNC_TASKS)

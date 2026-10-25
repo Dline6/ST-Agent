@@ -85,6 +85,45 @@ _META_TABLES: frozenset[str] = frozenset({
 """非业务表（总览的「逐表行数」不计入）。"""
 
 
+def _st_pool_unavailable(reason: str) -> dict[str, Any]:
+    """ST 池不可用（缺库 / 缺视图 / 读失败）的统一形状（[D-130]）。"""
+    return {
+        "available": False, "codes": (), "count": 0, "as_of": None, "reason": reason,
+    }
+
+
+def _st_pool_in(con: sqlite3.Connection, *, include_codes: bool) -> dict[str, Any]:
+    """一次只读连接内的 ST 池解析（在市 × 最新日线 ``is_st=1``）。"""
+    try:
+        view = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='view' AND name='v_st_universe'"
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        return _st_pool_unavailable(f"ST 池读取失败：{exc}")
+    if view is None:
+        return _st_pool_unavailable(
+            "本地库缺少 v_st_universe 视图（旧 schema；需重建库或升级）"
+        )
+    try:
+        codes = tuple(
+            r[0] for r in con.execute(
+                "SELECT code FROM v_st_universe ORDER BY code"
+            ).fetchall()
+        )
+        row = con.execute("SELECT max(trade_date) FROM k_line_daily").fetchone()
+        as_of = row[0] if row and row[0] else None
+    except sqlite3.OperationalError as exc:
+        return _st_pool_unavailable(f"ST 池读取失败：{exc}")
+    return {
+        "available": True,
+        "codes": codes if include_codes else (),
+        "count": len(codes),
+        "as_of": as_of,
+        "reason": "" if codes else "ST 股票池为空（需先同步证券主档与日线行情）",
+    }
+
+
+
 def _now() -> datetime:
     """用户本地时区当前时刻（01 §8：时间统一用用户本地时区存储与展示）。"""
     return datetime.now().astimezone()
@@ -156,13 +195,18 @@ class MarketDb:
         if not self.exists():
             return ()
         with self._readonly() as con:
-            cur = con.execute(
-                "SELECT task_key, table_name, source_id, mode, schedule_desc, watermark,"
-                " last_success_at, last_row_count, last_status, last_error"
-                " FROM sync_state ORDER BY task_key"
-            )
-            columns = [d[0] for d in (cur.description or [])]
-            return tuple(dict(zip(columns, row)) for row in cur.fetchall())
+            return self._sync_state_rows_in(con)
+
+    @staticmethod
+    def _sync_state_rows_in(con: sqlite3.Connection) -> tuple[dict[str, Any], ...]:
+        """一次只读连接内的 ``sync_state`` 全量行（overview 复用）。"""
+        cur = con.execute(
+            "SELECT task_key, table_name, source_id, mode, schedule_desc, watermark,"
+            " last_success_at, last_row_count, last_status, last_error"
+            " FROM sync_state ORDER BY task_key"
+        )
+        columns = [d[0] for d in (cur.description or [])]
+        return tuple(dict(zip(columns, row)) for row in cur.fetchall())
 
     def table_counts(
         self, tables: Iterable[str] | None = None
@@ -177,22 +221,108 @@ class MarketDb:
         if not self.exists():
             return {}
         with self._readonly() as con:
-            existing = {
-                r[0]
-                for r in con.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table'"
-                ).fetchall()
-            }
-            selected = (
-                sorted(existing - _META_TABLES) if tables is None
-                else [name for name in dict.fromkeys(tables) if name in existing]
-            )
-            counts: dict[str, int] = {}
-            for name in selected:
-                quoted = '"' + str(name).replace('"', '""') + '"'
-                row = con.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()
-                counts[str(name)] = int(row[0]) if row else 0
+            return self._counts_in(con, tables)
+
+    @staticmethod
+    def _counts_in(
+        con: sqlite3.Connection, tables: Iterable[str] | None = None
+    ) -> dict[str, int]:
+        """一次只读连接内的逐表行数（``table_counts`` / ``overview_snapshot`` 复用）。"""
+        existing = {
+            r[0]
+            for r in con.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+        selected = (
+            sorted(existing - _META_TABLES) if tables is None
+            else [name for name in dict.fromkeys(tables) if name in existing]
+        )
+        counts: dict[str, int] = {}
+        for name in selected:
+            quoted = '"' + str(name).replace('"', '""') + '"'
+            row = con.execute(f"SELECT COUNT(*) FROM {quoted}").fetchone()
+            counts[str(name)] = int(row[0]) if row else 0
         return counts
+
+    def overview_snapshot(self) -> dict[str, Any]:
+        """数据同步总览的**一次只读连接**快照（[D-130]）。
+
+        一次连接内取齐：``sync_state`` 全量行、全部业务表行数、ST 池规模与数据截止、
+        在市股票数。旧调用方仍可分别用 :meth:`sync_state_rows` / :meth:`table_counts`；
+        总览面用本方法避免整库反复解密。
+        """
+        if not self.exists():
+            return {
+                "states": (),
+                "counts": {},
+                "st": _st_pool_unavailable("本地市场数据库尚未建立"),
+                "listed_count": None,
+            }
+        with self._readonly() as con:
+            states = self._sync_state_rows_in(con)
+            counts = self._counts_in(con)
+            st = _st_pool_in(con, include_codes=True)
+            listed_count = self._listed_count_in(con)
+        return {
+            "states": states,
+            "counts": counts,
+            "st": st,
+            "listed_count": listed_count,
+        }
+
+    def st_pool(self) -> dict[str, Any]:
+        """当前 ST 股票池（``v_st_universe``；含代码集，供范围同步解析）。
+
+        返回 ``{available, codes, count, as_of, reason}``。空池是**可知的可用空集**
+        （``available=True, count=0`` + 原因），缺视图 / 旧库才是 ``available=False``
+        ——两者不得混成同一种空态（[01 §5]）。
+        """
+        if not self.exists():
+            return _st_pool_unavailable("本地市场数据库尚未建立")
+        with self._readonly() as con:
+            return _st_pool_in(con, include_codes=True)
+
+    def preflight_snapshot(self) -> dict[str, Any]:
+        """同步预检的**轻量**快照：``sync_state`` + ST 池 + 在市股票数。
+
+        与 :meth:`overview_snapshot` 的分工：预检只看「首次全量」与范围解析，不需要
+        逐表行数——大库上 ``COUNT(*)`` 很贵，故本方法**不计数业务表**（[D-130]）。
+        """
+        if not self.exists():
+            return {
+                "states": (),
+                "st": _st_pool_unavailable("本地市场数据库尚未建立"),
+                "listed_count": None,
+            }
+        with self._readonly() as con:
+            return {
+                "states": self._sync_state_rows_in(con),
+                "st": _st_pool_in(con, include_codes=True),
+                "listed_count": self._listed_count_in(con),
+            }
+
+    def st_codes(self) -> list[str]:
+        """ST 池代码列表（不可用或空池 → 空列表；调用方先读 :meth:`st_pool` 判原因）。"""
+        return list(self.st_pool()["codes"])
+
+    def listed_stock_count(self) -> int | None:
+        """在市股票数（``security`` 中 ``type=1`` 且 ``status=1``；缺库 / 缺表 → None）。"""
+        if not self.exists():
+            return None
+        with self._readonly() as con:
+            return self._listed_count_in(con)
+
+    @staticmethod
+    def _listed_count_in(con: sqlite3.Connection) -> int | None:
+        try:
+            row = con.execute(
+                "SELECT COUNT(*) FROM security WHERE type=1 AND status=1"
+            ).fetchone()
+            return int(row[0]) if row else 0
+        except sqlite3.OperationalError:
+            return None
+
 
     def last_updated_at(self) -> datetime | None:
         """全库「最后更新时间 T」（``sync_state.last_success_at`` 最大值；无则 None）。"""

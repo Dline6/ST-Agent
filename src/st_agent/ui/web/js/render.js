@@ -134,7 +134,9 @@ export function renderEnvelope(envelope, mount, options = {}) {
     nodes.push(el('p', 'state state--error', `响应缺少该态应展示的项：${missing.join('、')}`));
   }
   const presentationClass = PRESENTATION_CLASS[render.presentation] || 'state--error';
-  nodes.push(el('p', `state ${presentationClass}`, `状态：${envelope.status}`));
+  if (options.status !== false) {
+    nodes.push(el('p', `state ${presentationClass}`, `状态：${envelope.status}`));
+  }
 
   if (envelope.reason) nodes.push(el('p', 'reason', envelope.reason));
   if (envelope.last_updated_at) {

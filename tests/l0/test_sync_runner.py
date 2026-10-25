@@ -20,13 +20,18 @@ def _ok(rows: int = 1) -> ResultEnvelope:
 class FakeMarketSync:
     def __init__(self) -> None:
         self.calls: list[str] = []
+        self.args: dict[str, dict] = {}
         self.fail_on: set[str] = set()
 
     def setup(self) -> ResultEnvelope:
         return _ok()
 
-    def run_task(self, task_key: str, *, enabled=None, watchlist=None, timeout_ms=0):
+    def run_task(
+        self, task_key: str, *, enabled=None, watchlist=None, timeout_ms=0,
+        codes=None, start=None, end=None, cancel=None,
+    ):
         self.calls.append(task_key)
+        self.args[task_key] = {"codes": codes, "start": start, "end": end}
         if task_key in self.fail_on:
             return ResultEnvelope.failed("抓取失败（Fake）", log_ref="fake/ref")
         return _ok()
@@ -50,12 +55,25 @@ def market_db(store, gateway) -> MarketDb:
     return db
 
 
-def _runner(store, gateway, market=None, info=None) -> DataSyncRunner:
+def _mark_st(db: MarketDb) -> None:
+    """给 ``sh.600000`` 落一根 ``is_st=1`` 的最新日线（ST 池解析用）。"""
+    with db.transact() as con:
+        con.execute(
+            "INSERT INTO k_line_daily(code, trade_date, open, high, low, close, preclose,"
+            " volume, amount, turn, trade_status, pct_chg, pe_ttm, pb_mrq, ps_ttm,"
+            " pcf_ncf_ttm, is_st) VALUES ('sh.600000', '2026-10-24', 1, 1, 1, 1, 1,"
+            " 1, 1, 1, 1, 0, 1, 1, 1, 1, 1)"
+        )
+        con.commit()
+
+
+def _runner(store, gateway, market=None, info=None, watchlist=None) -> DataSyncRunner:
     market_sync = market or FakeMarketSync()
     info_sync = info or FakeInfoSync()
     return DataSyncRunner(
         store=store,
         gateway=gateway,
+        watchlist=watchlist,
         market_factory=lambda _db, _gw: (market_sync, lambda: None),
         info_factory=lambda _db, _gw: (info_sync, lambda: None),
     )
@@ -103,9 +121,9 @@ def test_a_second_batch_is_rejected_while_running(store, gateway, market_db):
     release = threading.Event()
 
     class BlockingMarket(FakeMarketSync):
-        def run_task(self, task_key, *, enabled=None, watchlist=None, timeout_ms=0):
+        def run_task(self, task_key, **kwargs):
             release.wait(3)
-            return super().run_task(task_key, enabled=enabled, watchlist=watchlist)
+            return super().run_task(task_key, **kwargs)
 
     runner = _runner(store, gateway, market=BlockingMarket())
     runner.start(["bs_calendar"])
@@ -178,3 +196,152 @@ def test_overview_without_db_reports_zero_existing_tables(store, gateway):
     assert overview["summary"]["covered_table_count"] == 23
     assert overview["summary"]["total_rows"] == 0
     assert overview["summary"]["note"]
+
+
+# ───────────────────── 范围 / 预检 / 取消（[D-130]） ─────────────────────
+
+
+def test_preflight_reports_order_auto_added_and_first_full(store, gateway, market_db):
+    runner = _runner(store, gateway)
+
+    plan = runner.preflight(["bs_k_daily"])
+
+    assert plan["order"][:3] == ["bs_calendar", "bs_all_stock", "bs_k_daily"]
+    assert set(plan["auto_added"]) == {"bs_calendar", "bs_all_stock"}
+    assert plan["errors"] == []
+    assert any(warning["kind"] == "first_full" for warning in plan["warnings"])
+    assert plan["requires_start"] is False
+
+
+def test_range_is_passed_only_to_supporting_tasks(store, gateway, market_db):
+    market = FakeMarketSync()
+    runner = _runner(store, gateway, market=market)
+
+    runner.start(["bs_k_daily", "bs_calendar"], start="2024-01-01", end="2024-01-31")
+    job = _wait(runner)
+
+    assert market.args["bs_k_daily"] == {
+        "codes": None, "start": "2024-01-01", "end": "2024-01-31",
+    }
+    assert market.args["bs_calendar"] == {
+        "codes": None, "start": None, "end": None,
+    }
+    assert "bs_calendar" in job["range_ignored"]
+    assert "bs_all_stock" in job["range_ignored"]
+    assert job["start"] == "2024-01-01" and job["end"] == "2024-01-31"
+
+
+def test_scope_requires_start_and_passes_codes(store, gateway, market_db):
+    _mark_st(market_db)
+    market = FakeMarketSync()
+    runner = _runner(store, gateway, market=market)
+
+    with pytest.raises(SyncJobError, match="起始日期"):
+        runner.start(["bs_k_daily"], scope="st")
+
+    runner.start(["bs_k_daily"], scope="st", start="2024-01-01")
+    job = _wait(runner)
+
+    assert market.args["bs_k_daily"]["codes"] == ["sh.600000"]
+    assert market.args["bs_k_daily"]["start"] == "2024-01-01"
+    assert job["scope"]["scope"] == "st"
+    assert job["scope"]["count"] == 1
+    assert "bs_calendar" in job["scope_ignored"]
+
+
+def test_preflight_marks_requires_start_for_scope(store, gateway, market_db):
+    _mark_st(market_db)
+    runner = _runner(store, gateway)
+
+    plan = runner.preflight(["bs_k_daily"], scope="st")
+
+    assert plan["requires_start"] is True
+    assert any("起始日期" in error for error in plan["errors"])
+
+
+def test_st_scope_rejects_empty_pool(store, gateway, market_db):
+    runner = _runner(store, gateway)
+
+    with pytest.raises(SyncJobError, match="ST"):
+        runner.start(["bs_k_daily"], scope="st", start="2024-01-01")
+
+
+def test_watchlist_scope_uses_injected_watchlist(store, gateway, market_db):
+    market = FakeMarketSync()
+    runner = _runner(
+        store, gateway, market=market, watchlist=lambda: ("sh.600000",)
+    )
+
+    runner.start(["bs_k_daily"], scope="watchlist", start="2024-01-01")
+    job = _wait(runner)
+
+    assert market.args["bs_k_daily"]["codes"] == ["sh.600000"]
+    assert job["scope"] == {
+        "scope": "watchlist", "count": 1, "as_of": None, "reason": "",
+    }
+
+
+def test_watchlist_scope_deduplicates_overlapping_holdings_and_watchlist(
+    store, gateway, market_db,
+):
+    market = FakeMarketSync()
+    runner = _runner(
+        store, gateway, market=market,
+        watchlist=lambda: ("sh.600000", "sh.600000", "sz.000001"),
+    )
+
+    runner.start(["bs_k_daily"], scope="watchlist", start="2024-01-01")
+    _wait(runner)
+
+    assert market.args["bs_k_daily"]["codes"] == ["sh.600000", "sz.000001"]
+
+
+
+def test_cancel_stops_between_tasks_and_keeps_finished_results(store, gateway, market_db):
+    entered = threading.Event()
+    release = threading.Event()
+
+    class SlowMarket(FakeMarketSync):
+        def run_task(self, task_key, **kwargs):
+            entered.set()
+            release.wait(3)
+            return super().run_task(task_key, **kwargs)
+
+    runner = _runner(store, gateway, market=SlowMarket())
+    runner.start(["bs_calendar", "bs_all_stock"])
+    assert entered.wait(2)
+
+    result = runner.cancel()
+    assert result["cancelled"] is True
+    release.set()
+    job = _wait(runner)
+
+    assert job["state"] == "cancelled"
+    assert job["results"]["bs_calendar"]["status"] == "ok"
+    assert job["results"]["bs_all_stock"]["status"] == "cancelled"
+
+
+def test_overview_reports_capabilities_and_scope(store, gateway, market_db):
+    _mark_st(market_db)
+    runner = _runner(store, gateway)
+
+    overview = runner.overview()
+    tasks = {task["task_key"]: task for task in overview["tasks"]}
+
+    assert tasks["bs_k_daily"]["per_code"] is True
+    assert tasks["bs_k_daily"]["supports_range"] is True
+    assert tasks["bs_calendar"]["supports_range"] is False
+    assert overview["scope"]["st"]["count"] == 1
+    assert overview["scope"]["st"]["as_of"] == "2026-10-24"
+    assert "items" not in overview["summary"]
+
+
+def test_invalid_window_is_rejected(store, gateway, market_db):
+    runner = _runner(store, gateway)
+
+    with pytest.raises(SyncJobError, match="晚于"):
+        runner.start(["bs_k_daily"], start="2024-02-01", end="2024-01-01")
+    with pytest.raises(SyncJobError, match="YYYY-MM-DD"):
+        runner.start(["bs_k_daily"], start="2024/01/01")
+    with pytest.raises(SyncJobError, match="证券范围"):
+        runner.start(["bs_k_daily"], scope="unknown")

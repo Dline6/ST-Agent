@@ -97,6 +97,15 @@ class InfoTask(NamedTuple):
     watermark_desc: str = ""
     """水位语义（人类可读，进 05 文档与 ``schedule_desc`` 同列展示）。"""
 
+    per_code: bool = False
+    """是否接受证券范围（``codes``）；信息面任务恒为假（[D-130]）。"""
+
+    supports_range: bool = False
+    """是否接受显式 ``[start, end]``；信息面按水位 / 内置窗口，恒为假（[D-130]）。"""
+
+    window_desc: str = ""
+    """缺省窗口的人类可读说明（目录与预检展示；空＝按水位续跑）。"""
+
     @property
     def written_tables(self) -> tuple[str, ...]:
         return self.tables or (self.table_name,)

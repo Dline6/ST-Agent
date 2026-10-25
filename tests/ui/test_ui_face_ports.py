@@ -63,6 +63,9 @@ _EXPECTED_POST_ROUTES = frozenset({
     "/api/settings/store/relocate",
     "/api/settings/llm/bootstrap",
     "/api/settings/data/sync",
+    # 数据同步范围与运行态（[`T-UI-028.6`] / [`.7`]）：预检与停止都是显式动作。
+    "/api/settings/data/preflight",
+    "/api/settings/data/sync/cancel",
     "/api/settings/convert",
     "/api/settings/backup",
     "/api/settings/restore",
@@ -97,7 +100,8 @@ _EXPECTED_POST_ROUTES = frozenset({
 网络活动导出）；[`T-UI-013`] 新增 3 条（钉住 / 取消钉住 / 重解析）；
 [`T-UI-015.1`] 新增 1 条（Skill 参数落值）、[`T-UI-015.2`] 新增 3 条（MCP 挂载 /
 启停移除与测试 / 逐项批准）、[`T-UI-015.3`] 新增 3 条（版本动作 / 模板 fork / 试跑驱动）；
-[`T-UI-017`] 新增 3 条（生成日报 / 触达配置落值 / 疲劳答复）。
+[`T-UI-017`] 新增 3 条（生成日报 / 触达配置落值 / 疲劳答复）；
+[`T-UI-028.6`] / [`.7`] 新增 2 条（同步预检 / 停止同步）。
 后续各面功能叶在自己的交付里新增写端点时，同批把此处补上。
 """
 

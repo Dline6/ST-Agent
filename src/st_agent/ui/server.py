@@ -126,6 +126,8 @@ _GET_ROUTES: dict[str, Callable[[UiApp, str], dict]] = {
     "/api/settings/storage": lambda app, _q: app.api_settings_storage(),
     "/api/settings/llm": lambda app, _q: app.api_settings_llm(),
     "/api/settings/data": lambda app, _q: app.api_settings_data(),
+    # 轻量批次快照（[D-130]）：运行中轮询只走这一条，不触发整库统计。
+    "/api/settings/data/job": lambda app, _q: app.api_settings_data_job(),
     "/api/settings/sources": lambda app, _q: app.api_settings_sources(),
     "/api/settings/privacy": lambda app, _q: app.api_settings_privacy(),
     "/api/settings/maintenance": lambda app, _q: app.api_settings_maintenance(),
@@ -228,6 +230,10 @@ _POST_ROUTES: dict[str, Callable[[UiApp, dict], dict]] = {
     "/api/settings/store/relocate": lambda app, body: app.api_settings_store_relocate(body),
     "/api/settings/llm/bootstrap": lambda app, body: app.api_settings_llm_bootstrap(body),
     "/api/settings/data/sync": lambda app, body: app.api_settings_data_sync(body),
+    "/api/settings/data/preflight": lambda app, body: app.api_settings_data_preflight(body),
+    "/api/settings/data/sync/cancel": lambda app, body: (
+        app.api_settings_data_sync_cancel(body)
+    ),
     "/api/settings/convert": lambda app, body: app.api_settings_convert(body),
     "/api/settings/backup": lambda app, body: app.api_settings_backup_run(body),
     "/api/settings/restore": lambda app, body: app.api_settings_restore(body),
