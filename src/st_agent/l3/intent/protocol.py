@@ -94,6 +94,22 @@ NO_DIRECTIONS_REASON = "未能确定意图，且理解结果未给出方向候�
 
 UNDERSTANDER_ABSENT_REASON = "未注入意图理解端口，无法把输入收敛为意图（05 §3.1）"
 
+TARGET_UNRESOLVED_REASON = (
+    "未识别到可派发的目标 Skill（05 §3.2）：换一种说法，或用 `/` 开头的快捷指令指定"
+)
+"""目标解析不出时的守门原因（需要单个 Skill 的去向不产确认卡）。"""
+
+TARGET_REQUIRED_INTENTS: frozenset[str] = frozenset({"query", "configure"})
+"""派发目标是**单个 Skill** 的去向（[05 §3.1](../../../../docs/技术架构-v2/05-L3-对话主入口.md)
+表的 `query` / `configure`）——目标未解析出即**不可派发**，故走 §3.2 的可派发性守门。"""
+
+MATCH_MIN_OVERLAP = 2
+"""目标补位的最低重叠数（字符 bigram，口径同 :meth:`~st_agent.l1.runner.SkillRunner.match`）。
+
+**这是「宁缺毋滥」的阈值**：取 1 会让两字查询撞上任意含同字的能力；取 2 时
+「帮我同步ST股票名单」对 `sk_st_list_sync` 的重叠为 3、对其余技能全为 0（实测）。
+"""
+
 UNSPECIFIED_LABEL = "未指定"
 """参数既无给出值也无默认值时的展示标签（生成文案，过 §6）。"""
 
@@ -102,10 +118,19 @@ SOURCE_LABELS: dict[str, str] = {
     "stated": "用户给出",
     "shortcut": "指令预填",
     "default": "默认值",
+    "matched": "匹配",
+    "unused": "未采用",
 }
-"""取值来源的展示标签（生成文案，逐条过 §6）。"""
+"""取值来源的展示标签（生成文案，逐条过 §6）。
 
-ValueSource = Literal["intent", "stated", "shortcut", "default"]
+``matched`` ＝ 目标由本层的**确定性匹配**补出（非理解端口给出）；``unused`` ＝
+理解端口抽出、但目标描述体与意图级声明**均未**登记的参数——不进 ``values``，
+在卡上显式呈现而不静默丢弃（[05 §3.2](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+"""
+
+ValueSource = Literal[
+    "intent", "stated", "shortcut", "default", "matched", "unused"
+]
 
 INTENT_TARGETS: dict[str, str] = {
     "query": "L1 Skill 调用 → 结果渲染",
@@ -184,6 +209,12 @@ class IntentDraft(BaseModel):
     reason: str | None = None
     via_shortcut: str | None = None
     """命中的快捷指令名（§8 短路来源；非空即「预置意图模板」路径）。"""
+    via_matcher: bool = False
+    """``target`` 由本层的**确定性匹配**补出（非理解端口给出）。
+
+    只在 ``query`` / ``configure`` 且理解端口给不出可用目标时置真——确认卡据此把
+    来源标为「匹配」，用户可看出这是推导结果而非原话（[05 §3.1] 的「目标 Skill 的解析」）。
+    """
 
     @model_validator(mode="after")
     def _draft_shape(self) -> "IntentDraft":
@@ -315,10 +346,10 @@ class IntentProtocol:
     :param understander: 注入的理解端口（鸭子类型 ``understand(text) -> ResultEnvelope``）；
         缺省 ``None`` → 文本路径 fail-closed（``unavailable``），**不硬猜**
     :param commands: 快捷指令注册表（§8 短路来源）
-    :param matcher: 目标匹配口（鸭子类型 ``match(query) -> SkillDescriptor | None``，
-        如 L1 的 ``SkillRunner``）
+    :param matcher: 目标匹配口（鸭子类型 ``match(query, *, min_overlap=1) -> SkillDescriptor | None``，
+        如 L1 的 ``SkillRunner``）——快捷指令路径与目标补位共用（[05 §3.1]）
     :param descriptors: 描述体取数口（鸭子类型 ``get(skill_id) -> SkillDescriptor``，
-        如 L1 的 ``SkillRegistry``）——澄清问项与默认值的来源
+        如 L1 的 ``SkillRegistry``）——**目标存在性判定**、澄清问项与默认值的来源
     :param guard: 中性规则库守卫（缺省用默认规则库；**无**关闭开关）
     """
 
@@ -368,7 +399,8 @@ class IntentProtocol:
             return ResultEnvelope.dependency_failed(
                 "意图理解端口返回的载荷不是 IntentDraft"
             )
-        return ResultEnvelope.ok(self._filled(result.data), as_of=result.as_of)
+        draft = self._resolved(result.data, raw)
+        return ResultEnvelope.ok(self._filled(draft), as_of=result.as_of)
 
     def _from_command(self, raw: str) -> ResultEnvelope:
         """§8 短路：命中指令直接取意图模板与参数预填（已预填参数不再追问）。"""
@@ -404,14 +436,70 @@ class IntentProtocol:
                 s.name for s in specs if s.name not in draft.understood
             ),
             directions=draft.directions, reason=draft.reason,
+            via_shortcut=draft.via_shortcut, via_matcher=draft.via_matcher,
+        )
+
+    def _resolved(self, draft: IntentDraft, raw: str) -> IntentDraft:
+        """解析派发目标（[05 §3.1] 的「目标 Skill 的解析」）。
+
+        需要单个 Skill 的去向（`query` / `configure`）在理解端口给不出**可用**目标时，
+        对**用户原话**做一次 best-1 确定性匹配补位；补不出即把目标留空——确认卡由
+        :meth:`undispatchable` / :meth:`withheld_round` 守门，**不把失败推到派发**。
+        """
+        if draft.intent not in TARGET_REQUIRED_INTENTS:
+            return draft
+        target = (draft.target or "").strip()
+        if target and self._registered(target):
+            return draft
+        matched = self._match(raw, min_overlap=MATCH_MIN_OVERLAP)
+        if matched and self._registered(matched):
+            return draft.model_copy(
+                update={"target": matched, "via_matcher": True}
+            )
+        return draft.model_copy(update={"target": None, "via_matcher": False})
+
+    def _registered(self, skill_id: str) -> bool:
+        """目标标识是否**已注册**（形态非法 / 未注册一律视为未给出）。
+
+        无描述体取数口（``descriptors`` 未注入）⇒ 无从判定，**保持原样**——
+        不因缺依赖而改判既有调用方的行为。
+        """
+        if self._descriptors is None:
+            return True
+        try:
+            self._descriptors.get(skill_id)
+        except Exception:
+            return False
+        return True
+
+    def undispatchable(self, draft: IntentDraft) -> bool:
+        """该草稿是否**不可派发**（需要单个 Skill 的去向却无目标；§3.2 守门判据）。
+
+        交互层据此**不产确认卡**——一张可确认的卡不得处于「派发必然失败」的状态。
+        """
+        return (
+            draft.intent in TARGET_REQUIRED_INTENTS
+            and not (draft.target or "").strip()
+        )
+
+    def withheld_round(self, draft: IntentDraft) -> ClarificationRound:
+        """守门轮：把「目标解析不出」作为一条带原因的澄清轮交回（不产确认卡）。
+
+        ``directions`` 取自**草稿**（理解端口给过方向候选时原样展示），``questions``
+        为空——目标未定，目标侧的参数问项无从取自描述体（[05 §3.2] 的问项来源）。
+        """
+        return ClarificationRound(
+            envelope=ResultEnvelope.empty(TARGET_UNRESOLVED_REASON, as_of=_now()),
+            intent=draft.intent, target=None, questions=(),
+            directions=tuple(draft.directions[:DIRECTION_LIMIT]),
             via_shortcut=draft.via_shortcut,
         )
 
-    def _match(self, query: str) -> str | None:
+    def _match(self, query: str, *, min_overlap: int = 1) -> str | None:
         if self._matcher is None:
             return None
         try:
-            found = self._matcher.match(query)
+            found = self._matcher.match(query, min_overlap=min_overlap)
         except Exception:
             return None
         return getattr(found, "skill_id", None)
@@ -490,15 +578,23 @@ class IntentProtocol:
         ``answers`` 为对追问的回答；缺键或值 ＝ :data:`SKIP` 即「跳过」，取默认值。
         无默认值的未指定项**不进** ``values``（沿用 Skill 自身默认），但在卡上
         以「未指定」显式呈现，不静默略过。
+
+        目标已确定时，理解端口抽出的参数若**未在目标描述体与意图级声明中登记**，
+        该参数**不进** ``values``（它送下去必被下游拒），在卡上以来源「未采用」
+        呈现——不静默丢弃，也不静默送进去（[05 §3.2]）。
         """
         if draft.intent is None:
             raise IntentValidationError(NO_DIRECTIONS_REASON)
         given = dict(answers or {})
         specs = {s.name: s for s in self._params_for(draft.intent, draft.target)}
+        declared = self._declared(draft)
         values: dict[str, Any] = {}
         items: list[ConfirmationItem] = [self._intent_item(draft)]
 
         for name, value in draft.understood.items():
+            if declared is not None and name not in declared:
+                items.append(self._item(specs.get(name), name, _as_text(value), "unused"))
+                continue
             values[name] = value
             items.append(self._item(specs.get(name), name, value,
                                     "shortcut" if draft.via_shortcut else "stated"))
@@ -523,14 +619,31 @@ class IntentProtocol:
         )
 
     def _intent_item(self, draft: IntentDraft) -> ConfirmationItem:
-        """确认卡的第 ① 项：意图本身与它的派发目标（N ≥ 1 的兜底）。"""
+        """确认卡的第 ① 项：意图本身与它的派发目标（N ≥ 1 的兜底）。
+
+        目标由本层匹配补出时来源标「匹配」——用户据此看出它是推导结果、不是原话
+        （[05 §3.1](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+        """
         assert draft.intent is not None
         text = self._checked_texts(
             (f"意图 {draft.intent} · {INTENT_TARGETS[draft.intent]}",)
         )[0]
         return ConfirmationItem(
-            text=text, value=draft.target or UNSPECIFIED_LABEL, source="intent"
+            text=text, value=draft.target or UNSPECIFIED_LABEL,
+            source="matched" if (draft.via_matcher and draft.target) else "intent",
         )
+
+    def _declared(self, draft: IntentDraft) -> frozenset[str] | None:
+        """目标 / 意图级**已声明**的参数名集；``None`` 即**无从核验**（保持原行为）。
+
+        只有「需要单个 Skill 的去向 + 目标已注册」才核验：`memory_op` 的 ``target``
+        是冲突 id、`analyze` 等无目标 Skill，它们的 ``understood`` 不由描述体约束。
+        """
+        if draft.intent not in TARGET_REQUIRED_INTENTS:
+            return None
+        if not (draft.target and self._registered(draft.target)):
+            return None
+        return frozenset(s.name for s in self._params_for(draft.intent, draft.target))
 
     def _item(
         self, spec: ParameterSpec | None, name: str, value: Any, source: ValueSource

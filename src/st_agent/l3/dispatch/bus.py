@@ -389,14 +389,25 @@ class DispatchBus:
                 ),
                 chain, spec,
             )
-        run = self._runner.run(
-            confirmation.target,
-            dict(values) if values is not None else dict(confirmation.values),
-            inputs=dict(inputs or {}),
-            trace=trace,
-            approved_permissions=approved_permissions,
-            initiator=DISPATCH_INITIATOR, purpose=DISPATCH_PURPOSE,
-        )
+        try:
+            run = self._runner.run(
+                confirmation.target,
+                dict(values) if values is not None else dict(confirmation.values),
+                inputs=dict(inputs or {}),
+                trace=trace,
+                approved_permissions=approved_permissions,
+                initiator=DISPATCH_INITIATOR, purpose=DISPATCH_PURPOSE,
+            )
+        except ValueError as exc:  # 调用方传参非法（目标标识形态等）→ 校验失败，不穿透
+            return self._outcome(
+                ResultEnvelope.validation_failed(f"Skill 调用参数非法：{exc}"),
+                chain, spec,
+            )
+        except Exception as exc:  # 执行面缺陷 → 依赖失败，同样不穿透（05 §4）
+            return self._outcome(
+                ResultEnvelope.dependency_failed(f"Skill 执行面异常：{exc}"),
+                chain, spec,
+            )
         # 信封**原样透出**（GWT-2）：不重包、不改 status、不吞 reason
         return DispatchOutcome(
             envelope=run.envelope,
