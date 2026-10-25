@@ -7,6 +7,7 @@ Fake 说明：理解端口与 L1 描述体取数口按**鸭子类型**装配（�
 from __future__ import annotations
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -25,6 +26,9 @@ from st_agent.l3.intent import (
     DIRECTION_LIMIT,
     INTENT_PARAM_SPECS,
     INTENT_TARGETS,
+    MATCH_MIN_OVERLAP,
+    TARGET_REQUIRED_INTENTS,
+    TARGET_UNRESOLVED_REASON,
     UNSPECIFIED_LABEL,
     IntentDraft,
     IntentProtocol,
@@ -136,7 +140,7 @@ class TestGwt2Shortcut:
         self, skills: SkillRegistry, seeded: str
     ) -> None:
         class _Matcher:
-            def match(self, query: str):
+            def match(self, query: str, *, min_overlap: int = 1):
                 return skills.get(seeded)
 
         proto = IntentProtocol(
@@ -153,7 +157,7 @@ class TestGwt2Shortcut:
         self, skills: SkillRegistry, seeded: str
     ) -> None:
         class _Matcher:
-            def match(self, query: str):
+            def match(self, query: str, *, min_overlap: int = 1):
                 return skills.get(seeded)
 
         proto = IntentProtocol(
@@ -461,3 +465,156 @@ class TestInvestigateConfirmation:
         assert draft.open_questions == ()
         round_ = protocol.clarify(draft)
         assert round_.questions == () and round_.envelope.status == "empty"
+
+
+# ─────────── T-L3-007：目标解析与可派发性守门（05 §3.1 / §3.2） ───────────
+
+
+class _RecordingMatcher:
+    """匹配口探针：记录每次调用的查询与阈值（阈值由 §3.1 的解析链传入）。"""
+
+    def __init__(self, found: str | None = None) -> None:
+        self._found = found
+        self.calls: list[tuple[str, int]] = []
+
+    def match(self, query: str, *, min_overlap: int = 1):
+        self.calls.append((query, min_overlap))
+        return None if self._found is None else SimpleNamespace(skill_id=self._found)
+
+
+class TestGwt1TargetResolution:
+    def test_unresolved_target_is_filled_by_deterministic_match(
+        self, skills: SkillRegistry, seeded: str
+    ) -> None:
+        """GWT-1：理解端口给不出目标时，对**用户原话**做 best-1 匹配补位。"""
+        matcher = _RecordingMatcher(seeded)
+        protocol = IntentProtocol(
+            understander=_Understander(ResultEnvelope.ok(checked_draft(
+                intent="query", target=None, understood={"action": "同步"},
+            ))),
+            matcher=matcher, descriptors=skills,
+        )
+        draft = protocol.understand("帮我同步ST股票名单").data
+        assert draft.target == seeded
+        assert draft.via_matcher is True
+        assert matcher.calls == [("帮我同步ST股票名单", MATCH_MIN_OVERLAP)]
+        # 目标定下来，描述体侧的参数问项随之可得（不再是空问项）
+        assert "channel" in draft.open_questions
+
+    def test_registered_target_is_kept_and_matcher_is_not_consulted(
+        self, skills: SkillRegistry, seeded: str
+    ) -> None:
+        matcher = _RecordingMatcher(seeded)
+        protocol = IntentProtocol(
+            understander=_Understander(ResultEnvelope.ok(checked_draft(
+                intent="query", target=seeded,
+            ))),
+            matcher=matcher, descriptors=skills,
+        )
+        draft = protocol.understand("随便说点什么").data
+        assert draft.target == seeded and draft.via_matcher is False
+        assert matcher.calls == []
+
+    def test_unregistered_target_is_dropped_then_rematched(
+        self, skills: SkillRegistry
+    ) -> None:
+        """GWT-2：理解端口给的目标**未注册**＝未给出——不把假标识带上卡。"""
+        matcher = _RecordingMatcher(None)
+        protocol = IntentProtocol(
+            understander=_Understander(ResultEnvelope.ok(checked_draft(
+                intent="configure", target="sk_ghost_skill_v9.9",
+            ))),
+            matcher=matcher, descriptors=skills,
+        )
+        draft = protocol.understand("配置一个并不存在的能力").data
+        assert draft.target is None and draft.via_matcher is False
+        assert matcher.calls == [("配置一个并不存在的能力", MATCH_MIN_OVERLAP)]
+
+    def test_missing_descriptors_keep_the_target_as_given(
+        self, skills: SkillRegistry
+    ) -> None:
+        """A3：无从判定是否注册（未注入描述体口）时**保持原样**，不因缺依赖改判。"""
+        protocol = IntentProtocol(
+            understander=_Understander(ResultEnvelope.ok(checked_draft(
+                intent="query", target="sk_whatever_v1.0",
+            ))),
+            matcher=_RecordingMatcher(None), descriptors=None,
+        )
+        draft = protocol.understand("看看").data
+        assert draft.target == "sk_whatever_v1.0"
+
+    def test_shortcut_path_keeps_its_own_threshold(
+        self, skills: SkillRegistry, seeded: str
+    ) -> None:
+        """GWT-5：快捷指令路径的口径不变——阈值仍是缺省 1。"""
+        matcher = _RecordingMatcher(seeded)
+        protocol = IntentProtocol(
+            commands=CommandRegistry(), matcher=matcher, descriptors=skills,
+        )
+        draft = protocol.understand("/盯盘").data
+        assert draft.target == seeded
+        assert matcher.calls[0][1] == 1
+
+
+class TestGwt2DispatchabilityGate:
+    def test_target_required_routes_are_undispatchable_without_target(
+        self, skills: SkillRegistry
+    ) -> None:
+        protocol = IntentProtocol(descriptors=skills)
+        for intent in TARGET_REQUIRED_INTENTS:
+            assert protocol.undispatchable(checked_draft(intent=intent, target=None))
+            assert not protocol.undispatchable(
+                checked_draft(intent=intent, target="sk_x_v1.0"))
+
+    def test_other_routes_are_never_gated(self, skills: SkillRegistry) -> None:
+        protocol = IntentProtocol(descriptors=skills)
+        for intent in ("analyze", "memory_op", "explain", "train", "investigate"):
+            assert not protocol.undispatchable(
+                checked_draft(intent=intent, target=None))
+
+    def test_withheld_round_carries_the_reason_and_directions(
+        self, skills: SkillRegistry
+    ) -> None:
+        protocol = IntentProtocol(descriptors=skills)
+        draft = checked_draft(
+            intent="query", target=None, directions=("查询退市风险",),
+        )
+        round_ = protocol.withheld_round(draft)
+        assert round_.envelope.status == "empty"
+        assert TARGET_UNRESOLVED_REASON in round_.envelope.reason
+        assert round_.questions == () and round_.directions == ("查询退市风险",)
+
+
+class TestGwt3UndeclaredParams:
+    def test_undeclared_param_is_marked_unused_and_kept_out_of_values(
+        self, skills: SkillRegistry, seeded: str
+    ) -> None:
+        protocol = IntentProtocol(descriptors=skills)
+        card = protocol.confirm(checked_draft(
+            intent="query", target=seeded,
+            understood={"action": "同步", "window_days": 7},
+        ))
+        assert card.values == {"window_days": 7}
+        unused = [i for i in card.items if i.source == "unused"]
+        assert len(unused) == 1
+        assert unused[0].param == "action" and unused[0].value == "同步"
+
+    def test_targetless_intents_keep_every_understood_param(
+        self, skills: SkillRegistry
+    ) -> None:
+        """非 query/configure 的去向不由 Skill 描述体约束——一律不改判。"""
+        protocol = IntentProtocol(descriptors=skills)
+        card = protocol.confirm(checked_draft(
+            intent="analyze", target=None, understood={"topic": "sh.600000"},
+        ))
+        assert card.values == {"topic": "sh.600000"}
+        assert all(i.source != "unused" for i in card.items)
+
+    def test_matched_target_marks_the_intent_item(
+        self, skills: SkillRegistry, seeded: str
+    ) -> None:
+        protocol = IntentProtocol(descriptors=skills)
+        card = protocol.confirm(checked_draft(
+            intent="query", target=seeded, via_matcher=True,
+        ))
+        assert card.items[0].source == "matched"

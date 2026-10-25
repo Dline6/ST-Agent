@@ -26,6 +26,7 @@ from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.l0.storage import STORE_MARKER
 from st_agent.l2.memory import checked_node, new_node_id
 from st_agent.l3.dispatch import ANALYZE_ABSENT_REASON
+from st_agent.l3.intent import IntentDraft
 from st_agent.ui.security import TOKEN_HEADER
 
 
@@ -66,6 +67,41 @@ def test_gwt2_reverse_flow_query_dispatches_official_skill(rig: M1Rig) -> None:
     described = rig.m1.chat.describe_trace_of(outcome.trace)
     assert described.status == "ok"
     assert described.data.component_type == "trace_timeline"
+
+
+def test_gwt2b_unresolved_target_is_filled_by_the_real_matcher(tmp_path: Path) -> None:
+    """T-L3-007 GWT-1：理解端口给不出目标时，**真** `SkillRunner.match` 补位并派发真技能。
+
+    这是用户现场（「帮我同步ST股票名单」卡在「目标未指定」→ 点确认才 `validation_failed`）
+    的回归面：目标在确认**之前**就定下来，确认后真的跑 `sk_st_list_sync_v1.0`。
+    """
+    rig = seeded_m1(
+        tmp_path / ROOT_NAME,
+        rules=[("ST", IntentDraft(intent="query", target=None))],
+    )
+    turn = rig.m1.chat.post("帮我同步ST股票名单")
+    assert turn.needs_confirmation is True
+    assert turn.confirmation.target == "sk_st_list_sync_v1.0"
+    assert turn.confirmation.items[0].source == "matched"
+
+    outcome = rig.m1.chat.confirm_and_dispatch(turn.session_id)
+    assert outcome.intent == "query" and outcome.wired is True
+    # 本地缓存不足两日 → empty（空态带原因），绝不会再落到「缺少目标 Skill 标识」
+    assert outcome.envelope.status in {"ok", "empty"}, outcome.envelope.reason
+    assert "缺少目标" not in (outcome.envelope.reason or "")
+
+
+def test_gwt2c_unmatchable_text_yields_no_confirmation(tmp_path: Path) -> None:
+    """T-L3-007 GWT-2：匹配不上就**不产确认卡**——失败挡在确认之前，不伪造目标。"""
+    rig = seeded_m1(
+        tmp_path / ROOT_NAME,
+        rules=[("zzzz", IntentDraft(intent="query", target=None))],
+    )
+    turn = rig.m1.chat.post("zzzz qqqq")
+    assert turn.needs_confirmation is False
+    assert turn.confirmation is None
+    assert turn.clarification.envelope.status == "empty"
+    assert "未识别到可派发的目标" in turn.clarification.envelope.reason
 
 
 # ─────────────────────────────── GWT-3 配置草稿 ───────────────────────────────

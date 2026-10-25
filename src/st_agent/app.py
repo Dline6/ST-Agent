@@ -300,6 +300,10 @@ class DialogFacade:
         if draft.intent is None:  # 未收敛——给方向候选，不产卡（§3.2 不硬猜）
             self._pending.pop(sid, None)
             return TurnResult(sid, draft, round_, None)
+        if self._intent.undispatchable(draft):
+            # 可派发性守门（§3.2）：目标解析不出即不产确认卡，把失败挡在确认之前
+            self._pending.pop(sid, None)
+            return TurnResult(sid, draft, self._intent.withheld_round(draft), None)
         self._pending[sid] = draft
         return TurnResult(sid, draft, round_, self._intent.confirm(draft))
 

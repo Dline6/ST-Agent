@@ -166,11 +166,15 @@ class SkillRunner:
 
     # ───────────────────────── 解析与参数确认（GWT-2） ───────────────────
 
-    def match(self, query: str) -> Any | None:
-        """按查询文本匹配最相关的 SkillDescriptor（无候选 → None）。
+    def match(self, query: str, *, min_overlap: int = 1) -> Any | None:
+        """按查询文本匹配最相关的 SkillDescriptor（无候选 / 未达阈 → None）。
 
         口径：查询与「名称 + 描述」按字符 bigram 重叠度打分，
         取最高者；并列时按 skill_id 字典序取首个（确定性）。
+
+        :param min_overlap: 采信的最低重叠数——缺省 ``1``（任何非零重叠）；
+            调用方提高阈值即「宁缺毋滥」（如 L3 的目标补位取 2，见
+            [05 §3.1](../../../docs/技术架构-v2/05-L3-对话主入口.md) 的「目标 Skill 的解析」）
         """
         query = (query or "").strip()
         if not query:
@@ -183,7 +187,7 @@ class SkillRunner:
         for desc in self._registry.list_all():
             overlap = len(grams & _bigrams(f"{desc.name} {desc.description}"))
             key = (overlap, desc.skill_id)
-            if overlap > 0 and (best is None or key > best_key):
+            if overlap >= min_overlap and (best is None or key > best_key):
                 best, best_key = desc, key
         return best
 

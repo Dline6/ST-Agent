@@ -395,3 +395,26 @@ class TestInvestigateRoute:
         outcome = DispatchBus(investigations=Broken()).dispatch(_card("investigate"), now=NOW)
         assert outcome.envelope.status == "dependency_failed"
         assert "非法结构" in outcome.envelope.reason
+
+
+# ─────────── T-L3-007：派发面的异常不穿透（05 §4 的「派发面的异常面」） ───────────
+
+
+class TestQueryRunnerExceptions:
+    def test_malformed_target_is_validation_failed_not_an_exception(
+        self, store: Store, skills: SkillRegistry
+    ) -> None:
+        """调用方传参非法（目标标识形态错误）→ `validation_failed`，不抛给调用方。"""
+        runner = _runner(store, skills, lambda ctx, params: ResultEnvelope.ok({}))
+        outcome = DispatchBus(runner=runner).dispatch(_card("query", "sk_no_version"))
+        assert outcome.envelope.status == "validation_failed"
+        assert "Skill 调用参数非法" in outcome.envelope.reason
+
+    def test_executor_crash_is_dependency_failed_not_an_exception(self) -> None:
+        class Boom:
+            def run(self, *args, **kwargs):
+                raise RuntimeError("执行面炸了")
+
+        outcome = DispatchBus(runner=Boom()).dispatch(_card("query", SKILL))
+        assert outcome.envelope.status == "dependency_failed"
+        assert "Skill 执行面异常" in outcome.envelope.reason
