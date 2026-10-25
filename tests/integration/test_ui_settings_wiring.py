@@ -324,12 +324,71 @@ def test_data_page_reports_real_tasks_tables_and_rows(m5) -> None:
     summary = payload["summary"]["data"]["slots"]["values"]
     assert summary["db_exists"] is True
     assert summary["total_rows"] >= 4
-    tasks = payload["tasks"]["data"]["slots"]["values"]
+    assert summary["catalog"]["item_count"] >= 20
+    catalog = payload["tasks"]["data"]["slots"]["values"]
+    tasks = catalog["tasks"]
+    items = catalog["items"]
     assert any(task["task_key"] == "bs_k_daily" and task["status"] == "ok"
                for task in tasks)
+    assert any(item["item_id"] == "k_daily" and item["status"] == "ok"
+               for item in items)
+    assert all(task["display_name"] and task["display_name"] != task["task_key"]
+               for task in tasks)
+    assert all(item["display_name"] for item in items)
     tables = {row["table"]: row for row in payload["tables"]["data"]["slots"]["rows"]}
     assert tables["k_line_daily"]["rows"] == 4
+    assert tables["k_line_daily"]["display_name"] == "日线行情"
     assert payload["job"]["data"]["slots"]["values"] == {}
+
+
+def test_data_job_snapshot_is_light_and_empty_before_a_batch(m5) -> None:
+    runtime = m5.m5
+    with serve(dev=False, settings=runtime.settings) as running:
+        payload = _get(running, "/api/settings/data/job")
+
+    assert payload["status"] == "ok"
+    assert payload["data"] == {"job": {}}
+
+
+def test_data_preflight_reports_order_and_scope(m5) -> None:
+    runtime = m5.m5
+    with serve(dev=False, settings=runtime.settings) as running:
+        payload = _post(running, "/api/settings/data/preflight", {
+            "task_keys": ["bs_k_daily"], "scope": "st", "start": "2026-09-01",
+        })
+
+    assert payload["status"] == "ok"
+    plan = payload["data"]
+    assert plan["order"][:3] == ["bs_calendar", "bs_all_stock", "bs_k_daily"]
+    assert set(plan["auto_added"]) == {"bs_calendar", "bs_all_stock"}
+    assert plan["scope"]["scope"] == "st"
+    assert plan["scope"]["count"] == 2
+    assert plan["scope"]["as_of"] == "2026-09-25"
+    assert plan["errors"] == []
+    assert plan["requires_start"] is True
+
+
+def test_data_preflight_requires_start_for_st_scope(m5) -> None:
+    runtime = m5.m5
+    with serve(dev=False, settings=runtime.settings) as running:
+        payload = _post(running, "/api/settings/data/preflight", {
+            "task_keys": ["bs_k_daily"], "scope": "st",
+        })
+
+    plan = payload["data"]
+    assert plan["requires_start"] is True
+    assert any("起始日期" in error for error in plan["errors"])
+
+
+def test_data_cancel_without_a_job_is_an_honest_noop(m5) -> None:
+    runtime = m5.m5
+    with serve(dev=False, settings=runtime.settings) as running:
+        payload = _post(running, "/api/settings/data/sync/cancel", {})
+
+    assert payload["status"] == "ok"
+    assert payload["data"]["cancelled"] is False
+    assert "没有运行中的批次" in payload["data"]["reason"]
+
 
 
 def test_data_sync_rejects_unknown_task_without_touching_the_network(m5) -> None:
