@@ -46,12 +46,23 @@ INSERT INTO k_line_daily (code, trade_date, close, trade_status, is_st) VALUES
   ('sz.000001', '2026-09-24', 12.00, 1, 0),
   ('sh.600000', '2026-09-25', 0.50, 1, 1),
   ('sz.000001', '2026-09-25', 12.30, 1, 1);
+INSERT INTO st_membership (
+    code, code_name, type, status, name_prefixed, source_id, captured_at
+  ) VALUES
+  ('sh.600000', '*ST浦发', 1, 1, 1, 'baostock', '2026-09-25T08:00:00+00:00'),
+  ('sz.000001', '*ST平安', 1, 1, 1, 'baostock', '2026-09-25T08:00:00+00:00');
 INSERT INTO sync_state (
     task_key, table_name, source_id, mode, schedule_desc,
     watermark, last_success_at, last_row_count, last_status, last_error
   ) VALUES (
     'bs_k_daily', 'k_line_daily', 'baostock', 'incremental', '每日收盘后',
     '2026-09-25', '2026-09-25T08:00:00+00:00', 4, 'ok', NULL);
+INSERT INTO sync_state (
+    task_key, table_name, source_id, mode, schedule_desc,
+    watermark, last_success_at, last_row_count, last_status, last_error
+  ) VALUES (
+    'bs_security_basic', 'security', 'baostock', 'full', '首次全量',
+    NULL, '2026-09-25T08:00:00+00:00', 2, 'ok', NULL);
 """
 
 

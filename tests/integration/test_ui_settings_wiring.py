@@ -354,30 +354,46 @@ def test_data_preflight_reports_order_and_scope(m5) -> None:
     runtime = m5.m5
     with serve(dev=False, settings=runtime.settings) as running:
         payload = _post(running, "/api/settings/data/preflight", {
-            "task_keys": ["bs_k_daily"], "scope": "st", "start": "2026-09-01",
+            "items": [{
+                "target": "st", "dataset": "k_daily", "groups": ["price"],
+                "time": {"kind": "date_range", "mode": "custom",
+                         "start": "2026-09-01", "end": None},
+            }],
         })
 
     assert payload["status"] == "ok"
     plan = payload["data"]
-    assert plan["order"][:3] == ["bs_calendar", "bs_all_stock", "bs_k_daily"]
-    assert set(plan["auto_added"]) == {"bs_calendar", "bs_all_stock"}
-    assert plan["scope"]["scope"] == "st"
-    assert plan["scope"]["count"] == 2
-    assert plan["scope"]["as_of"] == "2026-09-25"
+    assert plan["order"][:4] == [
+        "bs_calendar", "bs_st_list", "bs_all_stock", "bs_k_daily",
+    ]
+    assert set(plan["auto_added"]) == {
+        "bs_calendar", "bs_st_list", "bs_all_stock",
+    }
+    assert plan["targets"]["st"]["count"] == 2
+    assert plan["targets"]["st"]["as_of"].startswith("2026-09-25")
     assert plan["errors"] == []
-    assert plan["requires_start"] is True
+    assert plan["plan"][0]["groups"] == ["price"]
 
 
-def test_data_preflight_requires_start_for_st_scope(m5) -> None:
+def test_data_preflight_items_use_dataset_default_time(m5) -> None:
     runtime = m5.m5
     with serve(dev=False, settings=runtime.settings) as running:
         payload = _post(running, "/api/settings/data/preflight", {
-            "task_keys": ["bs_k_daily"], "scope": "st",
+            "items": [{"target": "st", "dataset": "k_daily"}],
         })
 
     plan = payload["data"]
-    assert plan["requires_start"] is True
-    assert any("起始日期" in error for error in plan["errors"])
+    assert plan["errors"] == []
+    assert plan["plan"][0]["time"]["kind"] == "date_range"
+
+
+def test_data_clear_requires_the_confirmation_phrase(m5) -> None:
+    runtime = m5.m5
+    with serve(dev=False, settings=runtime.settings) as running:
+        payload = _post(running, "/api/settings/data/clear", {"level": 1, "phrase": ""})
+
+    assert payload["status"] == "validation_failed"
+    assert "清除市场数据" in payload["reason"]
 
 
 def test_data_cancel_without_a_job_is_an_honest_noop(m5) -> None:

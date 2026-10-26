@@ -73,6 +73,8 @@ SYNC_TASKS: tuple[TaskSpec, ...] = (
              window_desc="全量对账"),
     TaskSpec("bs_security_basic", "security", "full", "首次全量；此后每周全量 UPSERT",
              window_desc="全量主档（股票 / 指数 / 可转债 / ETF）"),
+    TaskSpec("bs_st_list", "st_membership", "snapshot", "每次 ST 标的同步前刷新；每周",
+             window_desc="名称匹配快照（在市 × ST 前缀）"),
     TaskSpec("bs_all_stock", "security", "incremental", "每交易日（数据可用后）",
              window_desc="指定交易日（默认今日）"),
     TaskSpec("bs_k_daily", "k_line_daily", "incremental", "每交易日", _CAL_FIN_NEEDS,

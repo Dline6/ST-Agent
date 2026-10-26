@@ -168,6 +168,10 @@ class BaoStockFetcher:
     def security_basic(self) -> FetchResult:
         return self._fetch(self._bs.query_stock_basic)
 
+    def st_basic(self) -> FetchResult:
+        """ST 名单（[D-131] 方案 B）：源端名称模糊查询，过滤在映射层。"""
+        return self._fetch(self._bs.query_stock_basic, code_name="ST")
+
     def all_stock(self, day: str) -> FetchResult:
         return self._fetch(self._bs.query_all_stock, day=day)
 

@@ -231,6 +231,7 @@ _POST_ROUTES: dict[str, Callable[[UiApp, dict], dict]] = {
     "/api/settings/llm/bootstrap": lambda app, body: app.api_settings_llm_bootstrap(body),
     "/api/settings/data/sync": lambda app, body: app.api_settings_data_sync(body),
     "/api/settings/data/preflight": lambda app, body: app.api_settings_data_preflight(body),
+    "/api/settings/data/clear": lambda app, body: app.api_settings_data_clear(body),
     "/api/settings/data/sync/cancel": lambda app, body: (
         app.api_settings_data_sync_cancel(body)
     ),

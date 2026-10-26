@@ -66,7 +66,13 @@ from st_agent.l5.errors import ChannelNotWiredError, L5Error
 from st_agent.l5.fatigue import ANSWERS as FATIGUE_ANSWERS
 
 from st_agent.ui.envelope import envelope_payload
-from st_agent.ui.data_catalog import catalog_payload, domain_label, table_label, task_label
+from st_agent.ui.data_catalog import (
+    catalog_payload,
+    domain_label,
+    sync_catalog_payload,
+    table_label,
+    task_label,
+)
 from st_agent.ui.errors import DevSurfaceUnavailable
 from st_agent.ui.neutrality_gate import NeutralityGate
 from st_agent.ui.registry import slot_gaps
@@ -2625,12 +2631,19 @@ class UiApp:
 
     def api_settings_data_sync(self, body: dict[str, Any]) -> dict[str, Any]:
         """发起手动同步（显式动作；后台线程执行，立即返回 ``job_id``）。"""
+        face = None if self.settings is None else getattr(self.settings, "data_sync", None)
+        items = body.get("items")
+        custom = _optional_text(body.get("custom_codes_text")) or ""
+        if isinstance(items, list):
+            return self._call_face(
+                "settings-data-sync", face, "L0 数据同步面",
+                lambda sync: sync.start_items(items, custom_text=custom),
+            )
         raw = body.get("task_keys")
         keys = [str(item) for item in raw] if isinstance(raw, list) else []
         start = _optional_text(body.get("start"))
         end = _optional_text(body.get("end"))
         scope = _optional_text(body.get("scope")) or "market"
-        face = None if self.settings is None else getattr(self.settings, "data_sync", None)
         return self._call_face(
             "settings-data-sync", face, "L0 数据同步面",
             lambda sync: sync.start(keys, start=start, end=end, scope=scope),
@@ -2645,16 +2658,38 @@ class UiApp:
         )
 
     def api_settings_data_preflight(self, body: dict[str, Any]) -> dict[str, Any]:
-        """发起前预检：执行顺序 / 自动补入 / 范围解析 / 忽略项 / 警告（[D-130]）。"""
+        """发起前预检：标的 / 数据集 / 指标组 / 时间 / 自动补入 / 请求估算。"""
+        face = None if self.settings is None else getattr(self.settings, "data_sync", None)
+        items = body.get("items")
+        custom = _optional_text(body.get("custom_codes_text")) or ""
+        if isinstance(items, list):
+            return self._call_face(
+                "settings-data-preflight", face, "L0 数据同步面",
+                lambda sync: sync.preflight_items(items, custom_text=custom),
+            )
         raw = body.get("task_keys")
         keys = [str(item) for item in raw] if isinstance(raw, list) else []
         start = _optional_text(body.get("start"))
         end = _optional_text(body.get("end"))
         scope = _optional_text(body.get("scope")) or "market"
-        face = None if self.settings is None else getattr(self.settings, "data_sync", None)
         return self._call_face(
             "settings-data-preflight", face, "L0 数据同步面",
             lambda sync: sync.preflight(keys, start=start, end=end, scope=scope),
+        )
+
+    def api_settings_data_clear(self, body: dict[str, Any]) -> dict[str, Any]:
+        """一级清空市场数据（[D-133]；运行中批次由 L0 拒绝）。"""
+        phrase = _optional_text(body.get("phrase")) or ""
+        if phrase != "清除市场数据":
+            return envelope_payload(
+                ResultEnvelope.validation_failed(
+                    "一级清库须输入确认词「清除市场数据」"
+                )
+            )
+        face = None if self.settings is None else getattr(self.settings, "data_sync", None)
+        return self._call_face(
+            "settings-data-clear", face, "L0 数据同步面",
+            lambda sync: sync.clear_market(),
         )
 
     def api_settings_data_sync_cancel(self, body: dict[str, Any]) -> dict[str, Any]:
@@ -3064,7 +3099,10 @@ class UiApp:
         overview = face.data_sync.overview()
         meta = overview["summary"]
         scope = overview.get("scope") or meta.get("scope") or {}
-        catalog = catalog_payload(overview["tasks"])
+        catalog = {
+            **catalog_payload(overview["tasks"]),
+            **sync_catalog_payload(overview),
+        }
         items = list(catalog["items"])
         ok_items = sum(1 for item in items if item["status"] == "ok")
         sections = [

@@ -31,6 +31,25 @@ CREATE TABLE sync_state (
   last_error      TEXT
 );
 
+-- 逐码覆盖账本（D-132）。记录某数据集对某只码已成功取过的区间与指标组；
+-- 同步计划用它减去已覆盖区间，只请求缺口。watermark 仍是全库/任务级新鲜度锚点，
+-- 本表是取数计划口径，两者分工见 05-同步策略与新鲜度契约.md
+CREATE TABLE sync_coverage (
+  code        TEXT NOT NULL,            -- 证券代码（与 security.code 同口径）
+  dataset_id  TEXT NOT NULL,            -- 数据集键（如 k_daily / fin_quarter）
+  variant     TEXT NOT NULL DEFAULT '', -- 频率/变体（w/m/5/15/30/60）；无变体为空
+  unit        TEXT NOT NULL CHECK (unit IN ('day','quarter','year')),
+  span_start  TEXT NOT NULL,            -- day: YYYY-MM-DD；quarter: YYYYQn；year: YYYY
+  span_end    TEXT NOT NULL,
+  groups      TEXT NOT NULL,            -- 规范排序的指标组；整取为 'all'
+  status      TEXT NOT NULL CHECK (status IN ('ok','partial','failed')),
+  source_id   TEXT NOT NULL REFERENCES data_source(source_id),
+  checked_at  TEXT NOT NULL,
+  PRIMARY KEY (code, dataset_id, variant, unit, span_start, span_end, groups)
+);
+CREATE INDEX idx_sync_coverage_lookup
+  ON sync_coverage(code, dataset_id, variant, span_end);
+
 -- 指标字典。种子数据以 06-API映射契约.md 为单一事实源生成
 CREATE TABLE indicator_dictionary (
   indicator_key   TEXT PRIMARY KEY,     -- 目标列名（全库唯一）
@@ -68,6 +87,19 @@ CREATE TABLE security (
   status    INTEGER CHECK (status IN (0,1))       -- 1上市 0退市
 );
 CREATE INDEX idx_security_status ON security(status);
+
+-- ST 同步标的池（D-131）：由 query_stock_basic(code_name='ST') 一次快照写入，
+-- 过滤在市股票与名称前缀。它是「同步标的池」口径；分析区的 v_st_universe
+-- 仍按日线 is_st，两者不互相冒充
+CREATE TABLE st_membership (
+  code          TEXT PRIMARY KEY,
+  code_name     TEXT,
+  type          INTEGER CHECK (type IN (1,2,3,4,5)),
+  status        INTEGER CHECK (status IN (0,1)),
+  name_prefixed INTEGER NOT NULL CHECK (name_prefixed IN (0,1)),
+  source_id     TEXT NOT NULL REFERENCES data_source(source_id),
+  captured_at   TEXT NOT NULL           -- 名单获取时间（本地时区 ISO-8601）
+);
 
 -- 交易日历（上交所口径，1990 年至今）
 CREATE TABLE trade_calendar (
@@ -466,3 +498,8 @@ SELECT s.code, s.code_name, s.ipo_date, l.trade_date AS st_mark_date, l.close, l
 FROM security s
 JOIN v_k_line_latest l ON l.code = s.code
 WHERE s.type = 1 AND s.status = 1 AND l.is_st = 1;
+
+-- ST 同步标的池（名称匹配口径，D-131）。与 v_st_universe 的分工见 07 文档 §1
+CREATE VIEW v_st_sync_pool AS
+SELECT code, code_name FROM st_membership
+WHERE type = 1 AND status = 1 AND name_prefixed = 1;
