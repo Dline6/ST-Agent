@@ -118,9 +118,9 @@ class CountingSync(BaoStockSync):
         super().__init__(*args, **kwargs)
         self.writes = 0
 
-    def _write_k_daily(self, mapped):
+    def _write_k_daily(self, mapped, groups=None):
         self.writes += 1
-        return super()._write_k_daily(mapped)
+        return super()._write_k_daily(mapped, groups)
 
 
 # ───────────────────────── GWT-1 批内合并写 ─────────────────────────
@@ -209,7 +209,7 @@ class TestGwt2ExplicitWindow:
             "bs_k_daily", codes=CODES[2:], start="2024-01-01")
         assert env.status == "ok"
         assert rec.windows, "分片 2 应真的发起抓取，而不是被水位跳成空窗口"
-        assert all(w[1] == "2024-01-01" for w in rec.windows)   # 起点＝显式给定
+        assert all(w[1] == "2024-01-01" for w in rec.windows), rec.windows
         assert _kline_rows(db) == 2 * len(CODES)
 
     def test_explicit_start_does_not_regress_watermark(self, store: Store,

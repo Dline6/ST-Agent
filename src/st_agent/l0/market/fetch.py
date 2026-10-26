@@ -38,8 +38,10 @@ from st_agent.l0.market.cleaning import (
 
 __all__ = [
     "FIN_QUARTER_COLUMNS",
+    "ST_NAME_PREFIXES",
     "Fetcher",
     "FetchResult",
+    "is_st_name",
     "map_adjust_factor",
     "map_all_stock",
     "map_calendar",
@@ -58,6 +60,7 @@ __all__ = [
     "map_macro_reserve",
     "map_performance_express",
     "map_security_basic",
+    "map_st_basic",
     "result_shape",
     "source_page_size",
     "truncation_suspect",
@@ -109,6 +112,7 @@ class Fetcher(Protocol):
 
     def calendar(self, start: str, end: str) -> FetchResult: ...
     def security_basic(self) -> FetchResult: ...
+    def st_basic(self) -> FetchResult: ...
     def all_stock(self, day: str) -> FetchResult: ...
     def k_daily(self, code: str, start: str, end: str) -> FetchResult: ...
     def k_period(self, code: str, frequency: str, start: str, end: str) -> FetchResult: ...
@@ -156,6 +160,35 @@ def map_security_basic(fields: list[str], rows: list[list[Any]]) -> list[tuple]:
          normalize_date(_col(rows, fields, r, "outDate")),
          clean_int(_col(rows, fields, r, "type")),
          clean_int(_col(rows, fields, r, "status")))
+        for r in rows
+    ]
+
+
+ST_NAME_PREFIXES: tuple[str, ...] = ("S*ST", "SST", "*ST", "ST")
+"""ST 名称前缀（长前缀在前，避免 ``SST`` 被 ``ST`` 误判）。"""
+
+
+def is_st_name(name: Any) -> bool:
+    """证券名称是否以 ST 风险警示前缀开头（[D-131]）。"""
+    text = str(name or "").strip()
+    return any(text.startswith(prefix) for prefix in ST_NAME_PREFIXES)
+
+
+def map_st_basic(fields: list[str], rows: list[list[Any]]) -> list[tuple]:
+    """``query_stock_basic(code_name="ST")`` → ST 名单候选行。
+
+    返回 ``(code, code_name, ipo_date, out_date, type, status, name_prefixed)``；
+    调用方再按 ``type=1 & status=1 & name_prefixed=1`` 过滤（源端模糊查询会带回
+    退市与非 ST 名称，不能直接入库）。
+    """
+    return [
+        (clean_str(_col(rows, fields, r, "code")),
+         clean_str(_col(rows, fields, r, "code_name")),
+         normalize_date(_col(rows, fields, r, "ipoDate")),
+         normalize_date(_col(rows, fields, r, "outDate")),
+         clean_int(_col(rows, fields, r, "type")),
+         clean_int(_col(rows, fields, r, "status")),
+         1 if is_st_name(_col(rows, fields, r, "code_name")) else 0)
         for r in rows
     ]
 

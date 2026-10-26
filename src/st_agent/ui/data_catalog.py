@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from st_agent.l0.info.sources import INFO_TASKS
+from st_agent.l0.market.datasets import DATASETS, validate_datasets
 from st_agent.l0.market.tasks import SYNC_TASKS
 
 __all__ = [
@@ -32,6 +33,7 @@ __all__ = [
     "category_label",
     "domain_label",
     "item_for_task",
+    "sync_catalog_payload",
     "table_label",
     "task_label",
     "validate_catalog",
@@ -76,6 +78,9 @@ TASK_LABELS: dict[str, tuple[str, str]] = {
     "bs_calendar": ("交易日历", "A 股交易日与休市日，1990 年至今"),
     "bs_security_basic": (
         "证券主档（全量）", "股票 / 指数 / 可转债 / ETF 的基本资料与上市状态"
+    ),
+    "bs_st_list": (
+        "ST 名单（名称匹配）", "BaoStock 名称查询快照，供 ST 标的解析"
     ),
     "bs_all_stock": ("每日在市证券", "指定交易日的在市证券清单与名称"),
     # 行情
@@ -146,6 +151,7 @@ TASK_LABELS: dict[str, tuple[str, str]] = {
 TABLE_LABELS: dict[str, tuple[str, str]] = {
     "trade_calendar": ("交易日历", "交易日与休市日标记"),
     "security": ("证券主档", "证券基本资料与上市状态"),
+    "st_membership": ("ST 名单", "名称匹配的同步标的池快照"),
     "k_line_daily": ("日线行情", "每日 K 线与估值指标"),
     "k_line_period": ("周线 / 月线行情", "周线与月线行情"),
     "k_line_minute": ("分钟线行情", "5 / 15 / 30 / 60 分钟线"),
@@ -191,6 +197,9 @@ ITEMS: tuple[DataItem, ...] = (
     DataItem("security", "basic", "证券主档",
              "股票 / 指数 / 可转债 / ETF 的基本资料与上市状态",
              ("bs_security_basic",)),
+    DataItem("st_list", "basic", "ST 名单（名称匹配）",
+             "BaoStock 名称查询快照，供 ST 标的解析", ("bs_st_list",),
+             advanced=True),
     DataItem("daily_listing", "basic", "每日在市证券",
              "指定交易日的在市证券清单与名称", ("bs_all_stock",)),
     # 行情
@@ -406,9 +415,94 @@ def catalog_payload(tasks: Iterable[dict[str, Any]]) -> dict[str, Any]:
     return {"items": _items_from(enriched), "tasks": enriched}
 
 
+def sync_catalog_payload(overview: dict[str, Any]) -> dict[str, Any]:
+    """新同步面板的目录载荷：标的列表 + 数据集能力位 + 各组状态（[D-132]）。
+
+    ``overview`` 为 ``DataSyncRunner.overview()`` 的返回；本函数只做展示富化，
+    不读写库。
+    """
+    task_rows = {
+        str(row.get("task_key")): row for row in overview.get("tasks") or []
+    }
+    targets = (
+        overview.get("summary", {}).get("targets")
+        or overview.get("targets")
+        or {}
+    )
+    datasets: list[dict[str, Any]] = []
+    for spec in DATASETS:
+        members = [task_rows[key] for key in spec.task_keys if key in task_rows]
+        tables: dict[str, dict[str, Any]] = {}
+        for task in members:
+            for row in task.get("table_rows") or []:
+                table = str(row.get("table"))
+                if table not in tables:
+                    table_name, table_desc = table_label(table)
+                    tables[table] = {
+                        "table": table,
+                        "display_name": table_name,
+                        "description": table_desc,
+                        "rows": row.get("rows"),
+                    }
+        rows = sum(
+            int(item["rows"]) for item in tables.values()
+            if isinstance(item.get("rows"), int)
+        )
+        successes = [
+            str(task.get("last_success_at")) for task in members
+            if task.get("last_success_at")
+        ]
+        errors = [
+            str(task.get("last_error")) for task in members
+            if task.get("last_error")
+        ]
+        watermarks = [
+            str(task.get("watermark")) for task in members if task.get("watermark")
+        ]
+        datasets.append({
+            "dataset_id": spec.dataset_id,
+            "label": spec.label,
+            "description": spec.description,
+            "category": spec.category,
+            "category_label": category_label(spec.category),
+            "target_kind": spec.target_kind,
+            "task_keys": list(spec.task_keys),
+            "indicator_groups": [
+                {"key": group.key, "label": group.label, "default": group.default}
+                for group in spec.indicator_groups
+            ],
+            "time_kind": spec.time_kind,
+            "default_time": spec.default_time,
+            "coverage_unit": spec.coverage_unit,
+            "coverage_variants": list(spec.coverage_variants),
+            "advanced": spec.advanced,
+            "default_disabled": spec.default_disabled,
+            "per_code": any(bool(task.get("per_code")) for task in members),
+            "supports_range": any(
+                bool(task.get("supports_range")) for task in members
+            ),
+            "tables": list(tables.values()),
+            "rows": rows,
+            "status": _item_status(members),
+            "last_success_at": max(successes, default=None),
+            "last_error": errors[0] if errors else "",
+            "watermark": " / ".join(dict.fromkeys(watermarks)),
+        })
+    groups = [
+        {"key": key, "label": label}
+        for key, label in CATEGORY_ORDER
+        if any(dataset["category"] == key for dataset in datasets)
+    ]
+    return {
+        "targets": list(targets.values()),
+        "datasets": datasets,
+        "groups": groups,
+    }
+
+
 def validate_catalog() -> list[str]:
     """目录完整性自检（测试与收工检查用；空列表＝通过）。"""
-    problems: list[str] = []
+    problems: list[str] = list(validate_datasets())
     registered = [t.task_key for t in SYNC_TASKS] + [t.task_key for t in INFO_TASKS]
     covered = [key for item in ITEMS for key in item.task_keys]
     duplicates = sorted({key for key in covered if covered.count(key) > 1})

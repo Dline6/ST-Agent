@@ -238,6 +238,9 @@ function llmBootChrome(mount, values) {
 // 运行中只轮询 `/api/settings/data/job`（轻量快照），不触发整库统计。
 
 const dataSelection = new Set();
+const dataConfigs = new Map();
+let dataCustomCodes = '';
+let dataForceRefresh = false;
 let dataAdvanced = false;
 let dataRangeMode = 'auto';
 let dataRangeStart = '';
@@ -961,7 +964,704 @@ function renderDataWorkspace({ root, tasks, items, scopeInfo, jobPart }) {
   if (initialJob.state === 'running') pollJob(jobBox, root);
 }
 
-/** 数据同步视图：取一次总览，再装配控制、进度、目录与明细。 */
+function renderDataWorkspaceV2({ root, targets, datasets, groups, tasks, jobPart }) {
+  const targetMap = new Map(targets.map((item) => [item.target_id, item]));
+  const targetDatasets = datasets.filter((item) => item.target_kind === 'target');
+  const globalDatasets = datasets.filter((item) => item.target_kind === 'global');
+  let lastPreflight = null;
+  let preflightSeq = 0;
+  let preflightTimer = null;
+  let pollTimer = null;
+
+  const controls = el('section', 'page__block settings-sync');
+  controls.append(el('h3', 'page__block-title', '同步设置'));
+
+  const advancedLabel = el('label', 'settings-field settings-field--inline');
+  const advancedInput = el('input');
+  advancedInput.type = 'checkbox';
+  advancedInput.checked = dataAdvanced;
+  advancedLabel.append(
+    advancedInput, el('span', 'settings-field__label', '显示高级项与强制重拉'),
+  );
+  advancedInput.addEventListener('change', () => {
+    dataAdvanced = advancedInput.checked;
+    if (!dataAdvanced) {
+      for (const key of [...dataSelection]) {
+        const cfg = dataConfigs.get(key);
+        if (cfg) cfg.force = false;
+      }
+    }
+    renderCatalog();
+    refreshPreflight();
+  });
+  controls.append(advancedLabel);
+
+  const actions = el('div', 'feedback__actions');
+  const syncSelected = el('button', 'feedback__button', '同步所选');
+  syncSelected.type = 'button';
+  const cancelBtn = el('button', 'feedback__button', '停止同步');
+  cancelBtn.type = 'button';
+  cancelBtn.disabled = true;
+  actions.append(syncSelected, cancelBtn);
+  const status = el('p', 'component__meta', '');
+  const preflightBox = el('div', 'settings-preflight');
+  controls.append(actions, status, preflightBox);
+
+  const catalogBox = el('section', 'page__block settings-catalog');
+  const jobBox = el('section', 'page__block settings-job');
+  root.append(controls, catalogBox, jobBox);
+
+  function datasetById(datasetId) {
+    return datasets.find((item) => item.dataset_id === datasetId) || null;
+  }
+
+  function itemKey(targetId, datasetId) {
+    return `${targetId}:${datasetId}`;
+  }
+
+  function configFor(key, dataset) {
+    if (!dataConfigs.has(key)) {
+      const groupsDefault = (dataset.indicator_groups || [])
+        .filter((group) => group.default).map((group) => group.key);
+      dataConfigs.set(key, {
+        groups: groupsDefault,
+        time: JSON.parse(JSON.stringify(dataset.default_time || { kind: 'none' })),
+        force: false,
+      });
+    }
+    return dataConfigs.get(key);
+  }
+
+  function buildItems() {
+    const items = [];
+    for (const key of dataSelection) {
+      const split = key.indexOf(':');
+      const target = key.slice(0, split);
+      const datasetId = key.slice(split + 1);
+      const dataset = datasetById(datasetId);
+      if (!dataset) continue;
+      const cfg = configFor(key, dataset);
+      items.push({
+        target,
+        dataset: datasetId,
+        groups: [...cfg.groups],
+        time: cfg.time,
+        force_refresh: Boolean(cfg.force),
+      });
+    }
+    return items;
+  }
+
+  function timeText(time) {
+    if (!time || time.kind === 'none') return '快照 / 全量';
+    if (time.kind === 'date_range') {
+      if (time.mode === 'incremental') return '按水位增量';
+      if (time.mode === 'last_years') return `最近 ${time.n || 1} 年`;
+      if (time.mode === 'last_days') return `最近 ${time.n || 30} 天`;
+      if (time.mode === 'full') return '全部历史';
+      if (time.mode === 'today') return '今日';
+      return `${time.start || '—'} → ${time.end || '今日'}`;
+    }
+    if (time.kind === 'quarter_range') {
+      if (time.mode === 'last_n') return `最近 ${time.n || 8} 季`;
+      return `${time.from || '—'} → ${time.to || '—'}`;
+    }
+    if (time.kind === 'year_range') {
+      if (time.mode === 'last_n') return `最近 ${time.n || 3} 年`;
+      return `${time.from || '—'} → ${time.to || '—'}`;
+    }
+    return '—';
+  }
+
+  function renderTimeControl(dataset, cfg) {
+    const box = el('div', 'settings-time-row');
+    if (dataset.time_kind === 'none') {
+      box.append(el('span', 'component__meta', '快照 / 全量，无时间选择'));
+      return box;
+    }
+    const mode = el('select', 'settings-field__input');
+    if (dataset.time_kind === 'date_range') {
+      for (const [value, label] of [
+        ['incremental', '按水位增量'], ['last_years', '最近 N 年'],
+        ['last_days', '最近 N 天'], ['full', '全部历史'],
+        ['today', '今日'], ['custom', '自定义区间'],
+      ]) {
+        const option = el('option', null, label);
+        option.value = value;
+        mode.append(option);
+      }
+      mode.value = cfg.time.mode || 'incremental';
+    } else if (dataset.time_kind === 'quarter_range') {
+      for (const [value, label] of [['last_n', '最近 N 季'], ['range', '季度区间']]) {
+        const option = el('option', null, label);
+        option.value = value;
+        mode.append(option);
+      }
+      mode.value = cfg.time.mode || 'last_n';
+    } else {
+      for (const [value, label] of [['last_n', '最近 N 年'], ['range', '年份区间']]) {
+        const option = el('option', null, label);
+        option.value = value;
+        mode.append(option);
+      }
+      mode.value = cfg.time.mode || 'last_n';
+    }
+    box.append(field('时间', mode));
+
+    const extras = el('div', 'settings-time-row');
+    function resetTime(nextMode) {
+      if (dataset.time_kind === 'date_range') {
+        cfg.time = { kind: 'date_range', mode: nextMode };
+        if (nextMode === 'last_years') cfg.time.n = 1;
+        if (nextMode === 'last_days') cfg.time.n = 30;
+        if (nextMode === 'custom') {
+          cfg.time.start = cfg.time.start || '';
+          cfg.time.end = cfg.time.end || '';
+        }
+      } else if (dataset.time_kind === 'quarter_range') {
+        cfg.time = { kind: 'quarter_range', mode: nextMode };
+        if (nextMode === 'last_n') cfg.time.n = 8;
+        if (nextMode === 'range') {
+          cfg.time.from = cfg.time.from || '';
+          cfg.time.to = cfg.time.to || '';
+        }
+      } else {
+        cfg.time = { kind: 'year_range', mode: nextMode };
+        if (nextMode === 'last_n') cfg.time.n = 3;
+        if (nextMode === 'range') {
+          cfg.time.from = cfg.time.from || '';
+          cfg.time.to = cfg.time.to || '';
+        }
+      }
+      renderCatalog();
+      refreshPreflight();
+    }
+    mode.addEventListener('change', () => resetTime(mode.value));
+
+    const currentMode = cfg.time.mode || mode.value;
+    if (dataset.time_kind === 'date_range' && (currentMode === 'last_years' || currentMode === 'last_days')) {
+      const n = input('number');
+      n.min = '1';
+      n.value = String(cfg.time.n || (currentMode === 'last_days' ? 30 : 1));
+      n.addEventListener('change', () => {
+        cfg.time.n = Number(n.value) || 1;
+        refreshPreflight();
+      });
+      extras.append(field('数量', n));
+    }
+    if (dataset.time_kind === 'date_range' && currentMode === 'custom') {
+      const start = input('date');
+      start.value = cfg.time.start || '';
+      const end = input('date');
+      end.value = cfg.time.end || '';
+      start.addEventListener('change', () => {
+        cfg.time.start = start.value;
+        refreshPreflight();
+      });
+      end.addEventListener('change', () => {
+        cfg.time.end = end.value;
+        refreshPreflight();
+      });
+      extras.append(field('起始', start), field('结束', end));
+    }
+    if (dataset.time_kind === 'quarter_range' && currentMode === 'last_n') {
+      const n = el('select', 'settings-field__input');
+      for (const value of [4, 8, 12, 20]) {
+        const option = el('option', null, `最近 ${value} 季`);
+        option.value = String(value);
+        n.append(option);
+      }
+      n.value = String(cfg.time.n || 8);
+      n.addEventListener('change', () => {
+        cfg.time.n = Number(n.value) || 8;
+        refreshPreflight();
+      });
+      extras.append(field('数量', n));
+    }
+    if (dataset.time_kind === 'quarter_range' && currentMode === 'range') {
+      const from = input('text', 'YYYYQn');
+      from.value = cfg.time.from || '';
+      const to = input('text', 'YYYYQn');
+      to.value = cfg.time.to || '';
+      from.addEventListener('change', () => {
+        cfg.time.from = from.value.trim();
+        refreshPreflight();
+      });
+      to.addEventListener('change', () => {
+        cfg.time.to = to.value.trim();
+        refreshPreflight();
+      });
+      extras.append(field('起始季度', from), field('结束季度', to));
+    }
+    if (dataset.time_kind === 'year_range' && currentMode === 'last_n') {
+      const n = el('select', 'settings-field__input');
+      for (const value of [1, 3, 5, 10]) {
+        const option = el('option', null, `最近 ${value} 年`);
+        option.value = String(value);
+        n.append(option);
+      }
+      n.value = String(cfg.time.n || 3);
+      n.addEventListener('change', () => {
+        cfg.time.n = Number(n.value) || 3;
+        refreshPreflight();
+      });
+      extras.append(field('数量', n));
+    }
+    if (dataset.time_kind === 'year_range' && currentMode === 'range') {
+      const from = input('number');
+      from.value = cfg.time.from || '';
+      const to = input('number');
+      to.value = cfg.time.to || '';
+      from.addEventListener('change', () => {
+        cfg.time.from = Number(from.value) || null;
+        refreshPreflight();
+      });
+      to.addEventListener('change', () => {
+        cfg.time.to = Number(to.value) || null;
+        refreshPreflight();
+      });
+      extras.append(field('起始年', from), field('结束年', to));
+    }
+    box.append(extras);
+    return box;
+  }
+
+  function renderDatasetRow(dataset, target) {
+    if (dataset.advanced && !dataAdvanced) return null;
+    const key = itemKey(target.target_id, dataset.dataset_id);
+    const cfg = configFor(key, dataset);
+    const row = el('div', 'settings-item');
+    const head = el('div', 'settings-item__head');
+    const check = el('input');
+    check.type = 'checkbox';
+    check.checked = dataSelection.has(key);
+    check.disabled = !target.available && dataset.target_kind === 'target';
+    const label = el('label', 'settings-item__label');
+    label.append(check, el('span', 'settings-item__name', dataset.label));
+    head.append(label, el('span', badgeClass(dataset.status), statusText(dataset.status)));
+    if (dataset.advanced) head.append(el('span', 'settings-badge', '高级'));
+    if (dataset.default_disabled) head.append(el('span', 'settings-badge', '默认关闭'));
+    check.addEventListener('change', () => {
+      if (check.checked) {
+        dataSelection.add(key);
+        configFor(key, dataset);
+      } else {
+        dataSelection.delete(key);
+      }
+      renderCatalog();
+      refreshPreflight();
+    });
+    row.append(head, el('p', 'settings-item__desc', dataset.description));
+
+    const meta = [];
+    const tables = (dataset.tables || []).map((table) =>
+      `${table.display_name}（${table.rows === null || table.rows === undefined ? '—' : table.rows} 行）`);
+    if (tables.length) meta.push(`表：${tables.join('、')}`);
+    meta.push(`最近同步：${stampText(dataset.last_success_at, true)}`);
+    if (dataset.watermark) meta.push(`水位：${String(dataset.watermark).slice(0, 40)}`);
+    if (meta.length) row.append(el('p', 'settings-item__meta', meta.join(' · ')));
+
+    if ((dataset.indicator_groups || []).length) {
+      const chips = el('div', 'settings-chips');
+      for (const group of dataset.indicator_groups) {
+        const active = cfg.groups.includes(group.key);
+        const chip = el('button', `settings-chip${active ? ' is-active' : ''}`, group.label);
+        chip.type = 'button';
+        chip.setAttribute('aria-pressed', String(active));
+        chip.addEventListener('click', () => {
+          if (active) cfg.groups = cfg.groups.filter((item) => item !== group.key);
+          else cfg.groups = [...cfg.groups, group.key];
+          renderCatalog();
+          refreshPreflight();
+        });
+        chips.append(chip);
+      }
+      row.append(chips);
+    }
+
+    if (dataset.time_kind !== 'none') row.append(renderTimeControl(dataset, cfg));
+
+    if (dataAdvanced) {
+      const forceLabel = el('label', 'settings-field settings-field--inline');
+      const force = el('input');
+      force.type = 'checkbox';
+      force.checked = Boolean(cfg.force);
+      force.addEventListener('change', () => {
+        cfg.force = force.checked;
+        refreshPreflight();
+      });
+      forceLabel.append(force, el('span', 'settings-field__label', '强制重拉本数据集'));
+      row.append(forceLabel);
+    }
+    if (dataset.last_error) {
+      row.append(el('p', 'state state--error', `上次失败：${dataset.last_error}`));
+    }
+    return row;
+  }
+
+  function renderCustomCodes(target) {
+    const box = el('div', 'settings-custom-codes');
+    box.append(el('p', 'component__meta', '每行或逗号分隔；支持 sh.600000 / 600000。'));
+    const area = el('textarea', 'settings-field__input');
+    area.rows = 4;
+    area.value = dataCustomCodes;
+    area.addEventListener('change', () => {
+      dataCustomCodes = area.value;
+      refreshPreflight();
+    });
+    const file = el('input');
+    file.type = 'file';
+    file.accept = '.txt,.csv,text/plain';
+    file.addEventListener('change', () => {
+      const chosen = file.files && file.files[0];
+      if (!chosen) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        dataCustomCodes = String(reader.result || '');
+        area.value = dataCustomCodes;
+        refreshPreflight();
+      };
+      reader.readAsText(chosen, 'utf-8');
+    });
+    box.append(area, field('从文件导入', file));
+    if (target.invalid && target.invalid.length) {
+      box.append(el('p', 'state state--error',
+        `非法行：${target.invalid.map((item) => `${item.value}（${item.reason}）`).join('；')}`));
+    }
+    return box;
+  }
+
+  function renderTarget(target, rows) {
+    const details = el('details', 'settings-category');
+    details.open = ['all_a', 'st', 'other'].includes(target.target_id);
+    const summary = el('summary', 'settings-category__head');
+    summary.append(el('h4', 'settings-category__title', target.label));
+    const bits = [];
+    if (target.count !== null && target.count !== undefined) bits.push(`${target.count} 只`);
+    if (target.as_of) bits.push(`截止 ${target.as_of}`);
+    if (target.source) bits.push(target.source);
+    if (bits.length) summary.append(el('span', 'settings-badge', bits.join(' · ')));
+    details.append(summary);
+    if (!target.available && target.reason) {
+      details.append(el('p', 'state state--empty', target.reason));
+    }
+    if (target.target_id === 'custom') details.append(renderCustomCodes(target));
+    const items = rows.filter((item) => item);
+    if (!items.length) {
+      details.append(el('p', 'state state--empty', '该分组没有可见数据集。'));
+      return details;
+    }
+    const byCategory = new Map();
+    for (const item of items) {
+      if (!byCategory.has(item.category_label)) byCategory.set(item.category_label, []);
+      byCategory.get(item.category_label).push(item);
+    }
+    for (const [category, list] of byCategory) {
+      if (byCategory.size > 1) details.append(el('h5', 'settings-category__title', category));
+      for (const dataset of list) {
+        const row = renderDatasetRow(dataset, target);
+        if (row) details.append(row);
+      }
+    }
+    return details;
+  }
+
+  function renderCatalog() {
+    catalogBox.replaceChildren(el('h3', 'page__block-title', '标的与数据集'));
+    for (const target of targets) {
+      if (target.target_id === 'other') continue;
+      const rows = targetDatasets
+        .filter((dataset) => !dataset.advanced || dataAdvanced)
+        .map((dataset) => ({ ...dataset }));
+      catalogBox.append(renderTarget(target, rows));
+    }
+    const other = targetMap.get('other') || {
+      target_id: 'other', label: '其他', count: 0, available: true,
+    };
+    catalogBox.append(renderTarget(
+      other, globalDatasets.filter((dataset) => !dataset.advanced || dataAdvanced),
+    ));
+  }
+
+  function warningText(warning) {
+    if (warning.kind === 'first_full') return '首次全量：相关任务尚无水位，将按基线起点拉取';
+    if (warning.kind === 'default_disabled') return '默认关闭项：需显式勾选才会运行';
+    if (warning.kind === 'backup') return '备源：与主源写同一表，通常无需同时运行';
+    if (warning.kind === 'overlap') {
+      return `重复标的：${warning.duplicate_code_count} 只码在多个标的/分组中重复，已按并集合并`;
+    }
+    if (warning.kind === 'target_unavailable') return `标的不可用：${warning.reason || ''}`;
+    if (warning.kind === 'over_budget') {
+      return `预计请求 ${warning.requests} 次，超过建议日预算 ${warning.budget} 次；仍可开始`;
+    }
+    return warning.kind || '警告';
+  }
+
+  function renderPreflight(data) {
+    const nodes = [];
+    const errors = Array.isArray(data.errors) ? data.errors : [];
+    for (const error of errors) nodes.push(el('p', 'state state--error', error));
+    if (data.estimate) {
+      nodes.push(el('p', 'component__meta',
+        `预计请求：${data.estimate.requests} 次（建议上限 ${data.estimate.budget}）`));
+    }
+    if (Array.isArray(data.auto_added) && data.auto_added.length) {
+      nodes.push(el('p', 'component__meta',
+        `自动补入前置：${taskNamesBrief(tasks, data.auto_added)}`));
+    }
+    for (const warning of data.warnings || []) {
+      nodes.push(el('p', 'component__meta', warningText(warning)));
+    }
+    for (const item of data.plan || []) {
+      const bits = [`${item.label}：${item.codes_count === null ? '全市场' : `${item.codes_count} 只`}`];
+      const groups = (item.groups || []).filter((group) => group !== 'all');
+      if (groups.length) bits.push(`指标 ${groups.join(' / ')}`);
+      bits.push(timeText(item.time));
+      bits.push(`约 ${item.planned_requests} 次请求`);
+      nodes.push(el('p', 'component__meta', bits.join(' · ')));
+    }
+    if (!nodes.length) nodes.push(el('p', 'component__meta', '预检通过，可以开始。'));
+    preflightBox.replaceChildren(...nodes);
+    syncSelected.disabled = errors.length > 0;
+  }
+
+  async function runPreflight() {
+    const items = buildItems();
+    if (!items.length) {
+      lastPreflight = null;
+      preflightBox.replaceChildren(el('p', 'component__meta', '尚未选择数据集。'));
+      syncSelected.disabled = false;
+      return;
+    }
+    const seq = ++preflightSeq;
+    preflightBox.replaceChildren(el('p', 'component__meta', '正在预检…'));
+    try {
+      const result = await postJson('/api/settings/data/preflight', {
+        items, custom_codes_text: dataCustomCodes,
+      });
+      if (seq !== preflightSeq) return;
+      if (!result || result.status !== 'ok') {
+        lastPreflight = null;
+        preflightBox.replaceChildren(el('p', 'state state--error',
+          `预检不可用（${(result && result.status) || '未知'}）：`
+          + `${(result && result.reason) || ''}`));
+        syncSelected.disabled = true;
+        return;
+      }
+      lastPreflight = result.data || {};
+      renderPreflight(lastPreflight);
+    } catch (error) {
+      if (seq !== preflightSeq) return;
+      preflightBox.replaceChildren(el('p', 'state state--error',
+        `预检失败：${error.message}`));
+      syncSelected.disabled = true;
+    }
+  }
+
+  function refreshPreflight() {
+    if (preflightTimer) {
+      window.clearTimeout(preflightTimer);
+      preflightTimer = null;
+    }
+    preflightTimer = window.setTimeout(runPreflight, 250);
+  }
+
+  function progressPercent(progress) {
+    if (!progress) return 0;
+    if (progress.unit_total) {
+      return Math.min(100, Math.round(
+        (Number(progress.unit_done || 0) / Number(progress.unit_total)) * 100));
+    }
+    if (progress.group_total) {
+      return Math.min(100, Math.round(
+        (Number(progress.group_index || 0) / Number(progress.group_total)) * 100));
+    }
+    return 0;
+  }
+
+  function renderJob(job) {
+    jobBox.replaceChildren(el('h3', 'page__block-title', '同步进度'));
+    if (!job || !job.state) {
+      jobBox.append(el('p', 'component__meta', '当前无同步批次。'));
+      return;
+    }
+    const progress = job.progress || {};
+    jobBox.append(el('p', 'component__meta',
+      `批次 ${job.job_id} · ${JOB_STATE_LABELS[job.state] || job.state}`
+      + (job.current ? ` · 当前：${job.current}` : '')));
+    const pct = progressPercent(progress);
+    const bar = el('div', 'settings-progress');
+    const fill = el('div', 'settings-progress__fill');
+    fill.style.width = `${pct}%`;
+    bar.append(fill);
+    jobBox.append(bar);
+    const bits = [`${pct}%`];
+    if (progress.unit_total) bits.push(`${progress.unit_done || 0} / ${progress.unit_total}`);
+    if (progress.group_total) bits.push(`组 ${progress.group_index || 0} / ${progress.group_total}`);
+    if (progress.requests) bits.push(`请求 ${progress.requests}`);
+    if (progress.rows) bits.push(`行 ${progress.rows}`);
+    if (progress.eta_seconds !== null && progress.eta_seconds !== undefined) {
+      bits.push(`预计剩余 ${progress.eta_seconds} 秒`);
+    }
+    jobBox.append(el('p', 'component__meta', bits.join(' · ')));
+    if (job.cancel_requested && job.state === 'running') {
+      jobBox.append(el('p', 'component__meta', '已请求停止：当前请求结束后停止。'));
+    }
+    if (job.error) jobBox.append(el('p', 'state state--error', `批次错误：${job.error}`));
+    const results = job.results || {};
+    for (const [key, result] of Object.entries(results)) {
+      const label = result.task_key || key;
+      jobBox.append(el('p', 'component__meta',
+        `${label} · ${RESULT_STATUS_LABELS[result.status] || result.status || '—'}`
+        + (result.rows === null || result.rows === undefined ? '' : ` · ${result.rows} 行`)
+        + (result.duration_ms ? ` · ${durationText(result.duration_ms)}` : '')));
+    }
+  }
+
+  async function pollJob(startedNow = false) {
+    if (pollTimer) {
+      window.clearTimeout(pollTimer);
+      pollTimer = null;
+    }
+    let payload;
+    try {
+      payload = await getJson('/api/settings/data/job');
+    } catch (error) {
+      jobBox.replaceChildren(el('p', 'state state--error', `进度不可读：${error.message}`));
+      return;
+    }
+    if (payload && payload.status !== 'ok') {
+      renderPart(payload, jobBox);
+      return;
+    }
+    const job = (payload && payload.data && payload.data.job) || {};
+    renderJob(job);
+    const running = job.state === 'running';
+    cancelBtn.disabled = !running;
+    if (running) {
+      pollTimer = window.setTimeout(() => pollJob(false), 1000);
+      return;
+    }
+    if (startedNow) {
+      showToast(job.state === 'done' ? '同步批次完成' : '同步批次结束（见结果）',
+        { type: job.state === 'done' ? 'success' : 'error' });
+      const page = root.closest('.page');
+      if (page && page.parentElement) renderSettingsPage(null, page.parentElement);
+    }
+  }
+
+  async function doStart() {
+    const items = buildItems();
+    if (!items.length) return;
+    status.textContent = '正在发起…';
+    status.className = 'component__meta';
+    try {
+      const result = await postJson('/api/settings/data/sync', {
+        items, custom_codes_text: dataCustomCodes,
+      });
+      if (!result || result.status !== 'ok') {
+        status.textContent = `发起失败：${(result && result.reason) || '未知原因'}`;
+        status.className = 'state state--error';
+        return;
+      }
+      status.textContent = `已发起批次 ${result.data.job_id}`;
+      status.className = 'component__meta';
+      pollJob(true);
+    } catch (error) {
+      status.textContent = `发起失败：${error.message}`;
+      status.className = 'state state--error';
+    }
+  }
+
+  function startSelected() {
+    if (!dataSelection.size) {
+      status.textContent = '尚未选择数据集。';
+      status.className = 'state state--empty';
+      return;
+    }
+    if (lastPreflight && Array.isArray(lastPreflight.errors)
+        && lastPreflight.errors.length) {
+      status.textContent = `预检未通过：${lastPreflight.errors.join('；')}`;
+      status.className = 'state state--error';
+      return;
+    }
+    const warnings = (lastPreflight && lastPreflight.warnings) || [];
+    const plan = (lastPreflight && lastPreflight.plan) || [];
+    const needsConfirm = warnings.some((warning) => warning.kind === 'first_full')
+      || plan.length >= 8;
+    if (needsConfirm) {
+      openDialog({
+        title: '确认开始同步',
+        description: '本次同步可能耗时较长；首次全量会按基线起点拉取。',
+        scope: [
+          `将执行 ${plan.length} 个请求组`,
+          ...plan.slice(0, 8).map((item) =>
+            `${item.label} · ${item.codes_count === null ? '全市场' : `${item.codes_count} 只`} · ${timeText(item.time)}`),
+          '同一时刻只允许一个批次；开始后可在进度卡里停止',
+        ],
+        confirmLabel: '开始同步',
+        onConfirm: doStart,
+      });
+      return;
+    }
+    doStart();
+  }
+
+  syncSelected.addEventListener('click', startSelected);
+  cancelBtn.addEventListener('click', async () => {
+    try {
+      await postJson('/api/settings/data/sync/cancel', {});
+      pollJob(false);
+    } catch (error) {
+      status.textContent = `停止失败：${error.message}`;
+      status.className = 'state state--error';
+    }
+  });
+
+  renderCatalog();
+  const initialJob = partValues(jobPart) || {};
+  renderJob(initialJob);
+  if (initialJob.state === 'running') pollJob(false);
+
+  const danger = el('section', 'page__block settings-danger');
+  danger.append(
+    el('h3', 'page__block-title', '清空市场数据'),
+    el('p', 'component__meta',
+      '只删除本地市场/信息数据与正文缓存，保留记忆、配置、聊天等；清空后可重新同步。'),
+  );
+  const clearBtn = el('button', 'feedback__button', '清空市场数据');
+  clearBtn.type = 'button';
+  clearBtn.addEventListener('click', () => {
+    openDialog({
+      title: '清空市场数据',
+      description: '该操作不可撤销；公告/问答正文缓存删除后不可恢复。',
+      scope: [
+        '删除：market.db（主档 / 日历 / 行情 / 财务 / 信息表 / 同步水位）',
+        '删除：data_cache/info 下的公告与问答正文缓存',
+        '保留：记忆 / 配置 / 聊天 / 执行日志 / 反思 / 凭据',
+        '保留：存储根之外的备份归档',
+      ],
+      requirePhrase: '清除市场数据',
+      destructive: true,
+      confirmLabel: '确认清空',
+      onConfirm: async () => {
+        const result = await postJson('/api/settings/data/clear', {
+          level: 1, phrase: '清除市场数据',
+        });
+        if (!result || result.status !== 'ok') {
+          throw new Error((result && result.reason) || '清空失败');
+        }
+        showToast('市场数据已清空', { type: 'success' });
+        const page = root.closest('.page');
+        if (page && page.parentElement) renderSettingsPage(null, page.parentElement);
+      },
+    });
+  });
+  danger.append(clearBtn);
+  root.append(danger);
+}
+
+
 async function renderDataView(root) {
   if (dataPollTimer) {
     window.clearTimeout(dataPollTimer);
@@ -993,10 +1693,19 @@ async function renderDataView(root) {
   const values = partValues(payload.tasks);
   const tasks = Array.isArray(values.tasks) ? values.tasks : [];
   const items = Array.isArray(values.items) ? values.items : [];
+  const datasets = Array.isArray(values.datasets) ? values.datasets : [];
+  const targets = Array.isArray(values.targets) ? values.targets : [];
   const summaryValues = partValues(payload.summary);
   const scopeInfo = (summaryValues && summaryValues.scope) || {};
 
-  renderDataWorkspace({ root, tasks, items, scopeInfo, jobPart: payload.job });
+  if (datasets.length && targets.length) {
+    renderDataWorkspaceV2({
+      root, targets, datasets, groups: values.groups || [],
+      tasks, jobPart: payload.job,
+    });
+  } else {
+    renderDataWorkspace({ root, tasks, items, scopeInfo, jobPart: payload.job });
+  }
 
   const details = document.createElement('details');
   details.className = 'page__block settings-details';

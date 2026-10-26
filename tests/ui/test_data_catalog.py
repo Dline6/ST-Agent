@@ -14,6 +14,7 @@ from st_agent.ui.data_catalog import (
     TABLE_LABELS,
     TASK_LABELS,
     catalog_payload,
+    sync_catalog_payload,
     validate_catalog,
 )
 
@@ -103,3 +104,47 @@ def test_advanced_items_cover_backups_and_default_disabled() -> None:
     assert "info_shareholder_num_cninfo" in advanced
     assert "info_sentiment_qa_irm" in advanced
     assert "bs_k_daily" not in advanced
+
+
+def test_sync_catalog_carries_targets_datasets_and_capabilities() -> None:
+    overview = {
+        "tasks": [
+            {
+                "task_key": "bs_k_daily", "status": "ok",
+                "table_rows": [{"table": "k_line_daily", "rows": 7}],
+                "last_success_at": "2026-10-24T15:00:00+08:00",
+                "watermark": "2026-10-24", "last_error": "",
+                "per_code": True, "supports_range": True,
+            },
+            {
+                "task_key": "bs_st_list", "status": "",
+                "table_rows": [{"table": "st_membership", "rows": 194}],
+                "last_success_at": None, "watermark": None, "last_error": "",
+                "per_code": False, "supports_range": False,
+            },
+        ],
+        "summary": {
+            "targets": {
+                "st": {
+                    "target_id": "st", "label": "ST 股票", "count": 194,
+                    "available": True, "as_of": "2026-10-26T21:00:00+08:00",
+                    "source": "BaoStock 名称匹配（快照）", "reason": "",
+                    "invalid": [], "duplicates": [],
+                },
+            },
+        },
+    }
+
+    payload = sync_catalog_payload(overview)
+    datasets = {item["dataset_id"]: item for item in payload["datasets"]}
+
+    assert [target["target_id"] for target in payload["targets"]] == ["st"]
+    assert datasets["k_daily"]["target_kind"] == "target"
+    assert datasets["k_daily"]["rows"] == 7
+    assert datasets["k_daily"]["time_kind"] == "date_range"
+    assert {group["key"] for group in datasets["k_daily"]["indicator_groups"]} == {
+        "price", "volume", "valuation", "st_flag",
+    }
+    assert datasets["fin_quarter"]["time_kind"] == "quarter_range"
+    assert datasets["st_list"]["target_kind"] == "global"
+    assert payload["groups"]

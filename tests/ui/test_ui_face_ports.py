@@ -66,6 +66,7 @@ _EXPECTED_POST_ROUTES = frozenset({
     # 数据同步范围与运行态（[`T-UI-028.6`] / [`.7`]）：预检与停止都是显式动作。
     "/api/settings/data/preflight",
     "/api/settings/data/sync/cancel",
+    "/api/settings/data/clear",
     "/api/settings/convert",
     "/api/settings/backup",
     "/api/settings/restore",

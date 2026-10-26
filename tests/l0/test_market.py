@@ -51,9 +51,11 @@ EXPECTED_TABLES = {
     # T-L0-010 信息面：元数据扩展 + 四域表组（7 张）
     "indicator_source_map", "announcement", "dragon_tiger",
     "dragon_tiger_seat", "shareholder_num", "sentiment_qa", "sentiment_hot",
+    # T-L0-019 / .21：ST 名单与覆盖账本
+    "st_membership", "sync_coverage",
 }
 EXPECTED_VIEWS = {"v_k_line_daily_hfq", "v_k_line_daily_qfq",
-                  "v_k_line_latest", "v_st_universe"}
+                  "v_k_line_latest", "v_st_universe", "v_st_sync_pool"}
 
 
 # ───────────────────────── Fake 抓取器 ─────────────────────────
@@ -85,6 +87,13 @@ class FakeFetcher:
         return (["code", "code_name", "ipoDate", "outDate", "type", "status"],
                 [["sh.600000", "浦发银行", "1999-11-10", "", "1", "1"],
                  ["sh.000001", "上证指数", "", "", "2", "1"]])
+
+    def st_basic(self):
+        self._guard("st_basic")
+        return (["code", "code_name", "ipoDate", "outDate", "type", "status"],
+                [["sh.600053", "*ST国贸", "1997-04-18", "", "1", "1"],
+                 ["sh.600065", "*ST退市", "1997-05-23", "2007-12-13", "1", "0"],
+                 ["sh.600000", "浦发银行", "1999-11-10", "", "1", "1"]])
 
     def all_stock(self, day):
         self._guard("all_stock")
@@ -258,12 +267,12 @@ class TestGwt1Bootstrap:
         db, _, _, _ = rig
         assert set(db.tables()) == EXPECTED_TABLES
         assert set(db.views()) == EXPECTED_VIEWS
-        assert TASK_COUNT == 20
+        assert TASK_COUNT == 21
 
     def test_setup_registers_tasks(self, rig):
         db, _, _, _ = rig
         env = db.query("SELECT count(*) AS n FROM sync_state")
-        assert env.data["rows"][0]["n"] == 20
+        assert env.data["rows"][0]["n"] == 21
         env2 = db.query("SELECT source_id FROM data_source")
         assert env2.data["rows"][0]["source_id"] == "baostock"
 
@@ -311,12 +320,12 @@ class TestGwt1Bootstrap:
 
 class TestGwt2Watermark:
     def test_registry_matches_doc_count(self):
-        assert len(SYNC_TASKS) == 20
+        assert len(SYNC_TASKS) == 21
         assert {t.table_name for t in SYNC_TASKS} >= {
-            "trade_calendar", "security", "k_line_daily", "k_line_period",
-            "k_line_minute", "adjust_factor", "dividend", "financial_quarter",
-            "performance_express", "profit_forecast", "stock_industry",
-            "index_constituent",
+            "trade_calendar", "security", "st_membership", "k_line_daily",
+            "k_line_period", "k_line_minute", "adjust_factor", "dividend",
+            "financial_quarter", "performance_express", "profit_forecast",
+            "stock_industry", "index_constituent",
         }
 
     def test_unknown_task_rejected(self):

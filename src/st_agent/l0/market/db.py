@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import re
+import re
 import sqlite3
 import tempfile
 from collections.abc import Iterable, Iterator
@@ -81,8 +82,15 @@ _FRESHNESS_SQL = (
 
 _META_TABLES: frozenset[str] = frozenset({
     "sync_state", "data_source", "indicator_dictionary", "indicator_source_map",
+    "sync_coverage",
 })
 """非业务表（总览的「逐表行数」不计入）。"""
+
+_SCHEMA_OBJECT_RE = re.compile(
+    r"CREATE\s+(?:UNIQUE\s+)?(?:TABLE|VIEW|INDEX)\s+"
+    r"(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
 
 
 def _st_pool_unavailable(reason: str) -> dict[str, Any]:
@@ -120,6 +128,46 @@ def _st_pool_in(con: sqlite3.Connection, *, include_codes: bool) -> dict[str, An
         "count": len(codes),
         "as_of": as_of,
         "reason": "" if codes else "ST 股票池为空（需先同步证券主档与日线行情）",
+    }
+
+
+def _st_sync_unavailable(reason: str) -> dict[str, Any]:
+    """ST 同步池不可用的统一形状（[D-131]）。"""
+    return {
+        "available": False, "codes": (), "count": 0, "as_of": None,
+        "source": "BaoStock 名称匹配（快照）", "reason": reason,
+    }
+
+
+def _st_sync_pool_in(con: sqlite3.Connection, *, include_codes: bool) -> dict[str, Any]:
+    """一次只读连接内的 ST 同步池解析（``v_st_sync_pool`` / ``st_membership``）。"""
+    try:
+        view = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='view' AND name='v_st_sync_pool'"
+        ).fetchone()
+    except sqlite3.OperationalError as exc:
+        return _st_sync_unavailable(f"ST 同步池读取失败：{exc}")
+    if view is None:
+        return _st_sync_unavailable(
+            "本地库缺少 v_st_sync_pool 视图（旧 schema；需升级）"
+        )
+    try:
+        codes = tuple(
+            r[0] for r in con.execute(
+                "SELECT code FROM v_st_sync_pool ORDER BY code"
+            ).fetchall()
+        )
+        row = con.execute("SELECT max(captured_at) FROM st_membership").fetchone()
+        as_of = row[0] if row and row[0] else None
+    except sqlite3.OperationalError as exc:
+        return _st_sync_unavailable(f"ST 同步池读取失败：{exc}")
+    return {
+        "available": True,
+        "codes": codes if include_codes else (),
+        "count": len(codes),
+        "as_of": as_of,
+        "source": "BaoStock 名称匹配（快照）",
+        "reason": "" if codes else "ST 名单为空（先刷新 ST 名单）",
     }
 
 
@@ -169,6 +217,40 @@ class MarketDb:
             finally:
                 con.close()
             self._store.put("data_cache", MARKET_DB_NAME, Path(path).read_bytes())
+
+    def ensure_schema(self) -> bool:
+        """把旧库补齐到当前 ``schema.sql`` 的对象集合（幂等；不动业务行）。
+
+        只创建 ``sqlite_master`` 中缺失的表 / 视图 / 索引；既有对象不重建。
+        无缺失时不写回分区，避免每次任务都多一次整库加解密。
+        返回是否发生了写回。
+        """
+        if not self.exists():
+            return False
+        changed = False
+        with self._work_copy() as path:
+            con = sqlite3.connect(path)
+            try:
+                con.execute("PRAGMA foreign_keys = ON")
+                existing = {
+                    r[0] for r in con.execute(
+                        "SELECT name FROM sqlite_master"
+                    ).fetchall()
+                }
+                for statement in _schema_text().split(";"):
+                    match = _SCHEMA_OBJECT_RE.search(statement)
+                    if match is None or match.group(1) in existing:
+                        continue
+                    con.execute(statement)
+                    existing.add(match.group(1))
+                    changed = True
+                if changed:
+                    con.commit()
+            finally:
+                con.close()
+            if changed:
+                self._write_back(path)
+        return changed
 
     def tables(self) -> tuple[str, ...]:
         """列出单库全部表名（GWT-1 全量表断言的机器可读口径）。"""
@@ -257,17 +339,20 @@ class MarketDb:
                 "states": (),
                 "counts": {},
                 "st": _st_pool_unavailable("本地市场数据库尚未建立"),
+                "st_sync": _st_sync_unavailable("本地市场数据库尚未建立"),
                 "listed_count": None,
             }
         with self._readonly() as con:
             states = self._sync_state_rows_in(con)
             counts = self._counts_in(con)
             st = _st_pool_in(con, include_codes=True)
+            st_sync = _st_sync_pool_in(con, include_codes=True)
             listed_count = self._listed_count_in(con)
         return {
             "states": states,
             "counts": counts,
             "st": st,
+            "st_sync": st_sync,
             "listed_count": listed_count,
         }
 
@@ -293,14 +378,27 @@ class MarketDb:
             return {
                 "states": (),
                 "st": _st_pool_unavailable("本地市场数据库尚未建立"),
+                "st_sync": _st_sync_unavailable("本地市场数据库尚未建立"),
                 "listed_count": None,
             }
         with self._readonly() as con:
             return {
                 "states": self._sync_state_rows_in(con),
                 "st": _st_pool_in(con, include_codes=True),
+                "st_sync": _st_sync_pool_in(con, include_codes=True),
                 "listed_count": self._listed_count_in(con),
             }
+
+    def st_sync_pool(self) -> dict[str, Any]:
+        """ST 同步标的池（``v_st_sync_pool`` / ``st_membership``；[D-131]）。
+
+        与分析区的 :meth:`st_pool` 分开：本方法返回的是名称匹配快照，服务同步标的；
+        ``as_of`` 为名单获取时间 ``captured_at``。
+        """
+        if not self.exists():
+            return _st_sync_unavailable("本地市场数据库尚未建立")
+        with self._readonly() as con:
+            return _st_sync_pool_in(con, include_codes=True)
 
     def st_codes(self) -> list[str]:
         """ST 池代码列表（不可用或空池 → 空列表；调用方先读 :meth:`st_pool` 判原因）。"""

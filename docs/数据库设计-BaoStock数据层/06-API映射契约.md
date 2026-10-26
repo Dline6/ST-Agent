@@ -16,6 +16,16 @@ consumed_by: [数据管道实现, 05-同步策略与新鲜度契约.md, 07-典�
 - 所有拉取在 `login()` … `logout()` 会话内进行，管道统一管理连接生命周期。
 - UPSERT 一律基于目标表主键 / 唯一索引 `ON CONFLICT DO UPDATE`。
 
+### 字段子集与部分 UPSERT（2026-10-26，[D-132](../../项目管理/决策日志.md)）
+
+- 抓取侧仍按目标表全集取数（K 线保留固定 `fields`，避免半列结果）；**写入侧可投影**到用户选中的指标组。
+- 始终写入的结构字段：`code` 与目标表主键（`trade_date` / `frequency` / `stat_date` / `ex_date` / `divid_operate_date` 等）；财务的 `pub_date` 始终取已查接口最大值。
+- `INSERT ... ON CONFLICT DO UPDATE SET` 只列选中列；未选列在冲突时**保留原值**，首次插入为 NULL——不得把未选列写成 NULL 覆盖既有数据。
+- 未选列依赖的完整性校验跳过，并在结果里显式说明「未选该列，未执行该检查」。
+- K 线指标组：`price`（open / high / low / close / preclose / pct_chg）、`volume`（volume / amount / turn / trade_status）、`valuation`（pe_ttm / pb_mrq / ps_ttm / pcf_ncf_ttm）、`st_flag`（is_st）。
+- 财务指标组：`profit` / `operation` / `growth` / `balance` / `cash` / `dupont`，一组对应一个季频接口；未选组不发起对应请求。
+- 复权因子三列 NOT NULL，整取不可拆；分红、业绩快报、业绩预告整取。
+
 ## 元信息类
 
 ### query_trade_dates() → trade_calendar
@@ -40,6 +50,19 @@ consumed_by: [数据管道实现, 05-同步策略与新鲜度契约.md, 07-典�
 | type | security.type | '1'~'5' 转 INTEGER |
 | status | security.status | '1'/'0' 转 INTEGER |
 
+### query_stock_basic(code_name="ST") → st_membership
+
+任务 `bs_st_list`（[D-131](../../项目管理/决策日志.md)）。一次模糊查询返回名称含 `ST` 的证券；按 `type=1`、`status=1` 与名称前缀 `ST` / `*ST` / `SST` / `S*ST` 过滤后**原子替换** `st_membership`（先删旧行、再写新行）。`captured_at` 记抓取时间，`source_id='baostock'`。该表只服务**同步标的池**；分析区 `v_st_universe` 仍按日线 `is_st`，两者不互相冒充。
+
+| API 字段 | 目标列 | 说明 |
+| --- | --- | --- |
+| code | st_membership.code | 主键 |
+| code_name | st_membership.code_name | 名称前缀用于过滤与 `name_prefixed` |
+| type | st_membership.type | '1'~'5' 转 INTEGER |
+| status | st_membership.status | 只保留 '1'（在市） |
+| （接口身份） | st_membership.source_id | 恒 'baostock' |
+| （抓取时间） | st_membership.captured_at | 本地时区 ISO-8601 |
+
 ### query_all_stock(day) → security（增量发现）
 
 手册：[10-获取证券元信息](../BaoStock-API手册/10-获取证券元信息.md)。任务 `bs_all_stock`，每交易日。用途：**发现新上市证券**（对 security UPSERT）与**行情覆盖对账**（当日源证券总数记入 `sync_state.last_row_count`，供完整性校验 1 使用）。`tradeStatus`/`code_name` 字段为当日快照，不落库（历史快照由 `k_line_daily.trade_status` 承载）。
@@ -50,7 +73,7 @@ consumed_by: [数据管道实现, 05-同步策略与新鲜度契约.md, 07-典�
 
 手册：[04-获取历史A股K线数据](../BaoStock-API手册/04-获取历史A股K线数据.md)。任务 `bs_k_daily` / `bs_k_period` / `bs_k_minute`。
 
-**固定拉取参数**：`adjustflag='3'`（不复权，全库唯一存储口径）；`frequency` 按目标表取 'd' / 'w' / 'm' / '5' / '15' / '30' / '60'；`fields` 取目标表对应全集。
+**固定拉取参数**：`adjustflag='3'`（不复权，全库唯一存储口径）；`frequency` 按目标表取 'd' / 'w' / 'm' / '5' / '15' / '30' / '60'；`fields` 取目标表对应全集（K 线不做 API 字段裁剪；写入投影见「字段子集与部分 UPSERT」）。
 
 | API 字段 | k_line_daily | k_line_period | k_line_minute | 说明 |
 | --- | --- | --- | --- | --- |

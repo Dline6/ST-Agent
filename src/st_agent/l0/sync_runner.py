@@ -18,11 +18,12 @@
 
 from __future__ import annotations
 
+import json
 import threading
 import time
 import uuid
 from collections.abc import Callable, Iterable, Mapping
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from st_agent.contracts.result_envelope import ResultEnvelope
@@ -35,9 +36,21 @@ from st_agent.l0.info.sources import (
 from st_agent.l0.info.switch_config import enabled_task_map
 from st_agent.l0.info.sync import InfoSync
 from st_agent.l0.market.db import MarketDb
-from st_agent.l0.market.sync import DOMAIN_TASKS, RUN_ORDER, SOURCE_ID, BaoStockSync
+from st_agent.l0.market.datasets import (
+    dataset_for_task,
+    get_dataset,
+    normalize_groups,
+)
+from st_agent.l0.market.sync import (
+    DOMAIN_TASKS,
+    RUN_ORDER,
+    SOURCE_ID,
+    BaoStockSync,
+    estimate_requests,
+)
+from st_agent.l0.market.targets import TARGETS, resolve_targets
 from st_agent.l0.market.tasks import TASK_KEYS as MARKET_TASK_KEYS
-from st_agent.l0.market.tasks import get_task
+from st_agent.l0.market.tasks import get_task, last_n_quarters
 
 __all__ = ["DataSyncRunner", "SyncBusyError", "SyncJobError", "SCOPES"]
 
@@ -55,17 +68,10 @@ _MARKET_DOMAIN.setdefault("bs_k_minute", "kline")
 _MASTER_TASKS: tuple[str, ...] = ("bs_calendar", "bs_security_basic", "bs_all_stock")
 
 SCOPES: tuple[str, ...] = ("market", "st", "watchlist")
-"""证券范围（[D-130]）：全市场 / 仅 ST 股票池 / 仅关注池。"""
+"""证券范围（[D-130]）：全市场 / 仅 ST 股票池 / 仅关注池（旧接口适配用）。"""
 
-_SCOPE_START_REQUIRED: frozenset[str] = frozenset({
-    "bs_k_daily", "bs_k_period", "bs_k_minute", "bs_dividend",
-    "bs_perf_express", "bs_forecast",
-})
-"""窗口按**全库水位**推导的任务：范围同步必须给显式起点，否则新纳入代码拿到空窗口。
-
-``bs_adjust_factor``（基线起点）与 ``bs_fin_quarter``（固定 8 季度）不在此列——
-它们的默认窗口对新增代码本就可取。
-"""
+DEFAULT_DAILY_BUDGET = 40_000
+"""源端日请求预算提示值（超限只警告不拦，[D-133]）。"""
 
 
 class SyncJobError(ValueError):
@@ -111,6 +117,42 @@ def _validate_scope_args(
     return ""
 
 
+def _today() -> date:
+    return datetime.now().astimezone().date()
+
+
+def _quarter_start(unit: str) -> str:
+    year_text, _, quarter_text = unit.partition("Q")
+    try:
+        year, quarter = int(year_text), int(quarter_text)
+    except (TypeError, ValueError):
+        raise SyncJobError(f"季度须为 YYYYQn，实际 {unit!r}") from None
+    if quarter not in (1, 2, 3, 4):
+        raise SyncJobError(f"非法季度 {unit!r}")
+    return f"{year}-{(quarter - 1) * 3 + 1:02d}-01"
+
+
+def _quarter_end(unit: str) -> str:
+    year_text, _, quarter_text = unit.partition("Q")
+    try:
+        year, quarter = int(year_text), int(quarter_text)
+    except (TypeError, ValueError):
+        raise SyncJobError(f"季度须为 YYYYQn，实际 {unit!r}") from None
+    if quarter not in (1, 2, 3, 4):
+        raise SyncJobError(f"非法季度 {unit!r}")
+    return f"{year}-{quarter * 3:02d}-{'31' if quarter in (1, 4) else '30'}"
+
+
+def _check_date(value: str | None, label: str) -> str | None:
+    if value in (None, ""):
+        return None
+    try:
+        date.fromisoformat(str(value))
+    except ValueError:
+        raise SyncJobError(f"{label}须为 YYYY-MM-DD，实际 {value!r}") from None
+    return str(value)
+
+
 class DataSyncRunner:
     """一次会话内的同步批次管理器（线程安全；只持内存状态）。"""
 
@@ -134,12 +176,22 @@ class DataSyncRunner:
         self._job: dict[str, Any] | None = None
         self._thread: threading.Thread | None = None
         self._cancel = threading.Event()
+        self._schema_ready = False
+
+    def _ensure_schema(self, db: MarketDb) -> None:
+        """旧库读面前补齐新表/视图（每个 Runner 实例至多一次）。"""
+        if self._schema_ready:
+            return
+        if db.exists():
+            db.ensure_schema()
+        self._schema_ready = True
 
     # ───────────────────────── 只读总览 ─────────────────────────
 
     def overview(self) -> dict[str, Any]:
         """逐任务 / 逐表的数据现状（**一次**只读连接内取齐；[D-130]）。"""
         db = MarketDb(self._store)
+        self._ensure_schema(db)
         snapshot = db.overview_snapshot()
         states = {row["task_key"]: row for row in snapshot["states"]}
         counts: dict[str, int] = snapshot["counts"]
@@ -174,6 +226,10 @@ class DataSyncRunner:
             1 for row in states.values() if row.get("last_status") == "ok"
         )
         scope = self._scope_info(snapshot)
+        targets = {
+            key: pool.payload()
+            for key, pool in resolve_targets(db, watchlist=self._watch).items()
+        }
         summary = {
             "db_exists": db.exists(),
             "task_count": len(tasks),
@@ -183,6 +239,7 @@ class DataSyncRunner:
             "total_rows": total_rows,
             "last_success_at": last_success,
             "scope": scope,
+            "targets": targets,
             "note": (
                 "本地市场数据库尚未建立（首次同步未完成）"
                 if not snapshot["counts"] and not snapshot["states"]
@@ -194,6 +251,7 @@ class DataSyncRunner:
             "tasks": tasks,
             "tables": tables,
             "scope": scope,
+            "targets": targets,
             "job": self.job(),
         }
 
@@ -252,8 +310,9 @@ class DataSyncRunner:
         return rows
 
     def _scope_info(self, snapshot: Mapping[str, Any]) -> dict[str, Any]:
-        """三种证券范围的可选性与规模（ST 池 / 关注池 / 全市场；[D-130]）。"""
+        """三种证券范围的可选性与规模（旧接口适配；新 UI 用 ``targets``）。"""
         st = snapshot.get("st") or {}
+        st_sync = snapshot.get("st_sync") or {}
         watch = self._watch()
         return {
             "market": {
@@ -263,10 +322,10 @@ class DataSyncRunner:
                 "reason": "",
             },
             "st": {
-                "count": int(st.get("count") or 0),
-                "available": bool(st.get("available")),
-                "as_of": st.get("as_of"),
-                "reason": st.get("reason") or "",
+                "count": int(st_sync.get("count") or st.get("count") or 0),
+                "available": bool(st_sync.get("available") or st.get("available")),
+                "as_of": st_sync.get("as_of") or st.get("as_of"),
+                "reason": st_sync.get("reason") or st.get("reason") or "",
             },
             "watchlist": {
                 "count": len(watch),
@@ -278,82 +337,268 @@ class DataSyncRunner:
 
     # ───────────────────────── 预检与发批 ─────────────────────────
 
-    def preflight(
-        self,
-        task_keys: Iterable[str],
-        *,
-        start: str | None = None,
-        end: str | None = None,
-        scope: str = "market",
-    ) -> dict[str, Any]:
-        """发起前的计划与警告（不写库、不起线程；[D-130]）。
+    # ───────────────────────── 标的 × 数据集 预检与发批（D-132） ─────────────────────────
 
-        返回 ``order`` / ``auto_added`` / ``scope`` / ``range_applied`` /
-        ``range_ignored`` / ``scope_ignored`` / ``warnings`` / ``errors``。
-        ``errors`` 非空时 ``start`` 会拒绝同样的请求；界面据此禁用开始按钮。
-        """
-        keys = self._normalize_keys(task_keys)
-        errors: list[str] = []
-        problem = _validate_scope_args(scope, start, end)
-        if problem:
-            errors.append(problem)
-        db = MarketDb(self._store)
-        snapshot = db.preflight_snapshot()
-        states = {row["task_key"]: row for row in snapshot["states"]}
+    def _normalize_items(self, items: Any) -> list[dict[str, Any]]:
+        if not isinstance(items, list) or not items:
+            raise SyncJobError("未选择任何同步数据集")
+        out: list[dict[str, Any]] = []
+        for index, raw in enumerate(items):
+            if not isinstance(raw, Mapping):
+                raise SyncJobError(f"第 {index + 1} 项不是对象")
+            dataset = str(raw.get("dataset") or "").strip()
+            if not dataset:
+                raise SyncJobError(f"第 {index + 1} 项缺少 dataset")
+            spec = get_dataset(dataset)
+            target = str(raw.get("target") or (
+                "other" if spec.target_kind == "global" else "all_a"
+            )).strip()
+            if target not in {t.target_id for t in TARGETS}:
+                raise SyncJobError(f"未知标的 {target!r}")
+            groups = normalize_groups(dataset, raw.get("groups"))
+            time = raw.get("time") or spec.default_time
+            resolved = self._resolve_time(spec, time)
+            out.append({
+                "item_id": str(raw.get("item_id") or f"item-{index + 1}"),
+                "target": target,
+                "dataset": dataset,
+                "groups": list(groups),
+                "time": resolved,
+                "force_refresh": bool(raw.get("force_refresh", False)),
+            })
+        return out
 
-        codes: list[str] | None = None
-        scope_detail: dict[str, Any] = {"scope": scope, "count": None}
-        if not problem:
-            try:
-                codes, scope_detail = self._resolve_scope(scope, db, snapshot)
-            except SyncJobError as exc:
-                errors.append(str(exc))
-
-        try:
-            order, auto_added = self._plan(keys, db)
-        except SyncJobError as exc:
-            errors.append(str(exc))
-            order, auto_added = [], []
-        requires_start = bool(
-            order and scope != "market"
-            and any(key in _SCOPE_START_REQUIRED for key in order)
-        )
-        if requires_start and start is None:
-            required = [key for key in order if key in _SCOPE_START_REQUIRED]
-            errors.append(
-                "范围同步需指定起始日期：" + "、".join(required)
-                + " 的窗口按全库水位推导，不带起点会让新纳入的证券拿到空窗口"
+    def _resolve_time(self, spec: Any, time: Any) -> dict[str, Any]:
+        if not isinstance(time, Mapping):
+            raise SyncJobError(f"数据集 {spec.dataset_id} 的时间参数不是对象")
+        kind = str(time.get("kind") or spec.time_kind)
+        if kind != spec.time_kind:
+            raise SyncJobError(
+                f"数据集 {spec.dataset_id} 的时间类型应为 {spec.time_kind}，实际 {kind!r}"
             )
+        today = _today()
+        if kind == "none":
+            return {"kind": "none"}
+        if kind == "date_range":
+            mode = str(time.get("mode") or "incremental")
+            if mode == "incremental":
+                return {"kind": kind, "mode": mode, "start": None, "end": None}
+            if mode in ("last_years", "last_days"):
+                unit = 365 if mode == "last_years" else 1
+                count = max(1, int(time.get("n") or 1))
+                start = (today - timedelta(days=unit * count)).isoformat()
+                return {"kind": kind, "mode": mode, "start": start,
+                        "end": today.isoformat()}
+            if mode == "full":
+                return {"kind": kind, "mode": mode,
+                        "start": "1990-01-01", "end": today.isoformat()}
+            if mode == "today":
+                return {"kind": kind, "mode": mode,
+                        "start": today.isoformat(), "end": today.isoformat()}
+            if mode == "custom":
+                start = _check_date(time.get("start"), "起始日期")
+                end = _check_date(time.get("end"), "结束日期")
+                if start and end and start > end:
+                    raise SyncJobError(f"起始日期 {start} 晚于结束日期 {end}")
+                return {"kind": kind, "mode": mode, "start": start, "end": end}
+            raise SyncJobError(f"未知日期模式 {mode!r}")
+        if kind == "quarter_range":
+            mode = str(time.get("mode") or "last_n")
+            if mode == "last_n":
+                n = max(1, int(time.get("n") or 8))
+                plan = last_n_quarters(n, today)
+                return {
+                    "kind": kind, "mode": mode, "quarters": n,
+                    "start": _quarter_start(f"{plan[0][0]}Q{plan[0][1]}"),
+                    "end": _quarter_end(f"{plan[-1][0]}Q{plan[-1][1]}"),
+                }
+            if mode == "range":
+                first = str(time.get("from") or "")
+                last = str(time.get("to") or "")
+                start = _quarter_start(first)
+                end = _quarter_end(last)
+                if start > end:
+                    raise SyncJobError(f"季度起点 {first} 晚于终点 {last}")
+                return {"kind": kind, "mode": mode, "start": start, "end": end,
+                        "quarters": None}
+            raise SyncJobError(f"未知季度模式 {mode!r}")
+        if kind == "year_range":
+            mode = str(time.get("mode") or "last_n")
+            if mode == "last_n":
+                n = max(1, int(time.get("n") or 3))
+                return {
+                    "kind": kind, "mode": mode,
+                    "start": f"{today.year - n + 1}-01-01",
+                    "end": f"{today.year}-12-31",
+                }
+            if mode == "range":
+                try:
+                    first = int(time.get("from"))
+                    last = int(time.get("to"))
+                except (TypeError, ValueError):
+                    raise SyncJobError("年份区间须给起止年份（整数）") from None
+                if first > last:
+                    raise SyncJobError(f"年份起点 {first} 晚于终点 {last}")
+                return {"kind": kind, "mode": mode,
+                        "start": f"{first}-01-01", "end": f"{last}-12-31"}
+            raise SyncJobError(f"未知年份模式 {mode!r}")
+        raise SyncJobError(f"未知时间类型 {kind!r}")
 
-        range_applied = [
-            key for key in order
-            if key in MARKET_TASK_KEYS and get_task(key).supports_range
-            and (start is not None or end is not None)
-        ]
-        range_ignored = [
-            key for key in order if (start is not None or end is not None)
-            and (key in INFO_TASK_KEYS
-                 or (key in MARKET_TASK_KEYS and not get_task(key).supports_range))
-        ]
-        scope_applied = [
-            key for key in order
-            if codes is not None and key in MARKET_TASK_KEYS and get_task(key).per_code
-        ]
-        scope_ignored = [
-            key for key in order
-            if codes is not None
-            and (key in INFO_TASK_KEYS
-                 or (key in MARKET_TASK_KEYS and not get_task(key).per_code))
-        ]
+    def _group_items(
+        self, normalized: list[dict[str, Any]], targets: Mapping[str, Any]
+    ) -> tuple[list[dict[str, Any]], list[str], dict[str, Any]]:
+        grouped: dict[tuple, dict[str, Any]] = {}
+        errors: list[str] = []
+        raw_codes = 0
+        for item in normalized:
+            spec = get_dataset(item["dataset"])
+            pool = targets[item["target"]]
+            if spec.target_kind == "target":
+                if item["target"] == "other":
+                    errors.append(f"{spec.label} 需要证券标的，不能放在「其他」")
+                    continue
+                if not pool.available or not pool.codes:
+                    errors.append(
+                        f"{spec.label} 的标的 {pool.label} 不可用："
+                        f"{pool.reason or '代码集为空'}"
+                    )
+                    continue
+                codes = set(pool.codes)
+                raw_codes += len(codes)
+            else:
+                codes = None
+            key = (
+                item["dataset"],
+                json.dumps(item["time"], sort_keys=True, ensure_ascii=False),
+                ",".join(item["groups"]),
+            )
+            group = grouped.get(key)
+            if group is None:
+                group = {
+                    "group_id": f"g{len(grouped) + 1}",
+                    "dataset": item["dataset"],
+                    "targets": set(),
+                    "codes": set(),
+                    "groups": item["groups"],
+                    "time": item["time"],
+                    "force_refresh": False,
+                }
+                grouped[key] = group
+            if codes is not None:
+                group["codes"].update(codes)
+            group["targets"].add(item["target"])
+            group["force_refresh"] = (
+                group["force_refresh"] or item["force_refresh"]
+            )
+        groups = list(grouped.values())
+        union_codes = sum(len(g["codes"]) for g in groups if g["codes"])
+        overlap = {
+            "raw_code_count": raw_codes,
+            "union_code_count": union_codes,
+            "duplicate_code_count": max(0, raw_codes - union_codes),
+        }
+        return groups, errors, overlap
 
+    def _auto_plan(
+        self, groups: list[dict[str, Any]], targets: Mapping[str, Any], db: MarketDb
+    ) -> tuple[list[str], list[str]]:
+        task_keys: set[str] = set()
+        for group in groups:
+            task_keys.update(get_dataset(group["dataset"]).task_keys)
+        auto: list[str] = []
+        selected = {target for group in groups for target in group["targets"]}
+        if "st" in selected:
+            pool = targets["st"]
+            stale = False
+            if pool.as_of:
+                try:
+                    stale = date.fromisoformat(pool.as_of[:10]) < _today() - timedelta(days=7)
+                except ValueError:
+                    stale = True
+            if (not pool.available or stale) and "bs_st_list" not in task_keys:
+                task_keys.add("bs_st_list")
+                auto.append("bs_st_list")
+        for index_key in ("hs300", "sz50", "zz500"):
+            if index_key in selected and not targets[index_key].codes:
+                key = f"bs_{index_key}"
+                if key not in task_keys:
+                    task_keys.add(key)
+                    auto.append(key)
+        pending = [key for key in task_keys if key in MARKET_TASK_KEYS]
+        while pending:
+            key = pending.pop()
+            for need in get_task(key).needs:
+                if need not in task_keys:
+                    task_keys.add(need)
+                    auto.append(need)
+                    pending.append(need)
+        if any(key in INFO_TASK_KEYS for key in task_keys) and self._master_missing(db):
+            for key in _MASTER_TASKS:
+                if key not in task_keys:
+                    task_keys.add(key)
+                    auto.append(key)
+        order = [key for key in RUN_ORDER if key in task_keys]
+        order.extend(spec.task_key for spec in INFO_TASKS if spec.task_key in task_keys)
+        return order, list(dict.fromkeys(auto))
+
+    def _estimate_groups(
+        self, groups: list[dict[str, Any]]
+    ) -> tuple[dict[str, Any], dict[str, int]]:
+        by_group: dict[str, int] = {}
+        by_dataset: dict[str, int] = {}
+        total = 0
+        for group in groups:
+            count = len(group["codes"]) if group["codes"] else 1
+            quarters = group["time"].get("quarters") or 8
+            requests = 0
+            for key in get_dataset(group["dataset"]).task_keys:
+                requests += estimate_requests(
+                    key, code_count=count, quarters=quarters
+                )
+            by_group[group["group_id"]] = requests
+            by_dataset[group["dataset"]] = (
+                by_dataset.get(group["dataset"], 0) + requests
+            )
+            total += requests
+        return {
+            "requests": total,
+            "budget": DEFAULT_DAILY_BUDGET,
+            "over_budget": total > DEFAULT_DAILY_BUDGET,
+            "by_dataset": by_dataset,
+        }, by_group
+
+    def preflight_items(
+        self, items: Any, *, custom_text: str = ""
+    ) -> dict[str, Any]:
+        """按 target × dataset × groups × time 的预检（不写库、不起线程）。"""
+        db = MarketDb(self._store)
+        self._ensure_schema(db)
+        targets = resolve_targets(
+            db, watchlist=self._watch, custom_text=custom_text
+        )
+        errors: list[str] = []
         warnings: list[dict[str, Any]] = []
-        first_full = [
-            key for key in order if _is_first_full(key, states.get(key))
-        ]
+        try:
+            normalized = self._normalize_items(items)
+        except SyncJobError as exc:
+            return {
+                "items": [], "targets": {k: v.payload() for k, v in targets.items()},
+                "plan": [], "order": [], "auto_added": [], "overlap": {},
+                "estimate": {}, "warnings": [], "errors": [str(exc)],
+            }
+        groups, group_errors, overlap = self._group_items(normalized, targets)
+        errors.extend(group_errors)
+        order, auto = self._auto_plan(groups, targets, db)
+        estimate, by_group = self._estimate_groups(groups)
+        states = {
+            row["task_key"]: row
+            for row in db.preflight_snapshot()["states"]
+        }
+        first_full = [key for key in order if _is_first_full(key, states.get(key))]
         if first_full:
             warnings.append({"kind": "first_full", "task_keys": first_full})
         disabled = [
-            key for key in keys
+            key for key in order
             if key in MARKET_TASK_KEYS and get_task(key).default_disabled
         ]
         if disabled:
@@ -364,25 +609,153 @@ class DataSyncRunner:
         ]
         if backups:
             warnings.append({"kind": "backup", "task_keys": backups})
-        if range_ignored:
-            warnings.append({"kind": "range_ignored", "task_keys": range_ignored})
-        if scope_ignored:
-            warnings.append({"kind": "scope_ignored", "task_keys": scope_ignored})
-
+        if overlap.get("duplicate_code_count"):
+            warnings.append({"kind": "overlap", **overlap})
+        selected_targets = {item["target"] for item in normalized}
+        for pool in targets.values():
+            if pool.target_id == "other" or pool.target_id not in selected_targets:
+                continue
+            if not pool.available:
+                warnings.append({
+                    "kind": "target_unavailable",
+                    "target": pool.target_id,
+                    "reason": pool.reason,
+                })
+        if estimate.get("over_budget"):
+            warnings.append({"kind": "over_budget", **estimate})
+        plan = [
+            {
+                "group_id": group["group_id"],
+                "dataset": group["dataset"],
+                "label": get_dataset(group["dataset"]).label,
+                "targets": sorted(group["targets"]),
+                "codes_count": len(group["codes"]) if group["codes"] else None,
+                "groups": list(group["groups"]),
+                "time": group["time"],
+                "task_keys": list(get_dataset(group["dataset"]).task_keys),
+                "planned_requests": by_group.get(group["group_id"], 0),
+                "force_refresh": group["force_refresh"],
+            }
+            for group in groups
+        ]
         return {
-            "selected": keys,
+            "items": normalized,
+            "targets": {key: pool.payload() for key, pool in targets.items()},
+            "plan": plan,
             "order": order,
-            "auto_added": auto_added,
-            "scope": scope_detail,
-            "range": {"start": start, "end": end},
-            "requires_start": requires_start,
-            "range_applied": range_applied,
-            "range_ignored": range_ignored,
-            "scope_applied": scope_applied,
-            "scope_ignored": scope_ignored,
+            "auto_added": auto,
+            "overlap": overlap,
+            "estimate": estimate,
             "warnings": warnings,
             "errors": errors,
         }
+
+    def start_items(self, items: Any, *, custom_text: str = "") -> dict[str, Any]:
+        """按 target × dataset × groups × time 发起批次。"""
+        preflight = self.preflight_items(items, custom_text=custom_text)
+        if preflight["errors"]:
+            raise SyncJobError("；".join(preflight["errors"]))
+        normalized = preflight["items"]
+        targets = resolve_targets(
+            MarketDb(self._store), watchlist=self._watch, custom_text=custom_text
+        )
+        groups, _, _ = self._group_items(normalized, targets)
+        order = preflight["order"]
+        auto = preflight["auto_added"]
+        execution: list[dict[str, Any]] = []
+        for key in order:
+            matched = [
+                group for group in groups
+                if key in get_dataset(group["dataset"]).task_keys
+            ]
+            if not matched:
+                execution.append({
+                    "key": key,
+                    "kind": "market" if key in MARKET_TASK_KEYS else "info",
+                    "result_key": key,
+                })
+                continue
+            for group in matched:
+                result_key = f"{group['group_id']}:{key}"
+                if key in MARKET_TASK_KEYS:
+                    task = get_task(key)
+                    execution.append({
+                        "key": key,
+                        "kind": "market",
+                        "result_key": result_key,
+                        "group_id": group["group_id"],
+                        "codes": sorted(group["codes"]) if (
+                            task.per_code and group["codes"]
+                        ) else None,
+                        "start": group["time"].get("start") if task.supports_range else None,
+                        "end": group["time"].get("end") if task.supports_range else None,
+                        "quarters": group["time"].get("quarters"),
+                        "groups": list(group["groups"]),
+                        "force_refresh": group["force_refresh"],
+                    })
+                else:
+                    execution.append({
+                        "key": key, "kind": "info", "result_key": result_key,
+                        "group_id": group["group_id"],
+                    })
+        with self._lock:
+            if self._job is not None and self._job["state"] == "running":
+                raise SyncBusyError(
+                    f"已有同步批次在跑（{self._job['job_id']}）；请等它结束或取消"
+                )
+            self._cancel.clear()
+            job = {
+                "job_id": uuid.uuid4().hex[:12],
+                "state": "running",
+                "items": normalized,
+                "groups": preflight["plan"],
+                "order": order,
+                "auto_added": auto,
+                "targets": preflight["targets"],
+                "overlap": preflight["overlap"],
+                "estimate": preflight["estimate"],
+                "results": {},
+                "current": None,
+                "phase": "preparing",
+                "progress": {
+                    "group_index": 0, "group_total": len(groups),
+                    "unit_done": 0, "unit_total": None,
+                    "requests": 0, "rows": 0, "eta_seconds": None,
+                },
+                "cancel_requested": False,
+                "started_at": _now_text(),
+                "finished_at": None,
+                "error": "",
+            }
+            self._job = job
+            thread = threading.Thread(
+                target=self._run, args=(job, execution),
+                name="st-agent-data-sync", daemon=True,
+            )
+            self._thread = thread
+            thread.start()
+        return {
+            "job_id": job["job_id"],
+            "order": order,
+            "auto_added": auto,
+            "groups": preflight["plan"],
+            "targets": preflight["targets"],
+            "overlap": preflight["overlap"],
+            "estimate": preflight["estimate"],
+        }
+
+    def preflight(
+        self,
+        task_keys: Iterable[str],
+        *,
+        start: str | None = None,
+        end: str | None = None,
+        scope: str = "market",
+    ) -> dict[str, Any]:
+        """旧接口适配：task_keys + 全局 scope/区间 → 新 items 预检。"""
+        return self.preflight_items(
+            self._legacy_items(task_keys, start=start, end=end, scope=scope)
+        )
 
     def start(
         self,
@@ -392,80 +765,56 @@ class DataSyncRunner:
         end: str | None = None,
         scope: str = "market",
     ) -> dict[str, Any]:
-        """发起一个批次；返回 ``{job_id, order, auto_added, scope, ...}``（异步执行）。"""
-        keys = self._normalize_keys(task_keys)
+        """旧接口适配：task_keys + 全局 scope/区间 → 新 items 批次。"""
         problem = _validate_scope_args(scope, start, end)
         if problem:
             raise SyncJobError(problem)
-        with self._lock:
-            if self._job is not None and self._job["state"] == "running":
-                raise SyncBusyError(
-                    f"已有同步批次在跑（{self._job['job_id']}）；请等它结束或取消"
-                )
-            db = MarketDb(self._store)
-            codes, scope_detail = self._resolve_scope(scope, db)
-            order, auto_added = self._plan(keys, db)
-            if scope != "market" and start is None:
-                required = [key for key in order if key in _SCOPE_START_REQUIRED]
-                if required:
-                    raise SyncJobError(
-                        "范围同步需指定起始日期：" + "、".join(required)
-                        + " 的窗口按全库水位推导，不带起点会让新纳入的证券拿到空窗口"
-                    )
-            plan = self._build_plan(order, codes, start, end)
-            range_requested = start is not None or end is not None
-            range_ignored = [
-                item["key"] for item in plan
-                if range_requested and (
-                    item["kind"] == "info"
-                    or not get_task(item["key"]).supports_range
-                )
-            ]
-            scope_ignored = [
-                item["key"] for item in plan
-                if codes is not None and (
-                    item["kind"] == "info"
-                    or not get_task(item["key"]).per_code
-                )
-            ]
-            self._cancel.clear()
-            job = {
-                "job_id": uuid.uuid4().hex[:12],
-                "state": "running",
-                "selected": keys,
-                "order": order,
-                "auto_added": auto_added,
-                "scope": scope_detail,
-                "start": start,
-                "end": end,
-                "codes_count": len(codes) if codes is not None else None,
-                "range_ignored": range_ignored,
-                "scope_ignored": scope_ignored,
-                "results": {},
-                "current": None,
-                "phase": "preparing",
-                "cancel_requested": False,
-                "started_at": _now_text(),
-                "finished_at": None,
-                "error": "",
-            }
-            self._job = job
-            thread = threading.Thread(
-                target=self._run, args=(job, plan), name="st-agent-data-sync", daemon=True
-            )
-            self._thread = thread
-            thread.start()
-        return {
-            "job_id": job["job_id"],
-            "order": order,
-            "auto_added": auto_added,
-            "scope": scope_detail,
-            "start": start,
-            "end": end,
-            "codes_count": job["codes_count"],
-            "range_ignored": range_ignored,
-            "scope_ignored": scope_ignored,
-        }
+        return self.start_items(
+            self._legacy_items(task_keys, start=start, end=end, scope=scope)
+        )
+
+    def _legacy_items(
+        self,
+        task_keys: Iterable[str],
+        *,
+        start: str | None = None,
+        end: str | None = None,
+        scope: str = "market",
+    ) -> list[dict[str, Any]]:
+        """把旧的 ``task_keys + scope + [start,end]`` 翻译成 items（过渡适配）。"""
+        target = {"market": "all_a", "st": "st", "watchlist": "watchlist"}.get(
+            scope, "all_a"
+        )
+        items: list[dict[str, Any]] = []
+        for key in self._normalize_keys(task_keys):
+            try:
+                spec = dataset_for_task(key)
+            except ValueError:
+                continue
+            time: dict[str, Any] = dict(spec.default_time)
+            if (start or end) and spec.time_kind == "date_range":
+                time = {"kind": "date_range", "mode": "custom",
+                        "start": start, "end": end}
+            elif (start or end) and spec.time_kind == "quarter_range":
+                first = date.fromisoformat(start or end)
+                last = date.fromisoformat(end or start)
+                time = {
+                    "kind": "quarter_range", "mode": "range",
+                    "from": f"{first.year}Q{(first.month - 1) // 3 + 1}",
+                    "to": f"{last.year}Q{(last.month - 1) // 3 + 1}",
+                }
+            elif (start or end) and spec.time_kind == "year_range":
+                first = date.fromisoformat(start or end)
+                last = date.fromisoformat(end or start)
+                time = {"kind": "year_range", "mode": "range",
+                        "from": first.year, "to": last.year}
+            items.append({
+                "target": target if spec.target_kind == "target" else "other",
+                "dataset": spec.dataset_id,
+                "groups": None,
+                "time": time,
+            })
+        return items
 
     def cancel(self) -> dict[str, Any]:
         """请求停止当前批次（任务间与网关调用前后生效；不是瞬时中断）。"""
@@ -484,6 +833,38 @@ class DataSyncRunner:
                 "job_id": self._job["job_id"],
                 "state": self._job["state"],
                 "note": "已请求停止：当前请求结束后停止",
+            }
+
+    def clear_market(self) -> dict[str, Any]:
+        """一级清空市场数据（[D-133]）：只删 ``market.db`` 与``info`` 正文缓存。
+
+        保留其余分区与 ``data_cache`` 内其他文件；运行中批次拒绝。清空后
+        下一次 ``setup()`` 会重新建库，不需要重启进程。
+        """
+        with self._lock:
+            if self._job is not None and self._job["state"] == "running":
+                raise SyncBusyError(
+                    f"同步批次运行中（{self._job['job_id']}）；请先停止或等待"
+                )
+            removed: list[str] = []
+            for name in self._store.list_files("data_cache"):
+                if name == "market.db" or name == "info" or name.startswith("info/"):
+                    self._store.delete("data_cache", name)
+                    removed.append(name)
+            self._job = None
+            self._thread = None
+            self._schema_ready = False
+            return {
+                "removed_count": len(removed),
+                "removed": removed,
+                "kept": [
+                    "memory", "config", "chat_history", "execution_log",
+                    "reflection", "secrets",
+                ],
+                "data_cache_kept": [
+                    name for name in self._store.list_files("data_cache")
+                ],
+                "db_exists": False,
             }
 
     def job(self) -> dict[str, Any] | None:
@@ -611,7 +992,7 @@ class DataSyncRunner:
             job["error"] = f"{type(exc).__name__}: {exc}"
         finally:
             for item in plan:
-                key = item["key"]
+                key = item.get("result_key") or item["key"]
                 if key not in results:
                     results[key] = {
                         "status": "cancelled" if cancelled else "failed",
@@ -620,6 +1001,8 @@ class DataSyncRunner:
                             else (job["error"] or "批次提前结束，未执行")
                         ),
                         "rows": None,
+                        "task_key": item["key"],
+                        "group_id": item.get("group_id", ""),
                     }
             with self._lock:
                 job["results"] = results
@@ -630,6 +1013,38 @@ class DataSyncRunner:
                     "cancelled" if cancelled
                     else ("failed" if job["error"] else "done")
                 )
+
+    def _progress_callback(self, job: dict[str, Any], item: Mapping[str, Any]):
+        """L0 进度 → 批次快照（节流 500ms，只含计数/标签）。"""
+        started = time.monotonic()
+        last = {"at": 0.0}
+
+        def callback(payload: dict[str, Any]) -> None:
+            now = time.monotonic()
+            if now - last["at"] < 0.5:
+                return
+            last["at"] = now
+            done = int(payload.get("unit_done") or 0)
+            total = payload.get("unit_total")
+            eta = None
+            if isinstance(total, int) and total > 0 and done >= 10:
+                eta = int((now - started) / done * max(0, total - done))
+            with self._lock:
+                progress = dict(job.get("progress") or {})
+                progress.update({
+                    "task": item["key"],
+                    "group_id": item.get("group_id", ""),
+                    "unit_done": done,
+                    "unit_total": total,
+                    "requests": payload.get("requests", 0),
+                    "rows": payload.get("rows", 0),
+                    "phase": payload.get("phase", "fetch"),
+                    "label": payload.get("label", ""),
+                    "eta_seconds": eta,
+                })
+                job["progress"] = progress
+
+        return callback
 
     def _run_market(
         self, job: dict[str, Any], db: MarketDb, plan: list[dict[str, Any]],
@@ -645,15 +1060,17 @@ class DataSyncRunner:
         except Exception as exc:        # noqa: BLE001 — 抓取器缺席 / 登录失败
             reason = str(exc) or type(exc).__name__
             for item in items:
-                results[item["key"]] = {
+                results[item.get("result_key") or item["key"]] = {
                     "status": "unavailable", "reason": reason, "rows": None,
+                    "task_key": item["key"],
+                    "group_id": item.get("group_id", ""),
                 }
             return False
         try:
             setup = sync.setup()
             if setup.status != "ok":
                 for item in items:
-                    results[item["key"]] = _summary(setup)
+                    results[item.get("result_key") or item["key"]] = _summary(setup)
                 return False
             self._set_phase(job, "running")
             watch = self._watch()
@@ -668,11 +1085,20 @@ class DataSyncRunner:
                     item["key"], enabled=enabled, watchlist=watch,
                     codes=item.get("codes"), start=item.get("start"),
                     end=item.get("end"), timeout_ms=self._timeout_ms,
+                    groups=item.get("groups"), quarters=item.get("quarters"),
+                    force_refresh=bool(item.get("force_refresh", False)),
+                    progress=self._progress_callback(job, item),
                     cancel=self._cancel,
                 )
                 summary = _summary(envelope)
                 summary.update(_timing(started, began, item))
-                results[item["key"]] = summary
+                summary["task_key"] = item["key"]
+                summary["group_id"] = item.get("group_id", "")
+                results[item.get("result_key") or item["key"]] = summary
+                with self._lock:
+                    progress = dict(job.get("progress") or {})
+                    progress["group_index"] = int(progress.get("group_index") or 0) + 1
+                    job["progress"] = progress
             return False
         finally:
             close()
@@ -691,15 +1117,17 @@ class DataSyncRunner:
         except Exception as exc:        # noqa: BLE001
             reason = str(exc) or type(exc).__name__
             for item in items:
-                results[item["key"]] = {
+                results[item.get("result_key") or item["key"]] = {
                     "status": "unavailable", "reason": reason, "rows": None,
+                    "task_key": item["key"],
+                    "group_id": item.get("group_id", ""),
                 }
             return False
         try:
             setup = sync.setup()
             if setup.status != "ok":
                 for item in items:
-                    results[item["key"]] = _summary(setup)
+                    results[item.get("result_key") or item["key"]] = _summary(setup)
                 return False
             self._set_phase(job, "running")
             enabled = enabled_task_map(self._store)
@@ -719,7 +1147,13 @@ class DataSyncRunner:
                 )
                 summary = _summary(envelope)
                 summary.update(_timing(started, began, item))
-                results[item["key"]] = summary
+                summary["task_key"] = item["key"]
+                summary["group_id"] = item.get("group_id", "")
+                results[item.get("result_key") or item["key"]] = summary
+                with self._lock:
+                    progress = dict(job.get("progress") or {})
+                    progress["group_index"] = int(progress.get("group_index") or 0) + 1
+                    job["progress"] = progress
             return False
         finally:
             close()
