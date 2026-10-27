@@ -874,6 +874,64 @@ body {
 .chat__trace-entry { margin: var(--space-1) 0; }
 .chat__trace-body { margin-top: var(--space-1); }
 
+/* 对话等待 / 失败 / 空态（[T-UI-031]）——等待轮用中性文案 + 忙碌标记，失败给「重试」。 */
+.chat__pending { margin: 0; color: var(--fg-muted); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
+.chat__retry {
+  margin-top: var(--space-1); padding: var(--space-1) var(--space-3); font: inherit;
+  font-size: var(--text-body-sm); line-height: var(--leading-body-sm); cursor: pointer;
+  color: var(--fg); background: var(--card);
+  border: 1px solid var(--line-strong); border-radius: var(--radius-control);
+}
+.chat__retry:hover { background: var(--accent-weak); }
+.chat__empty { margin: 0; color: var(--fg-muted); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
+.chat__history-note { margin: var(--space-1) 0 0; color: var(--fg-faint); font-size: var(--text-caption); line-height: var(--leading-caption); }
+
+/* 右栏头部动作：新对话 / 历史（[T-UI-033]）。 */
+.chat-rail__actions { display: flex; align-items: center; gap: var(--space-1); }
+.chat-rail__action {
+  padding: var(--space-1) var(--space-2); font: inherit; font-size: var(--text-caption);
+  line-height: var(--leading-caption); color: var(--fg-muted); text-decoration: none;
+  background: none; border: 1px solid var(--line); border-radius: var(--radius-control); cursor: pointer;
+}
+.chat-rail__action:hover { color: var(--fg); background: var(--accent-weak); }
+
+/* 对话历史页（`/chat`；[T-UI-033]）：左列会话清单，右侧与右栏同一条对话视图。
+   主区自身滚动；输入面 sticky 在底部，长对话也随时可继续。 */
+.page--chat-history {
+  display: grid;
+  grid-template-columns: minmax(200px, 280px) minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+.chat-history__list {
+  display: flex; flex-direction: column; gap: var(--space-2);
+  min-width: 0; padding-right: var(--space-3); border-right: 1px solid var(--line);
+}
+.chat-history__head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
+.chat-history__actions { display: flex; gap: var(--space-1); }
+.chat-history__items { margin: 0; padding: 0; list-style: none; }
+.chat-history__row { margin: 0 0 var(--space-1); }
+.chat-history__item {
+  display: flex; flex-direction: column; gap: var(--space-1); width: 100%;
+  padding: var(--space-2); font: inherit; text-align: left; cursor: pointer;
+  color: var(--fg); background: var(--card);
+  border: 1px solid var(--line); border-radius: var(--radius-surface);
+}
+.chat-history__item:hover { background: var(--accent-weak); }
+.chat-history__item.is-active { border-color: var(--accent); }
+.chat-history__title { font-weight: 600; }
+.chat-history__meta { color: var(--fg-muted); font-size: var(--text-caption); line-height: var(--leading-caption); }
+.chat-history__preview {
+  overflow: hidden; color: var(--fg-faint);
+  font-size: var(--text-body-sm); line-height: var(--leading-body-sm);
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.chat-history__detail { min-width: 0; }
+.chat-history__detail .chat__composer {
+  position: sticky; bottom: 0; z-index: var(--z-sticky);
+  padding: var(--space-2) 0; background: var(--bg);
+}
+
 /* 推理区决策表单的参与视角清单（[T-UI-016.3]）——逐条「采纳 / 忽略」，默认忽略。 */
 .deliberation__lenses { margin: var(--space-1) 0; padding-left: var(--space-5); }
 .deliberation__lens { display: flex; align-items: center; gap: var(--space-2); margin: var(--space-1) 0; }

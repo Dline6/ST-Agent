@@ -15,6 +15,7 @@
 //      （路由走 path、令牌走 hash，[D-063]）。
 
 import { getJson } from '../api.js';
+import { navigate } from '../router.js';
 import { openSheet } from '../components/sheet.js';
 import { renderEnvelope } from '../render.js';
 import { el, readSlot } from '../components/slots.js';
@@ -23,11 +24,9 @@ function currentSkill() {
   return new URLSearchParams(window.location.search).get('skill') || '';
 }
 
-/** 选一条 Skill：整页导航到 `?skill=`（token 仍在 fragment 里，故要拼回）。 */
+/** 选一条 Skill：客户端路由到 `?skill=`（令牌仍由路由补在 fragment 里）。 */
 function openSkill(skillId) {
-  window.location.assign(
-    `/skills?skill=${encodeURIComponent(skillId)}${window.location.hash}`,
-  );
+  navigate(`/skills?skill=${encodeURIComponent(skillId)}`);
 }
 
 /** Skill 选择器：候选**取自清单描述的行**（服务端已是唯一真相源，前端不另立一份名单）。 */

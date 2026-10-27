@@ -302,3 +302,42 @@ def test_all_offline_zero_egress(rig: M1Rig) -> None:
     turn = rig.m1.chat.post("看下 sh.600000 有没有退市风险")
     rig.m1.chat.confirm_and_dispatch(turn.session_id)
     assert rig.sender.calls == []
+
+
+# ───────────────────── 会话历史读面与助手轮落盘（[T-L3-008]） ─────────────────────
+
+def test_agent_turn_is_persisted_and_read_back(rig: M1Rig) -> None:
+    """用户轮与助手轮都落 `chat_history`；列表与单会话读取都可回放（含载荷）。"""
+    turn = rig.m1.chat.post("看下 sh.600000 有没有退市风险")
+    assert rig.m1.chat.record_reply(
+        turn.session_id,
+        text="意图确认卡",
+        payload={"status": "ok", "needs_confirmation": True},
+    ) is True
+
+    listing = rig.m1.chat.list_sessions()
+    assert listing.status == "ok"
+    entry = next(
+        item for item in listing.data["sessions"]
+        if item["session_id"] == turn.session_id
+    )
+    assert entry["message_count"] == 2
+    assert entry["title"].startswith("看下 sh.600000")
+    assert entry["preview"] == "意图确认卡"
+
+    read = rig.m1.chat.read_session(turn.session_id)
+    assert read.status == "ok"
+    assert [m["role"] for m in read.data["messages"]] == ["user", "agent"]
+    assert read.data["messages"][1]["payload"] == {
+        "status": "ok", "needs_confirmation": True,
+    }
+
+
+def test_unknown_session_reads_are_explicit(rig: M1Rig) -> None:
+    """未知标识走显式失败态，不返回 500、也不装成空会话。"""
+    assert rig.m1.chat.read_session("sess_missing").status == "validation_failed"
+    assert rig.m1.chat.read_session("").status == "validation_failed"
+
+
+def test_record_reply_does_not_fabricate_for_unknown_sessions(rig: M1Rig) -> None:
+    assert rig.m1.chat.record_reply("sess_missing", text="x") is False

@@ -41,26 +41,42 @@ export async function getJson(path) {
   return response.json();
 }
 
-/**
- * 发一条受限写请求（数据面端点），同样回一条信封。
+/** 发一条受限写请求（数据面端点），同样回一条信封。
  *
  * 与 `getJson` 同一档：带 `X-ST-Token`、不带凭据、不缓存。`Content-Type: application/json`
  * 使**跨源**请求必然触发预检，而本机服务不回任何 `Access-Control-Allow-*` ⇒ 预检失败——
  * 令牌之外的第二道闸门同样覆盖写面。
  *
+ * **可选超时**（`timeoutMs > 0`）：到点中止并抛「请求超时」——对话面据此把等待轮转成
+ * 可重试的失败态（[T-UI-031]）。未给超时的既有调用行为不变。
+ *
  * **失败态不抛在 HTTP 层**：端点一律回 HTTP 200 + 信封（[00 §6] 失败显式化），故
  * `response.ok` 非真只可能是守卫拒绝（401 / 403）或路由不存在（404），此时抛给调用方。
  */
-export async function postJson(path, body) {
-  const response = await fetch(path, {
-    method: 'POST',
-    headers: { 'X-ST-Token': token, 'Content-Type': 'application/json' },
-    credentials: 'omit',
-    cache: 'no-store',
-    body: JSON.stringify(body === undefined ? {} : body),
-  });
-  if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
+export async function postJson(path, body, { timeoutMs = 0 } = {}) {
+  const controller = timeoutMs > 0 && typeof AbortController !== 'undefined'
+    ? new AbortController()
+    : null;
+  const timer = controller ? window.setTimeout(() => controller.abort(), timeoutMs) : null;
+  try {
+    const response = await fetch(path, {
+      method: 'POST',
+      headers: { 'X-ST-Token': token, 'Content-Type': 'application/json' },
+      credentials: 'omit',
+      cache: 'no-store',
+      body: JSON.stringify(body === undefined ? {} : body),
+      ...(controller ? { signal: controller.signal } : {}),
+    });
+    if (!response.ok) {
+      throw new Error(`${response.status} ${response.statusText}`);
+    }
+    return response.json();
+  } catch (error) {
+    if (controller && controller.signal.aborted) {
+      throw new Error(`请求超时（${Math.round(timeoutMs / 1000)} 秒）`);
+    }
+    throw error;
+  } finally {
+    if (timer !== null) window.clearTimeout(timer);
   }
-  return response.json();
 }

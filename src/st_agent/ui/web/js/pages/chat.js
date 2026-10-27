@@ -1,29 +1,41 @@
-// Chat 主界面（首页 `/`）——对话流宿主 + 上下文卡片 + 澄清追问 / 意图确认 + 生成式 UI 宿主。
+// Chat 伴随面与对话历史页的共享宿主（[05 §1] / [05 §6]）。
 //
-// 四件事（[T-UI-012.1] / [.2] / [.3]）：
-//   ① 对话流：输入走 `POST /api/chat`，回复信封经**既有** `renderEnvelope`（六态 chrome +
-//      组件注册表）进流；`session_id` 在页面生命周期内保持，后续轮续同一会话（05 §1）。
-//   ② 上下文卡片：经 `GET /api/chat/context` 取 `context_card` 描述，交既有渲染件（05 §2）；
-//      卡片旁挂**同一枚**「钉到工作区」动作——它是本期唯一有只读重解析来源的型，故工作区的
-//      「刷新」由这条路真跑通（见 [`T-UI-013`]）。
-//   ③ 澄清追问 / 意图确认卡：都是「对话流内面」（11-sitemap §2.1：持 ResultEnvelope 而无
-//      component_type），故按 `clarification` / `reply.data` 内含的契约对象**内联**呈现，
-//      **不走**组件注册表；问句文本与理解条目一律取自后端，本页不杜撰。
-//   ④ 生成式 UI 宿主：回复里的 `description` 信封（UiDescription）交 `renderEnvelope` 按注册表
-//      渲染；未登记 / 未实现型由 `render.js` 走**显式降级**（不执行描述、不猜测、不静默丢弃）。
-//      「钉」入口是**容器动作**（01 §12：动作不进描述）——本页只出入口，**落点**（落盘 +
-//      读面 + 刷新 / 下钻 / 取消钉住）归 [`T-UI-013`] 的 `/workspace`，故点击即发
-//      `POST /api/workspace/pin` 并把结果**如实**回给用户（不伪造、不静默 no-op）；
-//      「推理链」入口由 [`T-UI-016.3`] 接通——链随 `/api/chat` 响应内联（`traces` 键），
-//      展开面板复用 `trace_timeline`（[11-sitemap §3.3] 的跨页复用件）。
+// 四件事：
+//   ① **会话 store**：活动会话、消息流与发送态住在模块级——右栏与 `/chat` 历史页是它的
+//      两个视图，两处永远同一条流；切页不销毁模块，进行中的请求继续（[T-UI-032]）。
+//   ② **反馈与重试**：提交即插入中性等待轮并锁住输入；请求有超时（默认 120s，大于 LLM
+//      端点缺省 60s），传输失败显式化并可重试；等待期间不接受第二次提交（[T-UI-031]）。
+//   ③ **会话回填**：活动会话标识存 `localStorage`（只存 id，不含正文与令牌），冷启动经
+//      `GET /api/chat/session` 取回消息；历史列表走 `GET /api/chat/sessions`（[T-L3-008]）。
+//   ④ **同一条渲染路径**：助手轮的存档载荷（`payload`）与实时回复用同一套渲染件回放——
+//      生成式卡片、澄清追问、意图确认卡与推理链面板都不另造第二条路径。
 //
-// 前端只经回环 HTTP 取 JSON（不 import 任何 Python 侧模块）；只用 createElement / textContent
-// 构造 DOM，不直写 HTML（与「渲染器只解析描述、不解析任意代码」同一取向，见 05 §6）。
+// 前端只经回环 HTTP 取 JSON（不 import 任何 Python 侧模块）；只用 createElement /
+// textContent 构造 DOM，不直写 HTML。
 
 import { getJson, postJson } from '../api.js';
 import { showToast } from '../components/toast.js';
-import { runBusy } from '../busy.js';
 import { renderEnvelope } from '../render.js';
+
+const ACTIVE_KEY = 'st.chat.active';
+const CHAT_TIMEOUT_MS = 120_000;
+
+const state = {
+  sessionId: readActiveSession(),
+  messages: [],
+  commands: [],
+  commandsReason: null,
+  sending: false,
+  loading: false,
+  loadError: null,
+};
+
+/** 已挂载的视图（右栏 / 历史页）；由 `notify` 统一重绘。 */
+const views = new Set();
+/** 会话级变化订阅（历史页用它刷新列表高亮与会话集合）。 */
+const listeners = new Set();
+let commandsLoaded = false;
+let restored = false;
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -32,175 +44,238 @@ function el(tag, className, text) {
   return node;
 }
 
-/** 一次对话请求：失败不抛在流程外，转一条 `failed` 信封（[00 §6] 失败显式化）。
- *
- * 返回形态＝服务端扁平载荷（`:meth:`UiApp.api_chat`` 把 `reply` 信封摊到顶层，另附
- * `session_id` / `needs_confirmation` / `clarification` / `description`），故这里的失败
- * 分支也照此形态造，免得两条路径读不同的键。
- */
-async function chatRequest(body) {
+function readActiveSession() {
   try {
-    return await postJson('/api/chat', body);
+    return window.localStorage.getItem(ACTIVE_KEY) || null;
   } catch (error) {
-    return {
-      status: 'failed',
-      reason: `无法连接本机服务：${error.message}`,
-      render: { presentation: 'error', must_show: [] },
-      session_id: body.session_id || null,
-      needs_confirmation: false,
-      clarification: null,
-      description: null,
-    };
+    return null;
   }
 }
 
-export async function renderChatPage(page, mount) {
-  const root = el('div', 'page page--chat');
+function persistActiveSession() {
+  try {
+    if (state.sessionId) window.localStorage.setItem(ACTIVE_KEY, state.sessionId);
+    else window.localStorage.removeItem(ACTIVE_KEY);
+  } catch (error) {
+    // 存储不可用不阻断对话：本次会话内仍按内存态工作。
+  }
+}
 
-  // ① 对话流
-  const stream = el('div', 'chat__stream');
-  stream.setAttribute('role', 'log');
-  stream.setAttribute('aria-live', 'polite');
+function notify() {
+  for (const view of views) view.render();
+  for (const listener of listeners) listener(state);
+}
 
-  // ① 输入面 + 快捷指令菜单
-  const form = el('form', 'chat__composer');
-  const input = el('input', 'chat__input');
-  input.type = 'text';
-  input.setAttribute('autocomplete', 'off');
-  input.setAttribute('placeholder', '输入意图，或键入 / 唤出快捷指令');
-  const send = el('button', 'chat__send', '发送');
-  send.type = 'submit';
-  form.append(input, send);
+/** 订阅会话级变化（历史页用于刷新列表高亮 / 会话集合）；返回退订函数。 */
+export function onChatChange(listener) {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
 
-  const commandMenu = el('ul', 'chat__commands');
-  commandMenu.hidden = true;
+/** 当前活动会话标识（历史页用于高亮）。 */
+export function activeSessionId() {
+  return state.sessionId;
+}
 
-  root.append(stream, form, commandMenu);
-  mount.replaceChildren(root);
+// ── 会话生命周期 ────────────────────────────────────────────────────────────
 
-  const state = { sessionId: null, commands: [] };
+/** 新建对话：清空活动会话，下一条消息由服务端建一个新会话。 */
+export function startNewSession() {
+  state.sessionId = null;
+  state.messages = [];
+  state.loadError = null;
+  state.sending = false;
+  persistActiveSession();
+  notify();
+}
 
-  // ── ① 提交 → 回复进流 ────────────────────────────────────────────────────
-  async function submit(event) {
-    event.preventDefault();
-    const text = input.value.trim();
-    if (!text) return;
-    input.value = '';
-    hideCommands();
-    appendUserTurn(stream, text);
+/** 切到一个已有会话：从后端取回默认链路的消息并回放。 */
+export async function openSession(sessionId) {
+  const id = String(sessionId || '').trim();
+  if (!id) {
+    startNewSession();
+    return;
+  }
+  state.sessionId = id;
+  state.messages = [];
+  state.loadError = null;
+  state.loading = true;
+  persistActiveSession();
+  notify();
+  try {
+    const payload = await getJson(`/api/chat/session?id=${encodeURIComponent(id)}`);
+    if (payload && payload.status === 'ok' && payload.data) {
+      state.messages = (payload.data.messages || []).map((message) => ({
+        role: message.role === 'agent' ? 'agent' : 'user',
+        text: message.text || '',
+        payload: message.payload || null,
+      }));
+    } else {
+      state.messages = [];
+      state.loadError = payload && payload.reason
+        ? `会话无法读取：${payload.reason}`
+        : '会话无法读取（服务端未返回可用内容）。';
+      if (payload && payload.status === 'validation_failed') {
+        // 会话确不存在 / 记录损坏：清掉指针，下一次发言开新会话。
+        state.sessionId = null;
+        persistActiveSession();
+      }
+    }
+  } catch (error) {
+    state.messages = [];
+    state.loadError = `会话暂时无法读取：${error.message}`;
+    // 传输失败不丢活动会话指针：会话可能仍在盘上，重试即可。
+  } finally {
+    state.loading = false;
+    notify();
+  }
+}
+
+/** 冷启动回填：只跑一次（右栏挂载时调用）。 */
+export async function restoreActiveSession() {
+  if (restored) return;
+  restored = true;
+  if (!state.sessionId) {
+    notify();
+    return;
+  }
+  await openSession(state.sessionId);
+}
+
+// ── 发送与重试 ──────────────────────────────────────────────────────────────
+
+function chatRequest(body) {
+  return postJson('/api/chat', body, { timeoutMs: CHAT_TIMEOUT_MS });
+}
+
+function replaceMessage(target, replacement) {
+  const index = state.messages.indexOf(target);
+  if (index >= 0) state.messages.splice(index, 1, replacement);
+}
+
+function adoptSession(payload) {
+  if (payload && payload.session_id) {
+    state.sessionId = payload.session_id;
+    persistActiveSession();
+  }
+}
+
+/** 发一条用户消息：立即出等待轮，失败可重试。 */
+async function send(text) {
+  const trimmed = String(text || '').trim();
+  if (!trimmed || state.sending) return;
+  state.sending = true;
+  state.loadError = null;
+  state.messages.push({ role: 'user', text: trimmed });
+  const pending = { role: 'agent', pending: true, note: '正在处理…' };
+  state.messages.push(pending);
+  notify();
+  try {
     const payload = await chatRequest({
       action: 'post',
-      text,
+      text: trimmed,
       ...(state.sessionId ? { session_id: state.sessionId } : {}),
     });
-    appendReply(stream, state, payload);
-  }
-  form.addEventListener('submit', submit);
-
-  // ── ① 快捷指令菜单（`/` 触发） ───────────────────────────────────────────
-  function hideCommands() {
-    commandMenu.hidden = true;
-    commandMenu.replaceChildren();
-  }
-  function refreshCommands() {
-    const value = input.value;
-    if (!value.startsWith('/')) {
-      hideCommands();
-      return;
-    }
-    commandMenu.replaceChildren();
-    if (state.commandsReason) {
-      // 注册表未接：显式不可用 + 点名（不摆假清单）。
-      commandMenu.append(
-        el('li', 'chat__command chat__command--unavailable', state.commandsReason),
-      );
-      commandMenu.hidden = false;
-      return;
-    }
-    const term = value.slice(1);
-    const hits = state.commands.filter((c) => !term || c.name.includes(term));
-    if (!hits.length) {
-      commandMenu.append(el('li', 'chat__command chat__command--empty', '无匹配指令'));
-      commandMenu.hidden = false;
-      return;
-    }
-    for (const command of hits) {
-      const item = el('li', 'chat__command');
-      const button = el('button', 'chat__command-button');
-      button.type = 'button';
-      button.append(
-        el('span', 'chat__command-name', `/${command.name}`),
-        el('span', 'chat__command-desc', command.description || ''),
-        el('span', 'chat__command-source', command.source === 'user' ? '自定义' : '官方'),
-      );
-      button.addEventListener('click', () => {
-        input.value = `/${command.name}`;
-        hideCommands();
-        input.focus();
-      });
-      item.append(button);
-      commandMenu.append(item);
-    }
-    commandMenu.hidden = false;
-  }
-  input.addEventListener('input', refreshCommands);
-  input.addEventListener('blur', () => {
-    // 失焦延后收起，留出点选时间（点选后 input 重新聚焦）。
-    window.setTimeout(() => {
-      if (document.activeElement !== input) hideCommands();
-    }, 150);
-  });
-
-  // ── 初载：指令清单（上下文卡片在 `/` 主区，归 overview.js） ────────────────
-  await loadCommands(state);
-}
-
-async function loadCommands(state) {
-  try {
-    const payload = await getJson('/api/chat/commands');
-    if (payload.status === 'ok') {
-      state.commands = Array.isArray(payload.data) ? payload.data : [];
-      state.commandsReason = null;
-    } else {
-      state.commands = [];
-      state.commandsReason = payload.reason || `快捷指令不可用（${payload.status}）`;
-    }
+    adoptSession(payload);
+    replaceMessage(pending, { role: 'agent', payload });
   } catch (error) {
-    state.commands = [];
-    state.commandsReason = `无法取快捷指令：${error.message}`;
+    replaceMessage(pending, {
+      role: 'agent', failed: true, reason: error.message, retryText: trimmed,
+    });
+  } finally {
+    state.sending = false;
+    notify();
   }
 }
 
-function appendUserTurn(stream, text) {
-  const turn = el('div', 'chat__turn chat__turn--user');
-  turn.append(el('p', 'chat__text', text));
-  stream.append(turn);
+/** 确认卡派发：与发送同一套等待 / 失败口径，重试沿用同一派发体。 */
+async function dispatch(body) {
+  if (state.sending) return;
+  state.sending = true;
+  const pending = { role: 'agent', pending: true, note: '正在执行…' };
+  state.messages.push(pending);
+  notify();
+  const request = { action: 'dispatch', session_id: state.sessionId, ...body };
+  try {
+    const payload = await chatRequest(request);
+    adoptSession(payload);
+    replaceMessage(pending, { role: 'agent', payload });
+  } catch (error) {
+    replaceMessage(pending, {
+      role: 'agent', failed: true, reason: error.message, retryBody: { ...body },
+    });
+  } finally {
+    state.sending = false;
+    notify();
+  }
 }
 
-/** 追加一条助手回复：信封 chrome + 澄清追问 / 意图确认卡 / 生成式 UI（按出现项）。
- *
- * `payload` 即**服务端扁平载荷**——它自身就是回复信封（顶层 `status` / `data` / `render`），
- * 另附 `session_id` / `needs_confirmation` / `clarification` / `description` 四键。
- */
-function appendReply(stream, state, payload) {
-  if (payload.session_id) state.sessionId = payload.session_id;
+function retryFailed(message) {
+  const index = state.messages.indexOf(message);
+  if (index >= 0) state.messages.splice(index, 1);
+  if (message.retryText) {
+    const previous = state.messages[index - 1];
+    if (previous && previous.role === 'user') state.messages.splice(index - 1, 1);
+    send(message.retryText);
+    return;
+  }
+  if (message.retryBody) {
+    dispatch(message.retryBody);
+    return;
+  }
+  notify();
+}
+
+// ── 消息渲染 ────────────────────────────────────────────────────────────────
+
+function turn(className) {
+  return el('div', `chat__turn chat__turn--${className}`);
+}
+
+function renderMessage(message) {
+  if (message.role === 'user') {
+    const node = turn('user');
+    node.append(el('p', 'chat__text', message.text));
+    return node;
+  }
+  if (message.pending) {
+    const node = turn('assistant');
+    const waiting = el('p', 'chat__pending', message.note || '正在处理…');
+    waiting.setAttribute('aria-busy', 'true');
+    node.append(waiting);
+    return node;
+  }
+  if (message.failed) {
+    const node = turn('assistant');
+    node.append(el('p', 'state state--error', `请求未完成：${message.reason}`));
+    const retry = el('button', 'chat__retry', '重试');
+    retry.type = 'button';
+    retry.addEventListener('click', () => retryFailed(message));
+    node.append(retry);
+    return node;
+  }
+  if (message.payload) return agentTurn(message.payload);
+  const node = turn('assistant');
+  node.append(el('p', 'chat__text', message.text));
+  node.append(el('p', 'chat__history-note', '该轮为历史文本，未保存展示内容。'));
+  return node;
+}
+
+/** 助手轮：信封 chrome + 澄清追问 / 意图确认卡 / 生成式 UI（按出现项）。 */
+function agentTurn(payload) {
+  const node = turn('assistant');
+  const envelopeBox = el('div', 'chat__envelope');
   const data = payload.data;
   const isDescription = Boolean(data && typeof data === 'object' && data.component_type);
-  const hasInline = Boolean(payload.needs_confirmation || payload.clarification || payload.description);
-
-  const turn = el('div', 'chat__turn chat__turn--assistant');
-  const envelopeBox = el('div', 'chat__envelope');
-  // 信封 chrome 恒显（六态显式、不静默）；载荷只在「是 UI 描述」或「无别的内联块」时渲染，
-  // 免得把澄清 / 确认卡的机器载荷当 JSON 重复展示一次（其内容由内联块承载）。
+  const hasInline = Boolean(
+    payload.needs_confirmation || payload.clarification || payload.description,
+  );
   renderEnvelope(payload, envelopeBox, { payload: isDescription || !hasInline });
-  turn.append(envelopeBox);
-
-  if (payload.clarification) turn.append(clarificationNode(payload.clarification));
-  if (payload.needs_confirmation) turn.append(confirmationNode(stream, state, payload.data, turn));
-  if (payload.description) turn.append(descriptionNode(payload.description, payload.traces));
-
-  stream.append(turn);
-  turn.scrollIntoView({ block: 'nearest' });
+  node.append(envelopeBox);
+  if (payload.clarification) node.append(clarificationNode(payload.clarification));
+  if (payload.needs_confirmation) node.append(confirmationNode(payload.data, node));
+  if (payload.description) node.append(descriptionNode(payload.description, payload.traces));
+  return node;
 }
 
 /** 澄清追问块（≤3 问、每问可跳过）——问句取自后端 `ClarificationQuestion`。 */
@@ -236,7 +311,7 @@ function clarificationNode(round) {
 }
 
 /** 意图确认卡——条目取自后端 `IntentConfirmation.items`；确认即以 answers 派发。 */
-function confirmationNode(stream, state, items, turn) {
+function confirmationNode(items, container) {
   const box = el('div', 'chat__confirm');
   box.append(el('p', 'chat__confirm-title', '理解条目（确认后执行）'));
   const list = el('ul', 'chat__confirm-items');
@@ -249,19 +324,13 @@ function confirmationNode(stream, state, items, turn) {
 
   const confirm = el('button', 'chat__confirm-go', '确认并执行');
   confirm.type = 'button';
-  confirm.addEventListener('click', async () => {
-    confirm.disabled = true;
+  confirm.addEventListener('click', () => {
     const answers = {};
-    for (const row of turn.querySelectorAll('.chat__question')) {
+    for (const row of container.querySelectorAll('.chat__question')) {
       const value = row.querySelector('.chat__answer').value.trim();
       if (value) answers[row.dataset.name] = value;
     }
-    const payload = await chatRequest({
-      action: 'dispatch',
-      session_id: state.sessionId,
-      answers,
-    });
-    appendReply(stream, state, payload);
+    dispatch({ answers });
   });
   box.append(confirm);
   return box;
@@ -278,7 +347,7 @@ function descriptionNode(envelope, traces) {
   return box;
 }
 
-/** 容器动作：钉住入口（[`T-UI-013`] 的落点，本页只出入口）与推理链入口（[`T-UI-016.3`] 已接通）。 */
+/** 容器动作：钉住入口与推理链入口。 */
 function containerActions(envelope, traces) {
   const wrapper = el('div', 'chat__container-actions');
   const bar = el('div', 'chat__actions');
@@ -290,7 +359,6 @@ function containerActions(envelope, traces) {
   button.type = 'button';
   button.addEventListener('click', () => {
     if (panel.hidden) {
-      // 首次展开才装配（链随响应内联，无会话态——[D-112] ②）。
       if (!panel.childElementCount) fillTracePanel(panel, envelope, traces);
       panel.hidden = false;
     } else {
@@ -302,11 +370,7 @@ function containerActions(envelope, traces) {
   return wrapper;
 }
 
-/** 推理链展开面板（[11-sitemap §3.3]）：逐视角呈现该视角**完整推理链**。
- *
- * 渲染复用 `trace_timeline`（跨页同一件：本处 / 视角追问 / 反思报告）；无可展开的链时
- * **显式告知**（不伪造一条链）。
- */
+/** 推理链展开面板：逐视角呈现该视角完整推理链（复用 `trace_timeline`）。 */
 function fillTracePanel(panel, envelope, traces) {
   panel.replaceChildren();
   if (!traces.length) {
@@ -343,11 +407,7 @@ function lensNameMap(envelope) {
   return map;
 }
 
-/** 「钉到工作区」入口（[`T-UI-013`]）：把这一轮的生成式 UI 描述原样交给工作区落盘。
- *
- * **动作不进描述**（[01 §12]）——按钮由本渲染件发固定回环路由的写请求，描述里既没有 URL
- * 也没有方法。结果**如实**回给用户：没可钉的生成物、服务端拒收、服务不可达，三态各说各话。
- */
+/** 「钉到工作区」入口（[`T-UI-013`]）：把这一轮的生成式 UI 描述原样交给工作区落盘。 */
 export function pinButton(envelope) {
   const button = el('button', 'chat__action', '钉到工作区');
   button.type = 'button';
@@ -364,7 +424,7 @@ export function pinButton(envelope) {
     }
     note.textContent = '正在钉到工作区…';
     try {
-      const payload = await runBusy(button, () => postJson('/api/workspace/pin', { description: envelope.data }));
+      const payload = await postJson('/api/workspace/pin', { description: envelope.data });
       note.textContent = payload.status === 'ok'
         ? '已钉到工作区：在「工作区」页可刷新 / 下钻 / 取消钉住。'
         : `钉住未完成：${payload.reason || payload.status}`;
@@ -394,4 +454,157 @@ export function pinButton(envelope) {
     }
   });
   return button;
+}
+
+// ── 视图 ────────────────────────────────────────────────────────────────────
+
+async function loadCommands() {
+  if (commandsLoaded) return;
+  commandsLoaded = true;
+  try {
+    const payload = await getJson('/api/chat/commands');
+    if (payload.status === 'ok') {
+      state.commands = Array.isArray(payload.data) ? payload.data : [];
+      state.commandsReason = null;
+    } else {
+      state.commands = [];
+      state.commandsReason = payload.reason || `快捷指令不可用（${payload.status}）`;
+    }
+  } catch (error) {
+    state.commands = [];
+    state.commandsReason = `无法取快捷指令：${error.message}`;
+  }
+  notify();
+}
+
+/** 挂载一个对话视图（右栏或历史页）；返回 `{ destroy }`。 */
+export function mountChat(container, { variant = 'rail' } = {}) {
+  const root = el('div', `page page--chat page--chat--${variant}`);
+  const stream = el('div', 'chat__stream');
+  stream.setAttribute('role', 'log');
+  stream.setAttribute('aria-live', 'polite');
+
+  const form = el('form', 'chat__composer');
+  const input = el('input', 'chat__input');
+  input.type = 'text';
+  input.setAttribute('autocomplete', 'off');
+  input.setAttribute('placeholder', '输入意图，或键入 / 唤出快捷指令');
+  const sendButton = el('button', 'chat__send', '发送');
+  sendButton.type = 'submit';
+  form.append(input, sendButton);
+
+  const commandMenu = el('ul', 'chat__commands');
+  commandMenu.hidden = true;
+
+  root.append(stream, form, commandMenu);
+  container.replaceChildren(root);
+
+  const view = {
+    render() {
+      renderTranscript(stream);
+      input.disabled = state.sending;
+      sendButton.disabled = state.sending;
+      sendButton.textContent = state.sending ? '处理中…' : '发送';
+    },
+  };
+
+  function hideCommands() {
+    commandMenu.hidden = true;
+    commandMenu.replaceChildren();
+  }
+
+  function refreshCommands() {
+    const value = input.value;
+    if (!value.startsWith('/')) {
+      hideCommands();
+      return;
+    }
+    commandMenu.replaceChildren();
+    if (state.commandsReason) {
+      commandMenu.append(
+        el('li', 'chat__command chat__command--unavailable', state.commandsReason),
+      );
+      commandMenu.hidden = false;
+      return;
+    }
+    const term = value.slice(1);
+    const hits = state.commands.filter((command) => !term || command.name.includes(term));
+    if (!hits.length) {
+      commandMenu.append(el('li', 'chat__command chat__command--empty', '无匹配指令'));
+      commandMenu.hidden = false;
+      return;
+    }
+    for (const command of hits) {
+      const item = el('li', 'chat__command');
+      const button = el('button', 'chat__command-button');
+      button.type = 'button';
+      button.append(
+        el('span', 'chat__command-name', `/${command.name}`),
+        el('span', 'chat__command-desc', command.description || ''),
+        el('span', 'chat__command-source', command.source === 'user' ? '自定义' : '官方'),
+      );
+      button.addEventListener('click', () => {
+        input.value = `/${command.name}`;
+        hideCommands();
+        input.focus();
+      });
+      item.append(button);
+      commandMenu.append(item);
+    }
+    commandMenu.hidden = false;
+  }
+
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    const text = input.value;
+    if (!text.trim() || state.sending) return;
+    input.value = '';
+    hideCommands();
+    send(text);
+  });
+  input.addEventListener('input', refreshCommands);
+  input.addEventListener('blur', () => {
+    window.setTimeout(() => {
+      if (document.activeElement !== input) hideCommands();
+    }, 150);
+  });
+
+  views.add(view);
+  view.render();
+
+  return {
+    destroy() {
+      views.delete(view);
+    },
+    focus() {
+      input.focus();
+    },
+  };
+}
+
+function renderTranscript(stream) {
+  stream.replaceChildren();
+  if (state.loading) {
+    stream.append(el('p', 'chat__pending', '正在读取会话…'));
+  }
+  if (state.loadError) {
+    stream.append(el('p', 'state state--error', state.loadError));
+  }
+  if (!state.loading && !state.messages.length && !state.loadError) {
+    stream.append(el('p', 'chat__empty', '暂无对话。输入一条消息开始。'));
+  }
+  for (const message of state.messages) stream.append(renderMessage(message));
+  // 流内若自身可滚（右栏）滚到底；历史页由主区滚动，故用 `scrollIntoView` 兼容两者。
+  const last = stream.lastElementChild;
+  if (last && typeof last.scrollIntoView === 'function') {
+    last.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+/** 右栏宿主（`main.js` 启动时挂一次，之后不再重建）。 */
+export async function renderChatPage(page, mount) {
+  const chat = mountChat(mount, { variant: 'rail' });
+  await loadCommands();
+  await restoreActiveSession();
+  return chat;
 }

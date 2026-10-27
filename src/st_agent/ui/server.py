@@ -107,6 +107,10 @@ _GET_ROUTES: dict[str, Callable[[UiApp, str], dict]] = {
     # 供首页常驻卡片与 `/` 补全菜单；未接端口即 `unavailable` + 点名（写面仍只 `/api/chat`）。
     "/api/chat/context": lambda app, _q: app.api_chat_context(),
     "/api/chat/commands": lambda app, _q: app.api_chat_commands(),
+    # 会话历史（[`T-L3-008`]）：列表与单会话读取两条**只读**面；带标识的面走**查询串**
+    # （[11-sitemap §2.2]：路径集仍是有限字面量集合，不引入动态段）。
+    "/api/chat/sessions": lambda app, _q: app.api_chat_sessions(),
+    "/api/chat/session": lambda app, q: app.api_chat_session(_query(q, "id")),
     # 工作区（[`T-UI-013`]）：钉住物的**描述序列**读面——**一条只读**。写面（钉住 / 取消
     # 钉住 / 重解析）在下面 `_POST_ROUTES`，因为三条都是**显式动作**、非幂等读面。
     "/api/workspace/pins": lambda app, _q: app.api_workspace_pins(),

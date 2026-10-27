@@ -239,6 +239,8 @@ function llmBootChrome(mount, values) {
 
 const dataSelection = new Set();
 const dataConfigs = new Map();
+/** 已展开的标的 / 其他分组（会话内记忆；默认全折叠，见 [T-UI-030]）。 */
+const openTargets = new Set();
 let dataCustomCodes = '';
 let dataForceRefresh = false;
 let dataAdvanced = false;
@@ -965,9 +967,9 @@ function renderDataWorkspace({ root, tasks, items, scopeInfo, jobPart }) {
 }
 
 function renderDataWorkspaceV2({ root, targets, datasets, groups, tasks, jobPart }) {
-  const targetMap = new Map(targets.map((item) => [item.target_id, item]));
-  const targetDatasets = datasets.filter((item) => item.target_kind === 'target');
-  const globalDatasets = datasets.filter((item) => item.target_kind === 'global');
+  let targetMap = new Map(targets.map((item) => [item.target_id, item]));
+  let targetDatasets = datasets.filter((item) => item.target_kind === 'target');
+  let globalDatasets = datasets.filter((item) => item.target_kind === 'global');
   let lastPreflight = null;
   let preflightSeq = 0;
   let preflightTimer = null;
@@ -1073,7 +1075,7 @@ function renderDataWorkspaceV2({ root, targets, datasets, groups, tasks, jobPart
     return '—';
   }
 
-  function renderTimeControl(dataset, cfg) {
+  function renderTimeControl(dataset, cfg, rerender) {
     const box = el('div', 'settings-time-row');
     if (dataset.time_kind === 'none') {
       box.append(el('span', 'component__meta', '快照 / 全量，无时间选择'));
@@ -1133,7 +1135,9 @@ function renderDataWorkspaceV2({ root, targets, datasets, groups, tasks, jobPart
           cfg.time.to = cfg.time.to || '';
         }
       }
-      renderCatalog();
+      // 只重建本行的时间控件，不重建整个目录（[T-UI-030]）。
+      if (rerender) rerender();
+      else renderCatalog();
       refreshPreflight();
     }
     mode.addEventListener('change', () => resetTime(mode.value));
@@ -1248,7 +1252,7 @@ function renderDataWorkspaceV2({ root, targets, datasets, groups, tasks, jobPart
       } else {
         dataSelection.delete(key);
       }
-      renderCatalog();
+      // 原地更新：只刷新预检，不重建目录（否则折叠态与滚动会被重置，[T-UI-030]）。
       refreshPreflight();
     });
     row.append(head, el('p', 'settings-item__desc', dataset.description));
@@ -1269,9 +1273,11 @@ function renderDataWorkspaceV2({ root, targets, datasets, groups, tasks, jobPart
         chip.type = 'button';
         chip.setAttribute('aria-pressed', String(active));
         chip.addEventListener('click', () => {
-          if (active) cfg.groups = cfg.groups.filter((item) => item !== group.key);
-          else cfg.groups = [...cfg.groups, group.key];
-          renderCatalog();
+          const next = !chip.classList.contains('is-active');
+          if (next) cfg.groups = [...new Set([...cfg.groups, group.key])];
+          else cfg.groups = cfg.groups.filter((item) => item !== group.key);
+          chip.classList.toggle('is-active', next);
+          chip.setAttribute('aria-pressed', String(next));
           refreshPreflight();
         });
         chips.append(chip);
@@ -1279,7 +1285,22 @@ function renderDataWorkspaceV2({ root, targets, datasets, groups, tasks, jobPart
       row.append(chips);
     }
 
-    if (dataset.time_kind !== 'none') row.append(renderTimeControl(dataset, cfg));
+    let timeBox = null;
+    function rerenderTime() {
+      if (!timeBox) return;
+      const main = document.getElementById('main');
+      const scrollTop = main ? main.scrollTop : 0;
+      const next = renderTimeControl(dataset, cfg, rerenderTime);
+      timeBox.replaceWith(next);
+      timeBox = next;
+      if (main) main.scrollTop = scrollTop;
+      const select = next.querySelector('select');
+      if (select) select.focus();
+    }
+    if (dataset.time_kind !== 'none') {
+      timeBox = renderTimeControl(dataset, cfg, rerenderTime);
+      row.append(timeBox);
+    }
 
     if (dataAdvanced) {
       const forceLabel = el('label', 'settings-field settings-field--inline');
@@ -1333,7 +1354,12 @@ function renderDataWorkspaceV2({ root, targets, datasets, groups, tasks, jobPart
 
   function renderTarget(target, rows) {
     const details = el('details', 'settings-category');
-    details.open = ['all_a', 'st', 'other'].includes(target.target_id);
+    // 默认全折叠；展开态按 `openTargets` 在重建之间保持。
+    details.open = openTargets.has(target.target_id);
+    details.addEventListener('toggle', () => {
+      if (details.open) openTargets.add(target.target_id);
+      else openTargets.delete(target.target_id);
+    });
     const summary = el('summary', 'settings-category__head');
     summary.append(el('h4', 'settings-category__title', target.label));
     const bits = [];
@@ -1367,6 +1393,9 @@ function renderDataWorkspaceV2({ root, targets, datasets, groups, tasks, jobPart
   }
 
   function renderCatalog() {
+    // 结构变化（显示高级项）才重建目录：保留滚动位置，展开态由 `openTargets` 恢复。
+    const main = document.getElementById('main');
+    const scrollTop = main ? main.scrollTop : 0;
     catalogBox.replaceChildren(el('h3', 'page__block-title', '标的与数据集'));
     for (const target of targets) {
       if (target.target_id === 'other') continue;
@@ -1381,6 +1410,7 @@ function renderDataWorkspaceV2({ root, targets, datasets, groups, tasks, jobPart
     catalogBox.append(renderTarget(
       other, globalDatasets.filter((dataset) => !dataset.advanced || dataAdvanced),
     ));
+    if (main) main.scrollTop = scrollTop;
   }
 
   function warningText(warning) {
@@ -1545,9 +1575,28 @@ function renderDataWorkspaceV2({ root, targets, datasets, groups, tasks, jobPart
     if (startedNow) {
       showToast(job.state === 'done' ? '同步批次完成' : '同步批次结束（见结果）',
         { type: job.state === 'done' ? 'success' : 'error' });
-      const page = root.closest('.page');
-      if (page && page.parentElement) renderSettingsPage(null, page.parentElement);
+      // 只刷新目录的状态（保留展开态与滚动），不整页重绘（[T-UI-030] GWT-5）。
+      refreshCatalog();
     }
+  }
+
+  /** 批次结束后刷新目录状态：重取数据集状态，原地重建目录并保留展开态与滚动。 */
+  async function refreshCatalog() {
+    try {
+      const payload = await getJson('/api/settings/data');
+      const values = payload && !payload.status ? partValues(payload.tasks) : null;
+      if (values && Array.isArray(values.datasets)) {
+        datasets = values.datasets;
+        targets = Array.isArray(values.targets) ? values.targets : targets;
+        targetMap = new Map(targets.map((item) => [item.target_id, item]));
+        targetDatasets = datasets.filter((item) => item.target_kind === 'target');
+        globalDatasets = datasets.filter((item) => item.target_kind === 'global');
+      }
+    } catch (error) {
+      // 目录刷新失败不改写已有内容：进度卡已如实给出批次结果。
+      return;
+    }
+    renderCatalog();
   }
 
   async function doStart() {

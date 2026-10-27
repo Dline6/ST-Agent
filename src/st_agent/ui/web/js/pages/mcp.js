@@ -17,6 +17,7 @@
 //   4. **令牌走 fragment**——跳转是整页导航，须把当前 fragment 拼回 `href`（[D-063]）。
 
 import { getJson, postJson } from '../api.js';
+import { navigate } from '../router.js';
 import { renderEnvelope } from '../render.js';
 import { el, readSlot } from '../components/slots.js';
 
@@ -37,9 +38,7 @@ function currentServer() {
 }
 
 function openServer(serverId) {
-  window.location.assign(
-    `/mcp?server=${encodeURIComponent(serverId)}${window.location.hash}`,
-  );
+  navigate(`/mcp?server=${encodeURIComponent(serverId)}`);
 }
 
 function field(label, control, hint) {
