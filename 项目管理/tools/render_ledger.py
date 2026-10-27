@@ -85,7 +85,12 @@ MILESTONES = [
     # 但表现层已被重定为桌面应用（D-120）——打包必须落在**冻结后的桌面形态**上，否则要打两次包、
     # 签两次名、真机验收两遍。故把「桌面形态」五叶并入 M7，与发布两叶同批排序：
     # 令牌 → 三栏外壳 → 交互底座 → 数据密集面 → 壳闭合 → 安装器 → 签名 → 集成关卡。
-    ("M7", "桌面形态与发布", "表现层桌面化（令牌 / 三栏外壳 / 交互底座 / 数据密集面 / 壳闭合）后收口 Windows 安装器、签名与真机验收"),
+    ("M7", "桌面形态", "表现层桌面化（令牌 / 三栏外壳 / 交互底座 / 数据密集面 / 壳闭合）后收口集成关卡"),
+    # M7 于 2026-10-27 二次收窄（决策 D-136）：打包发布两叶（T-UI-019 / T-UI-020）移出 M7、
+    # `milestone` 置空悬空，待负责人择时单独立里程碑。M7 收口 T-INT-008 后即可归档。
+    ("M8", "自主可跑", "循环看得见历史与记忆、有本地数据原语，出厂即可自主执行读操作"),
+    ("M9", "开放能力面", "文件、取数、联网、搜索、命令执行接入，能力不再受预设限制"),
+    ("M10", "长任务运行时", "工具检索、上下文外部化、并行与子 Agent"),
 ]
 
 def layer_of(tid): return ID_RE.match(tid).group(0).split("-")[1]
@@ -272,8 +277,10 @@ def compute_status(tasks):
     done_ids = {t["id"] for t in tasks if t["status"] == "done"}
     parents = {t["parent"] for t in tasks if t["parent"]}
     active = [t for t in tasks if not t["rel"].startswith("tasks/done/")]
+    # `milestone` 为空 ＝ **悬空任务**：已移出里程碑、待单独立项（D-136 的打包两叶）。
+    # 它们**不入就绪集**——否则「等负责人择时立项」会被下个会话当成可开工项直接领走。
     ready = [t for t in active if t["status"] == "todo" and t["id"] not in parents
-             and all(d in done_ids for d in t["depends_on"])]
+             and t["milestone"] and all(d in done_ids for d in t["depends_on"])]
     return ready
 
 # ---------- render ----------

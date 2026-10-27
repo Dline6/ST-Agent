@@ -6,15 +6,17 @@ story: ../../docs/PRD-v2-Agent/story-05-local-first.md
 arch: ../../docs/技术架构-v2/00-架构总览.md
 arch_link: "[00 §1.1](../../docs/技术架构-v2/00-架构总览.md)"
 priority: P0
-milestone: M7
+milestone: ""
 depends_on: [T-UI-027]
 status: todo
-decisions: [D-103]
+decisions: [D-103, D-136]
 verify:
 ---
 
 # T-UI-019 · Windows 安装器与安装体验
 
+> **悬空任务（2026-10-27，[D-136](../决策日志.md)）**：本叶已**移出 M7**、`milestone` 置空，待负责人择时单独立「发布」里程碑。悬空任务**不入就绪集**（[`render_ledger.compute_status`](../tools/render_ledger.py)），故不会被下个会话当作可开工项领走；M7 关卡的 `depends_on` 亦已不再包含本叶。
+>
 > **M7 发布叶之一**（[D-103](../决策日志.md) ③：先只做 Windows；M7 自 [D-121](../决策日志.md) 起并入「桌面形态」，故本叶排序在形态五叶之后）。`T-UI-002.3` 已产出两份 PyInstaller 目录（`dist/st-agent-server/` + `dist/st-agent-shell/`，[packaging/README](../../packaging/README.md)），但它们是**绿色目录**而非**可安装包**——无开始菜单项、无卸载项、无前置检测。
 
 ## 目标
