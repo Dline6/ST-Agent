@@ -122,10 +122,16 @@ def test_ui_is_client_only():
 # （否则把「不是层」反向编码），其约束由下面这组用例承担（T-INT-002 A2）。
 
 APP_PATH = SRC / "app.py"
+COMPOSITION_DIR = SRC / "composition"
 
 #: 组合根只可向下装配这些层（M1 反向流触及 L0–L3，M2 关卡加 L4，M3 关卡加 L5，
 #: M4 关卡 [`T-INT-005`] 加 L6 与 `eco`——「关卡接线才进允许集」，M4 关卡即 L6 / ECO 的接线。
 APP_ALLOWED_IMPORTS = {"contracts", "l0", "l1", "l2", "l3", "l4", "l5", "l6", "eco"}
+
+
+def _is_composition(module: str) -> bool:
+    return module == "st_agent.composition" or module.startswith("st_agent.composition.")
+
 
 ENTRY_PATH = SRC / "__main__.py"
 """生产运行入口（``python -m st_agent``；[`T-UI-002.1`]）——装配 `app` + `ui`，**不是层**。
@@ -145,6 +151,8 @@ def test_app_is_composition_root_only():
     for module, lineno in _imports(APP_PATH):
         if not module.startswith("st_agent."):
             continue  # __future__ / 标准库 / 第三方（pydantic）不属层间约束
+        if _is_composition(module):
+            continue  # 装配部件同属组合根（见下条 test_composition_is_assembly_only）
         target = _layer_of(module)
         assert target is not None and target in APP_ALLOWED_IMPORTS, (
             f"app.py:{lineno} import 了 {module}——组合根只可向下装配 "
@@ -165,6 +173,28 @@ def test_app_is_composition_root_only():
                     f"（{ENTRY_REL}，`python -m st_agent`）与测试消费；层与表现层都不得依赖"
                     "它（对话面经鸭子端口注入，ui 不 import app，T-INT-002 A2）"
                 )
+
+
+def test_composition_is_assembly_only():
+    """`composition/**` 只可向下装配各层（与同包）；不得 import `app` / `ui`。
+
+    组合根已按「面 / 里程碑」拆成包（`app.py` 只再导出）：部件之间可以互相 import
+    （运行时要拉起门面），但方向仍只能是「向层」——否则拆分就变成了绕过铁律 7 的通道。
+    """
+    if not COMPOSITION_DIR.is_dir():
+        pytest.skip("组合根尚未拆分")
+    for path in sorted(COMPOSITION_DIR.rglob("*.py")):
+        rel = f"composition/{path.relative_to(COMPOSITION_DIR)}".replace("\\", "/")
+        for module, lineno in _imports(path):
+            if not module.startswith("st_agent."):
+                continue
+            if _is_composition(module):
+                continue
+            target = _layer_of(module)
+            assert target is not None and target in APP_ALLOWED_IMPORTS, (
+                f"{rel}:{lineno} import 了 {module}——组合根部件只可向下装配 "
+                f"{sorted(APP_ALLOWED_IMPORTS)}；不得 import `app` / `ui` 或其他顶层包"
+            )
 
 
 def test_entry_is_assembly_only():

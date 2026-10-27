@@ -7,7 +7,7 @@ arch: ../../docs/技术架构-v2/00-架构总览.md
 arch_link: "[00 §5](../../docs/技术架构-v2/00-架构总览.md)"
 priority: P0
 milestone: M7
-depends_on: [T-UI-023, T-UI-024, T-UI-025.1, T-UI-025.2, T-UI-026.1, T-UI-026.2, T-UI-027, T-UI-027.1, T-UI-027.2, T-UI-028.1, T-UI-028.2, T-UI-028.3, T-UI-028.4, T-UI-028.5, T-UI-028.6, T-UI-028.7, T-UI-029.1, T-UI-029.2, T-UI-030, T-UI-031, T-UI-032, T-UI-033, T-L0-019, T-L0-020, T-L0-021, T-L0-022, T-L0-023, T-UI-019, T-UI-020, T-L3-007, T-L3-008]
+depends_on: [T-UI-023, T-UI-024, T-UI-025.1, T-UI-025.2, T-UI-026.1, T-UI-026.2, T-UI-027, T-UI-027.1, T-UI-027.2, T-UI-028.1, T-UI-028.2, T-UI-028.3, T-UI-028.4, T-UI-028.5, T-UI-028.6, T-UI-028.7, T-UI-029.1, T-UI-029.2, T-UI-030, T-UI-031, T-UI-032, T-UI-033, T-UI-034, T-UI-035, T-L0-019, T-L0-020, T-L0-021, T-L0-022, T-L0-023, T-UI-019, T-UI-020, T-L3-007, T-L3-008]
 status: todo
 decisions: [D-103, D-120, D-121, D-129, D-130, D-131, D-132, D-133, D-134]
 verify:

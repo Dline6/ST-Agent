@@ -15,7 +15,8 @@ from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.l5.daily_report import DailyReport, ReportSection, ReportTrace, NO_CONTENT_NOTE
 from st_agent.l5.delivery_store import DeliveryRecord, delivery_id_for
 from st_agent.l5.runtime import build_l5
-from st_agent.ui.app import (
+from st_agent.ui.app import build_ui
+from st_agent.ui.surfaces.delivery_shared import (
     DELIVERY_CONFIG_SURFACE,
     _bounded_limit,
     _history_entry,
@@ -24,7 +25,6 @@ from st_agent.ui.app import (
     _positive_int,
     _report_day,
     _report_sections,
-    build_ui,
 )
 
 _GET_PATHS = (
