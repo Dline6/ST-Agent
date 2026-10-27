@@ -30,7 +30,7 @@ from st_agent.ui.shell.prefs import (
     save_state,
     state_path,
 )
-from st_agent.ui.shell.tray import ASSETS, TRAY_SIZES, tray_asset
+from st_agent.ui.shell.tray import ASSETS, TRAY_SIZES, MenuItem, PystrayTray, tray_asset
 from st_agent.ui.shell.window import PywebviewWindow
 
 REPO = Path(__file__).resolve().parents[2]
@@ -229,6 +229,63 @@ def test_window_can_navigate_and_open_a_secondary() -> None:
     assert webview.windows[1].calls == ["destroy"]
 
 
+def test_destroy_is_not_cancelled_by_the_hide_on_close_rule() -> None:
+    """显式退出必须能真关窗——`closing` 恒返回 False 会把它自己取消掉（T-INT-008 走查发现）。"""
+    webview = FakeWebview()
+    window = PywebviewWindow(webview=webview, screens=lambda: [])
+    closed: list[bool] = []
+    window.create("u", on_close_requested=lambda: closed.append(True))
+    window.destroy()
+    result = webview.windows[0].events.closing.fire()
+    assert result == [True], "显式退出不得被『关窗只隐藏』取消"
+    assert closed == [], "显式退出不触发关窗说明（那是用户关窗的语义）"
+
+
+class FakePystrayMenuItem:
+    def __init__(self, label: Any, action: Any, checked: Any = None) -> None:
+        self.label = label
+        self.action = action
+        self.checked = checked
+
+
+class FakePystray:
+    """pystray 的最小替身：只关心 `MenuItem(checked=…)` 的调用约定。"""
+
+    def __init__(self) -> None:
+        self.items: list[FakePystrayMenuItem] = []
+
+    def Menu(self, *items: Any) -> tuple[Any, ...]:
+        return items
+
+    def MenuItem(self, label: Any, action: Any, checked: Any = None) -> FakePystrayMenuItem:
+        item = FakePystrayMenuItem(label, action, checked)
+        self.items.append(item)
+        return item
+
+    def Icon(self, *args: Any) -> Any:
+        return SimpleNamespace(args=args)
+
+
+def test_tray_checked_readers_accept_the_item_pystray_passes() -> None:
+    """pystray 以**菜单项为参**调用 `checked`（`self._checked(self)`），零参可调用会炸掉整个菜单。"""
+    fake = FakePystray()
+    tray = PystrayTray(pystray=fake, image=object())
+    state = {"enabled": True}
+    tray.install([MenuItem("开机自启", lambda: None, checked=lambda: state["enabled"])])
+
+    item = fake.items[0]
+    assert item.checked(object()) is True
+    state["enabled"] = False
+    assert item.checked(object()) is False
+
+
+def test_tray_items_without_a_reader_stay_unchecked() -> None:
+    fake = FakePystray()
+    tray = PystrayTray(pystray=fake, image=object())
+    tray.install([MenuItem("退出", lambda: None)])
+    assert fake.items[0].checked is None
+
+
 # ───────────────────────── 壳装配：关窗说明 / 托盘 / 意图 / 多窗口 ─────────────────────────
 
 
@@ -236,6 +293,7 @@ class RigWindow:
     def __init__(self) -> None:
         self.seen: list[WindowGeometry] = []
         self.loaded: list[str] = []
+        self.titles: list[str] = []
         self.secondaries: list[str] = []
         self.calls: list[str] = []
         self.close: Any = None
@@ -253,6 +311,9 @@ class RigWindow:
 
     def load_url(self, url: str) -> None:
         self.loaded.append(url)
+
+    def set_title(self, title: str) -> None:
+        self.titles.append(title)
 
     def open_secondary(self, url: str) -> None:
         self.secondaries.append(url)
@@ -377,14 +438,18 @@ def test_secondary_window_reuses_the_backend(tmp_path: Path) -> None:
     assert shell.handle is not None
 
 
-def test_shell_intents_hide_and_quit(tmp_path: Path) -> None:
-    """GWT-5：后端回传的 `hide` / `quit` 落到关窗 / 退出两条路径。"""
+def test_shell_intents_hide_quit_and_title(tmp_path: Path) -> None:
+    """GWT-5：后端回传的 `hide` / `quit` / `title` 各落其路径。"""
     shell, window, _tray, _notes = _rig(tmp_path)
-    shell.handle_shell_event("hide")
+    shell.handle_shell_event({"action": "hide"})
     assert window.calls[-1] == "hide"
-    shell.handle_shell_event("quit")
+    shell.handle_shell_event({"action": "title", "title": " 总览 — ST Agent "})
+    assert window.titles == ["总览 — ST Agent"]
+    shell.handle_shell_event({"action": "title", "title": "   "})   # 空标题不覆盖窗口标题
+    assert window.titles == ["总览 — ST Agent"]
+    shell.handle_shell_event({"action": "quit"})
     assert window.calls[-1] == "destroy"
-    shell.handle_shell_event("unknown")            # 未知动作不炸、不误动作
+    shell.handle_shell_event({"action": "unknown"})            # 未知动作不炸、不误动作
     assert window.calls[-1] == "destroy"
 
 
@@ -447,12 +512,25 @@ def test_shell_intent_endpoint_is_explicit_outside_the_shell() -> None:
 def test_shell_intent_endpoint_dispatches_and_validates() -> None:
     from st_agent.ui.app import build_ui
 
-    seen: list[str] = []
-    app = build_ui(host="127.0.0.1", port=1, shell=True, shell_control=seen.append)
+    seen: list[tuple[str, Any]] = []
+
+    def control(action: str, extra: Any = None) -> None:
+        seen.append((action, extra))
+
+    app = build_ui(host="127.0.0.1", port=1, shell=True, shell_control=control)
     assert app.api_shell_intent({"action": "hide"})["status"] == "ok"
     assert app.api_shell_intent({"action": "quit"})["status"] == "ok"
-    assert seen == ["hide", "quit"]
+    assert app.api_shell_intent({"action": "title", "title": " 总览 — ST Agent "})["status"] == "ok"
+    assert seen == [
+        ("hide", None),
+        ("quit", None),
+        ("title", {"title": "总览 — ST Agent"}),
+    ]
     assert app.api_shell_intent({"action": "close"})["status"] == "validation_failed"
+    assert app.api_shell_intent({"action": "title", "title": "  "})["status"] == "validation_failed"
+    assert app.api_shell_intent(
+        {"action": "title", "title": "长" * 121}
+    )["status"] == "validation_failed"
 
 
 def test_health_announces_the_shell_session() -> None:
@@ -486,7 +564,7 @@ def test_shell_intent_reaches_the_shell_over_the_real_backend(tmp_path: Path) ->
     workdir = tmp_path / "cwd"
     workdir.mkdir()
     store = tmp_path / "store"
-    received: list[str] = []
+    received: list[dict[str, Any]] = []
     ready = threading.Event()
 
     handle = start_backend(
@@ -494,12 +572,12 @@ def test_shell_intent_reaches_the_shell_over_the_real_backend(tmp_path: Path) ->
             argv=(*BackendSpec.default().argv, "--root", str(store)), env=_child_env()
         ),
         cwd=workdir,
-        on_shell_event=lambda action: (received.append(action), ready.set()),
+        on_shell_event=lambda payload: (received.append(payload), ready.set()),
     )
     try:
         request = urllib.request.Request(
             f"{handle.base_url}/api/shell/intent",
-            data=json.dumps({"action": "hide"}).encode("utf-8"),
+            data=json.dumps({"action": "title", "title": "总览 — ST Agent"}).encode("utf-8"),
             method="POST",
             headers={"X-ST-Token": handle.token, "Content-Type": "application/json"},
         )
@@ -518,6 +596,6 @@ def test_shell_intent_reaches_the_shell_over_the_real_backend(tmp_path: Path) ->
                 time.sleep(0.2)
         assert payload["status"] == "ok"
         assert ready.wait(15), "壳未收到 event=shell"
-        assert received == ["hide"]
+        assert received == [{"event": "shell", "action": "title", "title": "总览 — ST Agent"}]
     finally:
         assert handle.stop() == 0

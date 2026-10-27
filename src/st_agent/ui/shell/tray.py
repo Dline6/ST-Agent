@@ -122,13 +122,22 @@ class PystrayTray:
     def install(self, items: Sequence[MenuItem]) -> None:
         """把菜单项交给 pystray。
 
-        `action` / `checked` **原样传入**：pystray 按可调用对象的**位置参数个数**包装
-        （0 参 ⇒ 包成 `(icon)`；1 参 ⇒ `(icon)`；2 参 ⇒ 原样），带默认值的闭包会把
-        `co_argcount` 抬高到 3 而被拒——故菜单项里的可调用一律用零参形式。
+        `action` **原样传入**：pystray 按可调用对象的**位置参数个数**包装（0 参 ⇒ 包成
+        `(icon)`；1 参 ⇒ `(icon)`；2 参 ⇒ 原样），带默认值的闭包会把 `co_argcount` 抬高到 3
+        而被拒——故菜单项里的动作一律用零参形式。
+
+        `checked` 与 `action` **不同**：pystray 存下可调用后**以一项为参调用**它
+        （`_base.MenuItem.checked` → `self._checked(self)`），零参的可调用会当场
+        `TypeError` 使整个菜单建不出来。故这里按端口声明的零参形态包装一层。
         """
         menu = self._pystray.Menu(
             *[
-                self._pystray.MenuItem(item.label, item.action, checked=item.checked)
+                self._pystray.MenuItem(
+                    item.label,
+                    item.action,
+                    checked=(lambda _item, reader=item.checked: reader())
+                    if item.checked is not None else None,
+                )
                 for item in items
             ]
         )

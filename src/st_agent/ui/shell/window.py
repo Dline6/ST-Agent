@@ -62,6 +62,9 @@ class PywebviewWindow:
         self._geometry = WindowGeometry()
         self._on_geometry_changed: Callable[[WindowGeometry], None] | None = None
         self._maximized = False
+        self._quitting = False
+        """显式退出中（`destroy()` 置位）。关窗回调恒返回 False 取消关闭，
+        故显式退出必须先解除这一层——否则 `quit()` 会把自己取消掉。"""
 
     def create(
         self,
@@ -89,6 +92,8 @@ class PywebviewWindow:
 
         def _closing() -> bool:
             self._emit_geometry()
+            if self._quitting:
+                return True
             on_close_requested()
             return False
 
@@ -111,6 +116,15 @@ class PywebviewWindow:
         if self.window is not None:
             self.window.load_url(url)
 
+    def set_title(self, title: str) -> None:
+        """把**原生标题栏**同步成页面标题（[14 册 §1]「标题 = <分区> · <对象> — ST Agent」）。
+
+        WebView2 不把 `document.title` 反射到宿主窗口，故由页面经回环面 + 既有 stdout
+        控制管道把标题送到壳；壳仍不提供 JS 桥。
+        """
+        if self.window is not None:
+            self.window.title = title
+
     def open_secondary(self, url: str) -> Any:
         """开一个附属窗口（[`T-UI-027.2`]）：与主窗口同一回环地址，**不新增后端进程**。"""
         window = self._webview.create_window(
@@ -124,6 +138,7 @@ class PywebviewWindow:
         return window
 
     def destroy(self) -> None:
+        self._quitting = True
         for window in self._secondaries:
             window.destroy()
         self._secondaries.clear()

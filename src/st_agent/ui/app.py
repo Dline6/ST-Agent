@@ -43,6 +43,9 @@ __all__ = ["DEV_SCRIPT_MARKER", "PAGE_PATHS", "UiApp", "WEB_ROOT", "build_ui"]
 WEB_ROOT = Path(__file__).resolve().parent / "web"
 """生产静态资产根（无构建 ES modules）。"""
 
+_SHELL_TITLE_MAX = 120
+"""壳标题长度上限（`title` 意图）——原生标题栏的合理宽度，超长显式拒绝而不是截断。"""
+
 
 PAGE_PATHS = frozenset({
     "/chat",
@@ -253,18 +256,33 @@ class UiApp(
         )
 
     def api_shell_intent(self, body: dict[str, Any]) -> dict[str, Any]:
-        """壳意图（[`T-UI-027.1`]）：`Ctrl+W` → `hide`（收托盘）、`Ctrl+Q` → `quit`（退出）。
+        """壳意图（[`T-UI-027.1`]）：`Ctrl+W` → `hide`（收托盘）、`Ctrl+Q` → `quit`（退出）、
+        路由变化 → `title`（原生标题栏同步，[14 册 §1]）。
 
         壳没有 JS 桥（[00 §1.1]「壳不提供任何专有通道」），故动作经回环面到后端、再由后端
         沿既有 stdout 控制管道回传壳。非壳会话（浏览器直开）显式 `unavailable`，不静默。
         """
         action = body.get("action")
-        if action not in ("hide", "quit"):
+        if action not in ("hide", "quit", "title"):
             return envelope_payload(
                 ResultEnvelope.validation_failed(
-                    f"壳意图动作非法：{action!r}（须为 hide / quit）"
+                    f"壳意图动作非法：{action!r}（须为 hide / quit / title）"
                 )
             )
+        extra: dict[str, Any] | None = None
+        if action == "title":
+            title = str(body.get("title") or "").strip()
+            if not title:
+                return envelope_payload(
+                    ResultEnvelope.validation_failed("title 动作必须带非空 title")
+                )
+            if len(title) > _SHELL_TITLE_MAX:
+                return envelope_payload(
+                    ResultEnvelope.validation_failed(
+                        f"标题过长：{len(title)} 字符（上限 {_SHELL_TITLE_MAX}）"
+                    )
+                )
+            extra = {"title": title}
         if not self.shell or self.shell_control is None:
             return envelope_payload(
                 ResultEnvelope.unavailable(
@@ -273,12 +291,12 @@ class UiApp(
                 )
             )
         try:
-            self.shell_control(action)
+            self.shell_control(action, extra)
         except Exception as exc:                     # noqa: BLE001 —— 端点须回信封
             return envelope_payload(
                 ResultEnvelope.failed(f"壳意图投递失败：{exc}", log_ref="st-agent/ui/shell")
             )
-        return envelope_payload(ResultEnvelope.ok({"action": action}))
+        return envelope_payload(ResultEnvelope.ok({"action": action, **(extra or {})}))
 
     def api_face_status(self, face: str) -> dict[str, Any]:
         """面可用性探针：端口在 ⇒ `ok`；不在 ⇒ `unavailable` + 点名。

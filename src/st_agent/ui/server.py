@@ -557,7 +557,7 @@ def serve(
     studio: object = None,
     commands: object = None,
     shell: bool = False,
-    shell_control: Callable[[str], None] | None = None,
+    shell_control: Callable[..., None] | None = None,
 ) -> RunningUi:
     """绑定 → 按**实际端口**装配 → 起服务线程 → 返回句柄。
 

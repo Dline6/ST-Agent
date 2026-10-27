@@ -22,7 +22,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
@@ -90,6 +90,8 @@ class WindowPort(Protocol):
     def hide(self) -> None: ...
 
     def load_url(self, url: str) -> None: ...
+
+    def set_title(self, title: str) -> None: ...
 
     def open_secondary(self, url: str) -> Any: ...
 
@@ -188,12 +190,17 @@ class Shell:
             return
         self.window.open_secondary(self.handle.client_url)
 
-    def handle_shell_event(self, action: str) -> None:
-        """后端沿 stdout 回传的壳意图（`Ctrl+W` / `Ctrl+Q`）。未知动作静默忽略。"""
+    def handle_shell_event(self, payload: Mapping[str, Any]) -> None:
+        """后端沿 stdout 回传的壳意图（`hide` / `quit` / `title`）。未知动作静默忽略。"""
+        action = str(payload.get("action") or "")
         if action == "hide":
             self.hide_window()
         elif action == "quit":
             self.quit()
+        elif action == "title":
+            title = str(payload.get("title") or "").strip()
+            if title:
+                self.window.set_title(title)
 
     def _remember_geometry(self, geometry: WindowGeometry) -> None:
         """只更新内存（拖拽 / 缩放事件很密，逐次落盘没有意义）；落盘在关窗 / 退出时。"""

@@ -353,15 +353,18 @@ def _emit(stream: TextIO, text: str) -> None:
 
 
 def _shell_control_port(stream: TextIO, lock: Any) -> Any:
-    """壳意图端口（[`T-UI-027.1`]）：把 ``hide`` / ``quit`` 写成 ``event=shell`` 回给壳。
+    """壳意图端口（[`T-UI-027.1`]）：把壳动作写成 ``event=shell`` 回给壳。
 
-    两者共用同一条 stdout 控制管道（握手 / 口令 / ``stopped`` 都在它上面），故与收尾行
-    共用一把锁——不新增专有通道，也不会把两行写串。
+    `hide` / `quit` / `title` 共用同一条 stdout 控制管道（握手 / 口令 / ``stopped`` 都在它
+    上面），故与收尾行共用一把锁——不新增专有通道，也不会把两行写串。
     """
 
-    def control(action: str) -> None:
+    def control(action: str, extra: Mapping[str, Any] | None = None) -> None:
+        payload: dict[str, Any] = {"event": "shell", "action": action}
+        if extra:
+            payload.update(extra)
         with lock:
-            _emit(stream, json.dumps({"event": "shell", "action": action}, ensure_ascii=False))
+            _emit(stream, json.dumps(payload, ensure_ascii=False))
 
     return control
 
