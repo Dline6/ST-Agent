@@ -283,6 +283,8 @@ async function paintHealth() {
     connState.textContent = label;
     paintStatus(label);
     statusLine.textContent = ok ? '本机回环已连接' : `本机回环${label}`;
+    // 首屏渲染可能早于本探针；壳会话确认后补送一次当前标题。
+    if (shellAttached) syncShellTitle();
   } catch (error) {
     connState.textContent = '不可达';
     paintStatus('不可达');
@@ -462,6 +464,7 @@ async function renderCurrent() {
   const partition = partitionByName(page.partition);
   const activeItem = activeScreen(partition, window.location.pathname, window.location.search);
   document.title = `${page.title} — ST Agent`;
+  syncShellTitle();
   pageTitle.textContent = page.title;
   paintCrumbs(partition, page, activeItem);
   buildNav(partition, activeItem);
@@ -495,9 +498,11 @@ function switchPartition(index) {
 }
 
 function focusChatInput() {
-  // 右栏可见则聚焦右栏；窄窗（右栏收起）时聚焦历史页的输入面。
+  // 右栏可见则聚焦右栏；窄窗（右栏自动收起）时聚焦历史页那个**可见**的输入面——
+  // 收起的右栏里也有一份 `.chat__input`，直接取文档里的第一个会聚焦到不可见节点。
   const railInput = !chatRail.hidden ? chatRoot.querySelector('.chat__input') : null;
-  const input = railInput || document.querySelector('.chat__input');
+  const input = railInput || [...document.querySelectorAll('.chat__input')]
+    .find((node) => node.offsetParent !== null);
   if (input) input.focus();
 }
 
@@ -564,6 +569,20 @@ async function shellIntent(action) {
   } catch (error) {
     showToast(`壳动作未送达：${error.message}`, { type: 'error' });
   }
+}
+
+// 原生标题栏同步（14 册 §1）：WebView2 不把 document.title 反射到宿主窗口，故标题也走
+// hide / quit 的同一条通道——页面 → 回环端点 → 后端 → 既有 stdout 控制管道 → 壳设标题，
+// 不新增 JS 桥。同一标题只送一次（路由未变时不重复请求）。
+let syncedShellTitle = '';
+
+function syncShellTitle() {
+  if (!shellAttached || document.title === syncedShellTitle) return;
+  const title = document.title;
+  syncedShellTitle = title;
+  postJson('/api/shell/intent', { action: 'title', title }).catch(() => {
+    syncedShellTitle = '';              // 未送达不缓存，下次路由变化再送
+  });
 }
 
 function initInteractionBase() {

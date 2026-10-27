@@ -183,7 +183,7 @@ RENDER_SEMANTICS: dict[str, UiSemantics] = {
     "unavailable": UiSemantics(status="unavailable", presentation="delayed",
                                must_show=("最后更新时间", "原因")),
     "dependency_failed": UiSemantics(status="dependency_failed", presentation="error",
-                                     must_show=("原因", "日志入口")),
+                                     must_show=("原因",)),
     "failed": UiSemantics(status="failed", presentation="error",
                           must_show=("原因", "日志入口")),
     "validation_failed": UiSemantics(status="validation_failed", presentation="input_error",

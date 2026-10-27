@@ -152,7 +152,7 @@ def start_backend(
     parent_pid: int | None = None,
     cwd: str | os.PathLike[str] | None = None,
     resolve_passphrase: Callable[[PassphraseRequest], str | None] | None = None,
-    on_shell_event: Callable[[str], None] | None = None,
+    on_shell_event: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> BackendHandle:
     """拉起后端并等它的就绪握手；失败即抛 :class:`ShellError`（点名后端给的原因）。
 
@@ -163,7 +163,7 @@ def start_backend(
     回写）。它为 ``None`` 而仍需口令，后端会自己显式失败——壳不代它决定。
 
     ``on_shell_event`` 是**壳意图端口**（[`T-UI-027.1`]）：就绪后后端仍会沿同一条 stdout
-    管道回 ``event=shell``（`hide` / `quit`）；不传则不读后续行。
+    管道回 ``event=shell``（`hide` / `quit` / `title`），整份载荷交给它；不传则不读后续行。
     """
     command: list[str] = list(spec.argv)
     command += ["--handshake", "json", "--control-stdin", "--ask-passphrase"]
@@ -217,9 +217,9 @@ def _drain_stderr(process: subprocess.Popen[str], sink: deque[str]) -> threading
 
 
 def _watch_shell_events(
-    process: subprocess.Popen[str], callback: Callable[[str], None]
+    process: subprocess.Popen[str], callback: Callable[[Mapping[str, Any]], None]
 ) -> threading.Thread:
-    """就绪后继续读 stdout：``event=shell`` 交给壳（`hide` / `quit`），其余行忽略。
+    """就绪后继续读 stdout：``event=shell`` 整份交回壳（`hide` / `quit` / `title`），其余行忽略。
 
     这条管道本就是壳与后端之间的控制面（握手、`passphrase_required`、`stopped`），
     壳意图沿它回流，**不新增专有通道**（[00 §1.1]；[`T-UI-027.1`] A3）。
@@ -237,9 +237,8 @@ def _watch_shell_events(
                     continue
                 if payload.get("event") != "shell":
                     continue
-                action = str(payload.get("action") or "")
-                if action:
-                    callback(action)
+                if str(payload.get("action") or ""):
+                    callback(payload)
         except (OSError, ValueError):
             pass
 

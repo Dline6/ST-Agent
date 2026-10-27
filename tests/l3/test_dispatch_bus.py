@@ -249,7 +249,7 @@ class TestGwt4RenderSemantics:
             ("ok", "normal", ()),
             ("empty", "empty_state", ("原因",)),
             ("unavailable", "delayed", ("最后更新时间", "原因")),
-            ("dependency_failed", "error", ("原因", "日志入口")),
+            ("dependency_failed", "error", ("原因",)),
             ("failed", "error", ("原因", "日志入口")),
             ("validation_failed", "input_error", ("理由",)),
         ],
