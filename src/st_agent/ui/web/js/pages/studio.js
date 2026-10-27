@@ -19,6 +19,7 @@
 //   3. **令牌走 fragment**——跳转是整页导航，须把当前 fragment 拼回 href（[D-063]）。
 
 import { getJson, postJson } from '../api.js';
+import { navigate } from '../router.js';
 import { renderEnvelope } from '../render.js';
 import { el, readSlot } from '../components/slots.js';
 
@@ -123,9 +124,7 @@ async function mountTemplates(root, activeTemplate) {
     const preview = el('button', 'setting-actions__button', '预览');
     preview.type = 'button';
     preview.addEventListener('click', () => {
-      window.location.assign(
-        `/studio?template=${encodeURIComponent(picked.select.value)}${window.location.hash}`,
-      );
+      navigate(`/studio?template=${encodeURIComponent(picked.select.value)}`);
     });
     const fork = el('button', 'setting-actions__button', 'fork 到画布');
     fork.type = 'button';
@@ -137,7 +136,7 @@ async function mountTemplates(root, activeTemplate) {
         template_id: picked.select.value,
       }).catch((error) => ({ status: 'failed', reason: error.message }));
       if (result.status === 'ok') {
-        window.location.assign(canvasHref(result.data.session_key));
+        navigate(canvasHref(result.data.session_key));
       } else {
         status.textContent = `未完成（${result.status}）：${result.reason || ''}`;
         status.className = 'state state--error';
@@ -160,9 +159,7 @@ async function mountWorkflows(root, activeFlow) {
     const button = el('button', 'setting-actions__button', '查看属性');
     button.type = 'button';
     button.addEventListener('click', () => {
-      window.location.assign(
-        `/studio?flow=${encodeURIComponent(picked.select.value)}${window.location.hash}`,
-      );
+      navigate(`/studio?flow=${encodeURIComponent(picked.select.value)}`);
     });
     picked.box.append(button);
     body.append(picked.box);

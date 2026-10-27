@@ -22,6 +22,7 @@ import { renderEvolutionPage, renderChangesPage } from './pages/evolution.js';
 import { renderMemoryPage } from './pages/memory.js';
 import { renderMcpPage } from './pages/mcp.js';
 import { renderOverviewPage } from './pages/overview.js';
+import { renderChatHistoryPage } from './pages/chat_history.js';
 import { renderReflectionPage, singleBlockPage } from './pages/reflection.js';
 import { renderSettingsPage } from './pages/settings.js';
 import { renderSkillsPage } from './pages/skills.js';
@@ -31,6 +32,7 @@ import { renderWorkspacePage } from './pages/workspace.js';
 export const PAGES = [
   // ── Chat 主界面 ────────────────────────────────────────────────────────
   { path: '/', title: '总览', statusPath: '/api/health', render: renderOverviewPage, root: true, partition: 'Chat 主界面' },
+  { path: '/chat', title: '对话历史', statusPath: '/api/chat/sessions', render: renderChatHistoryPage, partition: 'Chat 主界面' },
   // ── 工作区 ────────────────────────────────────────────────────────────
   { path: '/workspace', title: '工作区', statusPath: '/api/workspace/status', render: renderWorkspacePage, root: true, partition: '工作区' },
   // ── 记忆 ──────────────────────────────────────────────────────────────

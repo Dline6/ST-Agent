@@ -17,6 +17,7 @@
 //      （路由走 path、令牌走 hash，[D-063]）。
 
 import { getJson, postJson } from '../api.js';
+import { navigate } from '../router.js';
 import { openContextMenu } from '../components/context_menu.js';
 import { renderDescription, renderEnvelope } from '../render.js';
 
@@ -89,7 +90,7 @@ function drill(description, note) {
       `下钻目标「${target.label}」所在页尚未落地（归 ${target.pending}），本版本不可用。`));
     return;
   }
-  window.location.assign(target.href + window.location.hash);
+  navigate(target.href);
 }
 
 /** 取消钉住：写成功后**整页重取**——空工作区该由服务端的 `empty` 态说出来，不由前端猜。 */

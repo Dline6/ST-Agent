@@ -166,3 +166,23 @@ def test_bytes_text_uses_fixed_binary_steps() -> None:
     assert _bytes_text(1023) == "1023 B"
     assert _bytes_text(1536) == "1.5 KiB"
     assert _bytes_text(3 * 1024 * 1024) == "3.0 MiB"
+
+
+# ── 同步目录的折叠态与点选行为（[T-UI-030]；静态断言，不跑 JS） ──────────────────
+
+def test_sync_groups_start_collapsed_and_selection_does_not_rebuild_the_catalog() -> None:
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "src" / "st_agent" / "ui" / "web" / "js" / "pages" / "settings.js"
+    )
+    text = path.read_text(encoding="utf-8")
+    assert "openTargets" in text, "展开态需要按组记住，才能在重建之间保持"
+    assert "details.open = openTargets.has(target.target_id);" in text
+    assert "['all_a', 'st', 'other'].includes" not in text, "不得再写死默认展开的三组"
+
+    start = text.rindex("check.addEventListener('change'")
+    end = text.index("});", start)
+    assert "renderCatalog" not in text[start:end], (
+        "勾选只改状态并刷新预检——整块重建会让折叠态与滚动位置复位"
+    )
+    assert "refreshCatalog" in text, "批次结束应只刷新目录状态，不整页重绘"

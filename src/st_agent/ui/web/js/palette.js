@@ -9,6 +9,7 @@ import { el } from './components/slots.js';
 import { popOverlay, pushOverlay, restoreFocus, trapFocus } from './components/overlay.js';
 import { getJson } from './api.js';
 import { PAGES } from './pages.js';
+import { navigate as routeTo } from './router.js';
 
 let active = null;
 
@@ -42,7 +43,7 @@ function fuzzy(text, query) {
 export function openPalette({ actions = [], go } = {}) {
   const navigate = typeof go === 'function'
     ? go
-    : (path) => window.location.assign(path + window.location.hash);
+    : (path) => routeTo(path);
 
   const previous = document.activeElement;
   const items = [];

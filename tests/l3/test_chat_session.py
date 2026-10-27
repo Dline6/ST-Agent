@@ -13,6 +13,7 @@ from st_agent.l3 import SessionNotFoundError, SessionValidationError
 from st_agent.l3.chat import (
     DEFAULT_CONTEXT_BUDGET,
     ROLE_LABELS,
+    ChatMessage,
     SessionStore,
     assemble_context,
     new_message_id,
@@ -187,3 +188,36 @@ class TestGwt5ContextAssembly:
         s = chat.create(now=NOW)
         with pytest.raises(SessionValidationError):
             chat.assemble_context(s.session_id, reader, token_budget=0)
+
+
+class TestPayloadPersistence:
+    """[T-L3-008]：助手轮的出站载荷随消息落盘，旧记录（无该字段）照常可读。"""
+
+    def test_payload_round_trips_through_the_store(self, chat: SessionStore) -> None:
+        s = chat.create(now=NOW)
+        chat.append(s.session_id, "查退市风险", now=NOW)
+        payload = {"status": "ok", "needs_confirmation": True, "nested": {"items": [1, 2]}}
+        chat.append(s.session_id, "意图确认卡", role="agent",
+                     now=NOW + timedelta(seconds=1), payload=payload)
+
+        loaded = chat.load(s.session_id)
+        agent = next(m for m in loaded.messages if m.role == "agent")
+        assert agent.payload == payload
+        assert agent.text == "意图确认卡"
+
+    def test_user_messages_have_no_payload_by_default(self, chat: SessionStore) -> None:
+        s = chat.create(now=NOW)
+        message = chat.append(s.session_id, "纯文本", now=NOW)
+        assert message.payload is None
+        assert chat.load(s.session_id).messages[0].payload is None
+
+    def test_old_message_without_the_field_parses(self) -> None:
+        """旧版会话文件没有 `payload` 键——缺省为 None，不判损坏。"""
+        raw = (
+            '{"message_id": "msg_old", "session_id": "sess_old", "parent_id": null,'
+            ' "role": "agent", "text": "旧轮次",'
+            ' "created_at": "2026-10-01T10:00:00+08:00"}'
+        )
+        message = ChatMessage.model_validate_json(raw)
+        assert message.payload is None
+        assert message.text == "旧轮次"

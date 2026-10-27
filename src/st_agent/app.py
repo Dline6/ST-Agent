@@ -116,6 +116,7 @@ from st_agent.l3.commands import COMMAND_KIND, CommandRegistry, official_command
 from st_agent.l3.config import ConfigDraftHandling, ConfigDraftProtocol, WorkflowDraftBuilder
 from st_agent.l3.conflict import ConflictAdjudicator
 from st_agent.l3.dispatch import DispatchBus, DispatchOutcome
+from st_agent.l3.errors import SessionNotFoundError, SessionValidationError
 from st_agent.l3.feedback import FeedbackCollector
 from st_agent.l3.home import build_context_card
 from st_agent.l3.intent import IntentDraft, IntentProtocol, LlmIntentUnderstander
@@ -257,6 +258,12 @@ class TurnResult:
     draft: IntentDraft | None
     clarification: Any  # ClarificationRound
     confirmation: Any  # IntentConfirmation | None（draft.intent is None 时不产卡）
+    envelope: ResultEnvelope | None = None
+    """理解阶段失败时的信封（此时 `draft` / `clarification` / `confirmation` 皆空）。
+
+    **会话仍已创建、用户消息已落盘**——故 `session_id` 必须回给调用方，否则这一轮
+    对话在下一次请求里无处归属（[T-L3-008] 的会话回填依赖它）。
+    """
 
     @property
     def needs_confirmation(self) -> bool:
@@ -298,13 +305,17 @@ class DialogFacade:
 
     def post(
         self, text: str, *, session_id: str | None = None, topic: str = ""
-    ) -> TurnResult | ResultEnvelope:
-        """落一条 user 消息并收敛意图；未收敛时返回理解信封（`unavailable` / `empty`）。"""
+    ) -> TurnResult:
+        """落一条 user 消息并收敛意图；未收敛时返回理解信封（`unavailable` / `empty`）。
+
+        理解失败也返回 `TurnResult`（`envelope` 非空、其余为 `None`）——会话已创建、
+        用户消息已落盘，标识必须回给调用方（[T-L3-008]）。
+        """
         sid = session_id or self._sessions.create(now=self._now()).session_id
         self._sessions.append(sid, text, now=self._now())
         understood = self._intent.understand(text)
         if understood.status != "ok" or not isinstance(understood.data, IntentDraft):
-            return understood
+            return TurnResult(sid, None, None, None, envelope=understood)
         draft = understood.data
         round_ = self._intent.clarify(draft)
         if draft.intent is None:  # 未收敛——给方向候选，不产卡（§3.2 不硬猜）
@@ -338,6 +349,102 @@ class DialogFacade:
         if outcome.envelope.status == "ok":
             self._pending.pop(session_id, None)
         return outcome
+
+    # ───────────────────── §1 会话历史（历史读面与助手轮落盘） ─────────────────────
+
+    def record_reply(
+        self,
+        session_id: Any,
+        *,
+        text: str,
+        payload: Mapping[str, Any] | None = None,
+    ) -> bool:
+        """把**助手轮**写入会话（[05 §1](../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+
+        `text` 是中性摘要（搜索 / Markdown 导出用），`payload` 是该轮经输出校验后的最终
+        出站形态（历史回放用同一条渲染路径）。会话不存在或标识为空时返回 ``False``——
+        不伪造一条落盘（同「失败显式化」取向）。
+        """
+        sid = str(session_id or "").strip()
+        if not sid:
+            return False
+        try:
+            self._sessions.append(
+                sid, text, role="agent", now=self._now(), payload=payload,
+            )
+        except (SessionNotFoundError, SessionValidationError):
+            return False
+        return True
+
+    def list_sessions(self) -> ResultEnvelope:
+        """会话列表（[05 §1](../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+
+        按 `updated_at` 倒序；逐个读盘取标题与末条摘要——**不建派生索引**（避免第二事实源，
+        同 `SessionStore` 的取向）。单个损坏文件不拖垮整表：列入 `skipped` 并给原因，
+        **不静默丢弃**。
+        """
+        entries: list[dict[str, Any]] = []
+        skipped: list[dict[str, str]] = []
+        for sid in self._sessions.sessions():
+            try:
+                session = self._sessions.load(sid)
+            except (SessionNotFoundError, SessionValidationError) as exc:
+                skipped.append({"session_id": sid, "reason": str(exc)})
+                continue
+            entries.append(self._session_summary(session, self._sessions.chain(session)))
+        entries.sort(key=lambda item: item["updated_at"], reverse=True)
+        return ResultEnvelope.ok(
+            {"sessions": entries, "skipped": skipped}, as_of=self._now(),
+        )
+
+    def read_session(self, session_id: str) -> ResultEnvelope:
+        """读一个会话的默认链路消息（[05 §1](../../docs/技术架构-v2/05-L3-对话主入口.md)）。"""
+        sid = str(session_id or "").strip()
+        if not sid:
+            return ResultEnvelope.validation_failed(
+                "缺少会话标识（需 ?id=<session_id>）",
+            )
+        try:
+            session = self._sessions.load(sid)
+        except SessionNotFoundError:
+            return ResultEnvelope.validation_failed(f"会话不存在：{sid}")
+        except SessionValidationError as exc:
+            return ResultEnvelope.failed(f"会话记录损坏，无法解析：{exc}")
+        chain = self._sessions.chain(session)
+        data = self._session_summary(session, chain)
+        data["messages"] = [
+            {
+                "message_id": message.message_id,
+                "role": message.role,
+                "text": message.text,
+                "created_at": message.created_at.isoformat(),
+                "payload": dict(message.payload) if message.payload is not None else None,
+            }
+            for message in chain
+        ]
+        return ResultEnvelope.ok(data, as_of=session.updated_at)
+
+    @staticmethod
+    def _session_summary(session: Any, chain: tuple[Any, ...]) -> dict[str, Any]:
+        """列表 / 单会话共用的摘要字段（标题缺省取首条用户消息）。"""
+
+        def brief(text: str, width: int) -> str:
+            flat = " ".join(str(text).split())
+            return flat if len(flat) <= width else f"{flat[:width]}…"
+
+        first_user = next((m for m in chain if m.role == "user"), None)
+        last = chain[-1] if chain else None
+        title = (session.title or "").strip() or (
+            brief(first_user.text, 40) if first_user is not None else "空会话"
+        )
+        return {
+            "session_id": session.session_id,
+            "title": title,
+            "created_at": session.created_at.isoformat(),
+            "updated_at": session.updated_at.isoformat(),
+            "message_count": len(chain),
+            "preview": brief(last.text, 80) if last is not None else "",
+        }
 
     # ───────────────────── §9 memory_op 偏好写入支（本关卡承接的欠账） ─────────────────────
 
@@ -492,9 +599,10 @@ class DialogFacade:
                     "clarification": None, "traces": traces}
         # 默认：输入 → 理解 → 澄清 → 确认卡
         result = self.post(str(body.get("text") or ""), session_id=sid or None)
-        if isinstance(result, ResultEnvelope):  # 理解失败 / 未落会话
-            return {"reply": result, "session_id": sid, "needs_confirmation": False,
-                    "description": None, "clarification": None, "traces": []}
+        if result.envelope is not None:  # 理解失败：会话已建，标识照样回给调用方
+            return {"reply": result.envelope, "session_id": result.session_id,
+                    "needs_confirmation": False, "description": None,
+                    "clarification": None, "traces": []}
         clarification = _clarification_payload(result.clarification)
         if result.confirmation is None:  # 未收敛——回方向候选（clarification 的 empty 信封）
             return {"reply": result.clarification.envelope, "session_id": result.session_id,

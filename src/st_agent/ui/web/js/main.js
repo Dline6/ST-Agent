@@ -14,7 +14,8 @@ import { getJson, postJson, readToken } from './api.js';
 import { pageFor } from './pages.js';
 import { PARTITIONS, activeScreen, partitionByName } from './nav.js';
 import { renderEnvelope } from './render.js';
-import { renderChatPage } from './pages/chat.js';
+import { renderChatPage, startNewSession } from './pages/chat.js';
+import { navigate, startRouter } from './router.js';
 import { openDialog } from './components/dialog.js';
 import { showToast } from './components/toast.js';
 import { openPalette, togglePalette } from './palette.js';
@@ -149,6 +150,11 @@ function writeOpenPartitions(open) {
 
 function buildNav(activePartition, activeItem) {
   if (!nav) return;
+  // 客户端路由会重绘左栏；把焦点还给同一链接，键盘用户不丢位置。
+  const focused = document.activeElement;
+  const focusedHref = focused && nav.contains(focused) && focused.getAttribute
+    ? focused.getAttribute('href')
+    : null;
   const open = readOpenPartitions(activePartition);
   const list = el('ul', 'nav__list');
 
@@ -207,6 +213,11 @@ function buildNav(activePartition, activeItem) {
   }
 
   nav.replaceChildren(list);
+  if (focusedHref) {
+    const next = [...nav.querySelectorAll('a')]
+      .find((anchor) => anchor.getAttribute('href') === focusedHref);
+    if (next) next.focus();
+  }
 }
 
 // ── 摘要锚点与状态栏（数据面未接入时显式标注，不显示推算数字）──────────────
@@ -300,9 +311,9 @@ function applyLayout() {
   navSplitter.hidden = navDown;
   chatRail.style.width = chatDown ? '0px' : `${Math.round(state.chatWidth)}px`;
   navToggle.disabled = autoCollapsed('nav');
-  chatToggle.disabled = autoCollapsed('chat');
+  chatToggle.disabled = false;
   navToggle.title = navToggle.disabled ? '窗口过窄时左栏自动收起' : '展开 / 收起左栏';
-  chatToggle.title = chatToggle.disabled ? '窗口过窄时右栏自动收起' : '展开 / 收起右栏';
+  chatToggle.title = autoCollapsed('chat') ? '打开对话历史页' : '展开 / 收起右栏';
   navToggle.setAttribute('aria-expanded', String(!navDown));
   chatToggle.setAttribute('aria-expanded', String(!chatDown));
   navSplitter.setAttribute('aria-valuenow', String(Math.round(state.navWidth)));
@@ -367,6 +378,11 @@ function initRails() {
     applyLayout();
   });
   chatToggle.addEventListener('click', () => {
+    if (autoCollapsed('chat')) {
+      // 窄窗右栏无法展开：改走独立的对话历史页（[T-UI-033] GWT-5）。
+      go('/chat');
+      return;
+    }
     state.chatCollapsed = !state.chatCollapsed;
     storageSet(KEYS.chatCollapsed, state.chatCollapsed ? '1' : '0');
     applyLayout();
@@ -411,9 +427,21 @@ async function paintBanner() {
 
 // ── 主区与右栏 ────────────────────────────────────────────────────────────
 
+/** 当前页面的清理函数（历史页等挂载了持久订阅的页面返回它）。 */
+let pageCleanup = null;
+
 async function renderPage(page) {
+  if (typeof pageCleanup === 'function') {
+    try {
+      pageCleanup();
+    } catch (error) {
+      // 清理失败不拦住下一页（旧视图最多多留一个订阅）。
+    }
+  }
+  pageCleanup = null;
   if (typeof page.render === 'function') {
-    await page.render(page, root);
+    const cleanup = await page.render(page, root);
+    if (typeof cleanup === 'function') pageCleanup = cleanup;
     return;
   }
   const probe = el('section', 'page-probe');
@@ -422,6 +450,28 @@ async function renderPage(page) {
   probe.append(mount);
   root.replaceChildren(probe);
   renderEnvelope(await getJson(page.statusPath), mount);
+}
+
+/** 重绘主区（客户端路由的唯一落点）：标题 / 面包屑 / 导航高亮 / 页面本体。 */
+async function renderCurrent() {
+  const page = pageFor(window.location.pathname);
+  if (!page) {
+    showFailure(`无此页面：${window.location.pathname}`);
+    return false;
+  }
+  const partition = partitionByName(page.partition);
+  const activeItem = activeScreen(partition, window.location.pathname, window.location.search);
+  document.title = `${page.title} — ST Agent`;
+  pageTitle.textContent = page.title;
+  paintCrumbs(partition, page, activeItem);
+  buildNav(partition, activeItem);
+  try {
+    await renderPage(page);
+    return true;
+  } catch (error) {
+    showFailure(`无法连接本机服务：${error.message}`);
+    return false;
+  }
 }
 
 async function mountChat() {
@@ -436,7 +486,7 @@ async function mountChat() {
 // 词表见 14 册 §8.1；`Ctrl+W` / `Ctrl+Q` 是壳行为（[`T-UI-027.1`]），只在壳会话内接管。
 
 function go(path) {
-  window.location.assign(pageHref(path));
+  navigate(path);
 }
 
 function switchPartition(index) {
@@ -445,29 +495,29 @@ function switchPartition(index) {
 }
 
 function focusChatInput() {
-  const input = chatRoot.querySelector('.chat__input');
+  // 右栏可见则聚焦右栏；窄窗（右栏收起）时聚焦历史页的输入面。
+  const railInput = !chatRail.hidden ? chatRoot.querySelector('.chat__input') : null;
+  const input = railInput || document.querySelector('.chat__input');
   if (input) input.focus();
 }
 
 function submitChat() {
-  const form = chatRoot.querySelector('.chat__composer');
+  const railForm = !chatRail.hidden ? chatRoot.querySelector('.chat__composer') : null;
+  const form = railForm || document.querySelector('.chat__composer');
   if (!form) return;
   if (typeof form.requestSubmit === 'function') form.requestSubmit();
   else form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
 }
 
 async function refreshCurrentPage() {
-  const page = pageFor(window.location.pathname);
-  if (!page) return;
-  try {
-    await renderPage(page);
-    mountChat();
-    paintHealth();
-    paintBanner();
-    showToast('已刷新当前面', { type: 'info' });
-  } catch (error) {
-    showToast(`刷新失败：${error.message}`, { type: 'error' });
+  const ok = await renderCurrent();
+  if (!ok) {
+    showToast('刷新失败', { type: 'error' });
+    return;
   }
+  paintHealth();
+  paintBanner();
+  showToast('已刷新当前面', { type: 'info' });
 }
 
 function shortcutTable() {
@@ -546,17 +596,11 @@ async function boot() {
     return;
   }
 
-  const partition = partitionByName(page.partition);
-  const activeItem = activeScreen(partition, window.location.pathname, window.location.search);
-
-  document.title = `${page.title} — ST Agent`;
-  pageTitle.textContent = page.title;
-  paintCrumbs(partition, page, activeItem);
-  buildNav(partition, activeItem);
   paintSummary();
   initRails();
   initInteractionBase();
   paintHealth();
+  // 右栏只挂一次；之后的页内导航只重绘主区（[T-UI-032]）。
   mountChat();
 
   // 离线横幅**独立于页面渲染**：它是全局要素，取数失败不该拦住页面本身（反之亦然）。
@@ -564,11 +608,13 @@ async function boot() {
   window.addEventListener('online', paintBanner);
   window.addEventListener('offline', paintBanner);
 
-  try {
-    await renderPage(page);
-  } catch (error) {
-    showFailure(`无法连接本机服务：${error.message}`);
-  }
+  const historyLink = document.getElementById('chat-history-link');
+  if (historyLink) historyLink.href = pageHref('/chat');
+  const chatNew = document.getElementById('chat-new');
+  if (chatNew) chatNew.addEventListener('click', () => startNewSession());
+
+  startRouter((pathname) => Boolean(pageFor(pathname)), renderCurrent);
+  await renderCurrent();
 }
 
 boot();

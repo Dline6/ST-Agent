@@ -33,9 +33,9 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import datetime
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -121,6 +121,12 @@ class ChatMessage(BaseModel):
     role: ChatRole
     text: str
     created_at: datetime
+    payload: Mapping[str, Any] | None = None
+    """助手轮当时经输出校验后的**出站载荷**（[05 §1](../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+
+    历史页据此用**同一条**渲染路径回放该轮；旧记录无此字段（缺省 ``None``）时按纯文本
+    回放。用户轮不写该字段——用户原文即 ``text``。
+    """
 
     @model_validator(mode="after")
     def _message_shape(self) -> "ChatMessage":
@@ -301,6 +307,7 @@ class SessionStore:
         role: ChatRole = "user",
         parent_id: str | None = None,
         now: datetime | None = None,
+        payload: Mapping[str, Any] | None = None,
     ) -> ChatMessage:
         """追加一条消息。
 
@@ -311,7 +318,9 @@ class SessionStore:
         if parent_id is None:
             tail = self.chain(session)
             parent_id = tail[-1].message_id if tail else None
-        return self._attach(session, text, role=role, parent_id=parent_id, now=now)
+        return self._attach(
+            session, text, role=role, parent_id=parent_id, now=now, payload=payload,
+        )
 
     def branch_from(
         self,
@@ -336,6 +345,7 @@ class SessionStore:
         role: str,
         parent_id: str | None,
         now: datetime | None,
+        payload: Mapping[str, Any] | None = None,
     ) -> ChatMessage:
         moment = now if now is not None else _now()
         message = ChatMessage(
@@ -348,6 +358,7 @@ class SessionStore:
             role=role,  # type: ignore[arg-type]
             text=text,
             created_at=moment,
+            payload=payload,
         )
         # 显式重建而非 ``model_copy``——后者**不重跑校验**，重复 message_id 会被静默
         # 放过（红-绿已验：退回 model_copy 时本叶用例 FAIL）。
