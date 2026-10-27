@@ -11,7 +11,13 @@ from pathlib import Path
 
 import pytest
 
-from st_agent.ui.app import _bytes_text, _coerce_value, _is_inside, _window_start, build_ui
+from st_agent.ui.app import build_ui
+from st_agent.ui.surfaces.settings.shared import (
+    _bytes_text,
+    _coerce_value,
+    _is_inside,
+    _window_start,
+)
 
 _GET_PATHS = (
     "/api/settings/storage",

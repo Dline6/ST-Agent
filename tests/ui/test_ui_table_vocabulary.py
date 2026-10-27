@@ -25,7 +25,7 @@ from st_agent.ui.app import UiApp, build_ui
 from st_agent.ui.tables import COLUMN_KINDS, Column, table_slots
 
 _UI = Path(__file__).resolve().parents[2] / "src" / "st_agent" / "ui"
-_APP_PY = _UI / "app.py"
+_UI_PY = sorted(_UI.rglob("*.py"))
 _TABLE_JS = _UI / "web" / "js" / "components" / "table.js"
 _APP_CSS = _UI / "web" / "css" / "app.css"
 
@@ -39,12 +39,14 @@ def test_every_table_description_goes_through_the_funnel() -> None:
     这条守的是**构造点只有一处**：形状写在 `ui/tables.py` 一次，六处产出方都经它出表。
     就地手拼 slots 会让两侧重新各自演化——那正是本组存在的理由。
     """
-    tree = ast.parse(_APP_PY.read_text(encoding="utf-8"))
-    calls = [
-        node
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and _is_table_description(node)
-    ]
+    calls = []
+    for path in _UI_PY:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        calls.extend(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and _is_table_description(node)
+        )
     assert len(calls) >= 6, f"只扫到 {len(calls)} 处表格描述（根路径或写法变了会让本用例空跑）"
     for node in calls:
         kwargs = {kw.arg: kw.value for kw in node.keywords}
