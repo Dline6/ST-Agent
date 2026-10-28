@@ -28,6 +28,8 @@ from st_agent.l5.channels import (
     TtsChannel,
 )
 from st_agent.l6 import (
+    AGENT_TIER_CONFIG_ID,
+    DEFAULT_AGENT_TIER,
     DEFAULT_TIER,
     GRADING_CONFIG_ID,
     NO_AUTHORIZATION_REASON,
@@ -36,6 +38,7 @@ from st_agent.l6 import (
     RISK_CLASSES,
     TIER_CONFIG_ID,
     TIERS,
+    AuthorizationError,
     ChangeProposal,
     ChangeRun,
     EvolutionRiskRule,
@@ -565,6 +568,62 @@ class ReflectionFacade:
                 "changed": record is not None,
             }
         raise ValueError("需给出 tier 或 grading")
+
+    # ── 运行期授权（设置区，[D-143]） ──────────────────────────────────────
+    def agent_authorization(self) -> dict[str, Any]:
+        """运行期档位 + 共享分级清单 + 缺省来源 + `agent-change/` 留痕（表现层据此渲染）。"""
+        auth = self._l6.agent_authorization
+        if auth is None:
+            return {"available": False, "reason": "未接入运行期授权判据（组合根装配）"}
+        grading = auth.grading_source
+        if grading is None:
+            rules: list[dict[str, Any]] = []
+            grading_note = "风险分级清单面未接入——本页无可呈现的清单（fail-closed）"
+        else:
+            rules = [rule.model_dump(mode="json") for rule in grading.grading()]
+            grading_note = (
+                "与演进授权共用同一张清单（evolution.risk-grading）；"
+                "本页只呈现，替换仍经清单 owner 的自有 API"
+            )
+        return {
+            "available": True,
+            "tier": auth.tier(),
+            "tiers": list(TIERS),
+            "default_tier": DEFAULT_AGENT_TIER,
+            "tier_source": auth.tier_source(),
+            "tier_config_id": AGENT_TIER_CONFIG_ID,
+            "grading_config_id": GRADING_CONFIG_ID,
+            "grading_note": grading_note,
+            "grading": rules,
+            "risk_classes": list(RISK_CLASSES),
+            "changes": [record.model_dump(mode="json") for record in auth.changes()],
+        }
+
+    def rollback_agent_change(self, change_id: str) -> dict[str, Any]:
+        """按 `agent-change/` 记录的变更前取值回放档位（回放本身也是一次变更）。"""
+        auth = self._l6.agent_authorization
+        if auth is None:
+            return {"available": False, "reason": "未接入运行期授权判据（组合根装配）"}
+        if not change_id:
+            raise ValueError("需给出要回滚的 change_id")
+        try:
+            record = auth.rollback(
+                change_id, trace_ref="ui-settings/runtime-authorization"
+            )
+        except AuthorizationError as exc:
+            raise ValueError(str(exc)) from exc
+        return {
+            "available": True,
+            "applied": record is not None,
+            "tier": auth.tier(),
+            "tier_source": auth.tier_source(),
+            "change_id": getattr(record, "change_id", None),
+            "note": (
+                "已按变更前取值回放（本身也是一次变更，产生新的 change_id）"
+                if record is not None
+                else "当前取值已是变更前取值，无需回放"
+            ),
+        }
 
     # ── 出厂重置 ────────────────────────────────────────────────────────────
     def factory_reset(self, confirmations: Any) -> dict[str, Any]:

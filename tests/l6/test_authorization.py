@@ -151,6 +151,10 @@ class TestGwt4RiskGrading:
             ("daily-report.time", "autonomous-ok"),
             ("weekly-report.template", "autonomous-ok"),
             ("channel-delivery.quiet-hours", "autonomous-ok"),
+            # 只读原语的具体规则（[D-143]）——写在 `skill.` 通则之前，故先命中
+            ("skill.sk_local_sql", "autonomous-ok"),
+            ("skill.sk_data_status", "autonomous-ok"),
+            ("skill.sk_local_write", "collaborative-required"),
             ("skill.demo.param", "collaborative-required"),
             ("attention-budget.max-per-slot", "collaborative-required"),
         ],
@@ -160,6 +164,12 @@ class TestGwt4RiskGrading:
 
     def test_unlisted_prefix_is_conservative(self, tmp_path):
         assert face(tmp_path).classify("something.new") == "collaborative-required"
+
+    def test_read_only_action_rules_precede_the_generic_skill_rule(self):
+        """首个前缀命中：具体动作规则须在 `skill.` 通则之前，否则永远轮不到它（[D-143]）。"""
+        prefixes = [rule.prefix for rule in DEFAULT_RISK_GRADING]
+        assert prefixes.index("skill.sk_local_sql") < prefixes.index("skill.")
+        assert prefixes.index("skill.sk_data_status") < prefixes.index("skill.")
 
     def test_grading_can_be_replaced_and_validated(self, tmp_path):
         auth = face(tmp_path)

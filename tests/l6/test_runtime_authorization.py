@@ -20,6 +20,7 @@ from st_agent.l6 import (
     ACTION_VERDICTS,
     AGENT_CHANGE_PREFIX,
     AGENT_TIER_CONFIG_ID,
+    DEFAULT_AGENT_TIER,
     DEFAULT_TIER,
     GRADING_CONFIG_ID,
     MEMORY_WRITE_ACTION,
@@ -37,6 +38,15 @@ from st_agent.l6 import (
 
 ACTION = skill_action_id("sk_stock_watch")
 """默认清单下「须协作」的技能动作标识（`skill.` 前缀，08 §5）。"""
+
+READ_ONLY_ACTION = skill_action_id("sk_local_sql")
+"""出厂清单显式登记为只读的内置原语动作（`autonomous-ok`，[D-143]）。"""
+
+SECOND_READ_ONLY_ACTION = skill_action_id("sk_data_status")
+"""第二条出厂只读原语（`autonomous-ok`，[D-143]）。"""
+
+WRITE_ACTION = skill_action_id("sk_local_write")
+"""未登记的写类原语（出厂清单无具体规则 ⇒ 落到 `skill.` 通则，须协作）。"""
 
 APPROVED = skill_action_id("sk_approved_tool")
 """一份**自定义**清单里被标为可自主的技能动作标识（缺省清单下没有可自主的动作，见下）。"""
@@ -130,11 +140,30 @@ class TestGwt3ActionIdsAreJudgeable:
         with pytest.raises(AuthorizationError):
             skill_action_id("  ")
 
-    def test_default_list_puts_every_skill_under_collaborative(self, tmp_path):
+    def test_default_list_keeps_unregistered_skills_collaborative(self, tmp_path):
         _store, _authz, runtime = shared(tmp_path)
         decision = runtime.decide(ACTION)
         assert decision.risk_class == "collaborative-required"
         assert decision.verdict == "needs-confirmation"
+
+    def test_default_list_marks_read_only_primitives_autonomous(self, tmp_path):
+        """出厂清单的具体规则先于 `skill.` 通则 ⇒ 只读原语在缺省档下即可自主（[D-143]）。"""
+        _store, _authz, runtime = shared(tmp_path)
+        for action in (READ_ONLY_ACTION, SECOND_READ_ONLY_ACTION):
+            decision = runtime.decide(action)
+            assert decision.risk_class == "autonomous-ok"
+            assert decision.verdict == "autonomous-ok"
+            assert decision.permitted is True
+
+    def test_write_primitive_without_a_specific_rule_stays_collaborative(self, tmp_path):
+        """未登记的写类原语仍落到 `skill.` 通则——缺省自主不等于放开写操作。"""
+        _store, _authz, runtime = shared(tmp_path)
+        assert runtime.decide(WRITE_ACTION).verdict == "needs-confirmation"
+
+    def test_specific_rule_precedes_the_generic_skill_rule(self, tmp_path):
+        _store, _authz, runtime = shared(tmp_path)
+        assert runtime.decide(READ_ONLY_ACTION).verdict == "autonomous-ok"
+        assert runtime.decide(ACTION).verdict == "needs-confirmation"
 
     def test_first_matching_prefix_wins(self, tmp_path):
         _store, _authz, runtime = shared(tmp_path, rules=AUTONOMOUS_ONLY_RULES)
@@ -160,43 +189,45 @@ class TestGwt4TiersAreIndependent:
 
     def test_evolution_autonomous_does_not_open_the_runtime_gate(self, tmp_path):
         store, authz, runtime = shared(tmp_path, rules=AUTONOMOUS_ONLY_RULES)
+        runtime.set_tier("collaborative")               # 运行期档单独收到协作档
         authz.set_tier("autonomous")                    # 演进档最宽
         assert authz.tier() == "autonomous"
-        assert runtime.tier() == DEFAULT_TIER == "collaborative"
+        assert runtime.tier() == "collaborative"
         assert runtime.decide(APPROVED).verdict == "needs-confirmation"
 
     def test_runtime_autonomous_opens_only_the_runtime_gate(self, tmp_path):
         _store, authz, runtime = shared(tmp_path, rules=AUTONOMOUS_ONLY_RULES)
-        runtime.set_tier("autonomous")
+        assert runtime.tier() == DEFAULT_AGENT_TIER == "autonomous"
         assert runtime.decide(APPROVED).verdict == "autonomous-ok"
-        assert authz.tier() == DEFAULT_TIER               # 演进档**未被动过**
+        assert authz.tier() == DEFAULT_TIER == "collaborative"  # 演进档**未被动过**
         assert authz.permits("delivery-strategy") is False
 
     def test_later_evolution_change_does_not_move_the_runtime_tier(self, tmp_path):
         _store, authz, runtime = shared(tmp_path, rules=AUTONOMOUS_ONLY_RULES)
-        runtime.set_tier("autonomous")
-        authz.set_tier("manual")
-        assert runtime.tier() == "autonomous"
-        assert runtime.decide(APPROVED).verdict == "autonomous-ok"
+        runtime.set_tier("manual")
+        authz.set_tier("autonomous")
+        assert runtime.tier() == "manual"
+        assert runtime.decide(APPROVED).verdict == "needs-confirmation"
 
 
 # ───────────────────────── GWT-5 · 缺省与损坏都不放行 ─────────────────────────
 
 
 class TestGwt5AbsentOrCorruptFailsClosed:
-    """条目未落值 ⇒ `collaborative`；条目 / 清单**损坏 ⇒ 一律不放行**并给出成因。"""
+    """条目未落值 ⇒ 出厂缺省 `autonomous`；条目 / 清单**损坏 ⇒ 一律不放行**并给出成因。"""
 
-    def test_default_tier_keeps_even_autonomous_class_actions_back(self, tmp_path):
+    def test_default_tier_permits_registered_autonomous_actions(self, tmp_path):
         _store, _authz, runtime = shared(tmp_path, rules=AUTONOMOUS_ONLY_RULES)
         decision = runtime.decide(APPROVED)
-        assert decision.tier == "collaborative"
-        assert decision.verdict == "needs-confirmation"
-        assert decision.permitted is False
+        assert decision.tier == "autonomous"
+        assert decision.verdict == "autonomous-ok"
+        assert decision.permitted is True
 
-    def test_missing_entry_reads_as_collaborative_without_writing(self, tmp_path):
+    def test_missing_entry_reads_as_autonomous_without_writing(self, tmp_path):
         store, _authz, runtime = shared(tmp_path)
-        assert runtime.tier() == "collaborative"
+        assert runtime.tier() == "autonomous"
         assert store.list_files("config") == ()           # 读面不落值
+        assert runtime.tier_source() == "default"
 
     def test_corrupt_tier_entry_is_refused_and_fails_closed(self, tmp_path):
         store, _authz, runtime = shared(tmp_path, rules=AUTONOMOUS_ONLY_RULES)
@@ -238,22 +269,47 @@ class TestTierChangeTrail:
 
     def test_switch_leaves_a_change_under_the_agent_directory(self, tmp_path):
         store, _authz, runtime = shared(tmp_path)
-        change = runtime.set_tier("autonomous", trace_ref="tr_agent")
+        change = runtime.set_tier("manual", trace_ref="tr_agent")
         assert change is not None and change.config_id == AGENT_TIER_CONFIG_ID
-        assert runtime.tier() == "autonomous"
+        assert runtime.tier() == "manual"
+        assert runtime.tier_source() == "user"
         files = store.list_files("execution_log")
         assert files == (f"{AGENT_CHANGE_PREFIX}{change.change_id}.json",)
         assert not any(name.startswith("evolution-change/") for name in files)
 
     def test_unchanged_value_leaves_no_trail(self, tmp_path):
         _store, _authz, runtime = shared(tmp_path)
-        assert runtime.set_tier("collaborative") is None       # ＝缺省，取值未变
+        assert runtime.set_tier(DEFAULT_AGENT_TIER) is None      # ＝缺省，取值未变
         assert runtime.changes() == ()
+
+    def test_rollback_replays_the_previous_value_as_a_new_change(self, tmp_path):
+        _store, _authz, runtime = shared(tmp_path)
+        first = runtime.set_tier("manual")
+        assert first is not None
+        replay = runtime.rollback(first.change_id, trace_ref="test")
+        assert replay is not None and replay.change_id != first.change_id
+        assert (replay.old_value, replay.new_value) == ("manual", DEFAULT_AGENT_TIER)
+        assert runtime.tier() == DEFAULT_AGENT_TIER
+        assert {c.change_id for c in runtime.changes()} == {
+            first.change_id, replay.change_id,
+        }
+
+    def test_repeated_rollback_is_a_noop_without_a_fake_record(self, tmp_path):
+        _store, _authz, runtime = shared(tmp_path)
+        first = runtime.set_tier("manual")
+        runtime.rollback(first.change_id)
+        assert runtime.rollback(first.change_id) is None
+        assert len(runtime.changes()) == 2
+
+    def test_rollback_of_an_unknown_change_is_refused(self, tmp_path):
+        _store, _authz, runtime = shared(tmp_path)
+        with pytest.raises(AuthorizationError):
+            runtime.rollback("chg_missing")
 
     def test_cross_family_reader_still_sees_the_agent_change(self, tmp_path):
         """`facade.changes()` 按 `*-change` 目录跨族读取 ⇒ 运行期档位切换**可追溯不丢**。"""
         store, _authz, runtime = shared(tmp_path)
-        runtime.set_tier("autonomous")
+        runtime.set_tier("manual")
         facade = ConfigRegistryFacade(store)
         facade.register_family(agent_family(runtime))
         records = facade.changes()
@@ -274,9 +330,9 @@ class TestFamilyAndWiring:
 
     def test_apply_delegates_to_the_tier_owner(self, tmp_path):
         facade, runtime = self._facade(tmp_path)
-        record = facade.set(AGENT_TIER_CONFIG_ID, "autonomous")
-        assert record is not None and record.new_value == "autonomous"
-        assert runtime.tier() == "autonomous"
+        record = facade.set(AGENT_TIER_CONFIG_ID, "manual")
+        assert record is not None and record.new_value == "manual"
+        assert runtime.tier() == "manual"
 
     def test_unknown_agent_entry_and_foreign_entry_are_refused(self, tmp_path):
         facade, _runtime = self._facade(tmp_path)
@@ -297,7 +353,8 @@ class TestFamilyAndWiring:
         runtime = stack.agent_authorization
         assert runtime is not None
         assert runtime.grading_source is stack.authorization        # 清单只此一份
-        assert runtime.tier() == "collaborative"                    # 档位独立、缺省最保守
+        assert runtime.tier() == DEFAULT_AGENT_TIER == "autonomous"  # 档位独立、出厂自主
+        assert stack.authorization.tier() == DEFAULT_TIER == "collaborative"
         assert facade.entry(AGENT_TIER_CONFIG_ID) is not None
         assert facade.entry(TIER_CONFIG_ID) is not None
         assert facade.entry(AGENT_TIER_CONFIG_ID).config_id != TIER_CONFIG_ID

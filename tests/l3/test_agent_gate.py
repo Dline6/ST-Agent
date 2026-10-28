@@ -84,13 +84,16 @@ def tools(skills: SkillRegistry):
 # ───────────────────────── 夹具：真 L6 判据面 ─────────────────────────
 
 
-def faces(store, *, rules=None, tier: str = "collaborative"):
-    """真演进授权面（清单 owner）+ 真运行期授权面（档位 owner），共享同一 ``Store``。"""
+def faces(store, *, rules=None, tier: str | None = None):
+    """真演进授权面（清单 owner）+ 真运行期授权面（档位 owner），共享同一 ``Store``。
+
+    ``tier=None`` ⇒ 用出厂缺省（`autonomous`，[D-143]）；显式给出才切换。
+    """
     authz = EvolutionAuthorization(store=store, now=lambda: NOW)
     if rules is not None:
         authz.set_grading(rules)
     runtime = RuntimeAuthorization(store=store, grading=authz, now=lambda: NOW)
-    if tier != "collaborative":
+    if tier is not None:
         runtime.set_tier(tier)
     return authz, runtime
 
@@ -140,7 +143,7 @@ class TestGwt6HandsBackWhenNotAutonomous:
     """首步即「须协作」⇒ 一步不执行、终止并**显式**交还待确认的那一步与已收集证据。"""
 
     def test_first_step_needing_collaboration_executes_nothing(self, store, runner, tools):
-        _authz, runtime = faces(store)                       # 缺省档 collaborative + 缺省清单
+        _authz, runtime = faces(store)                       # 出厂档 autonomous + 缺省清单
         gate = ActionGate(runtime)
         outcome = drive(runner, tools, ScriptedProtocol([call(SK_WATCH)]), gate)
 
@@ -185,6 +188,29 @@ class TestGwt6HandsBackWhenNotAutonomous:
         assert outcome.termination == "finished"
         assert [step.tool_name for step in outcome.steps] == [SK_WATCH]
         assert outcome.steps[0].envelope.status == "ok"
+
+
+# ───────────────────────── 出厂自主的只读原语（T-AGT-012.1） ─────────────────────────
+
+
+class TestFactoryReadOnlyPrimitives:
+    """出厂档 `autonomous` 只放开清单显式登记的只读原语；写类 / 通用 Skill 仍须确认。"""
+
+    def test_registered_read_only_primitive_is_autonomous_under_factory_config(self, store):
+        _authz, runtime = faces(store)
+        decision = ActionGate(runtime).authorize(
+            skill_id="sk_local_sql_v1.0",
+            tool_name="sk_local_sql",
+            arguments={"sql": "SELECT 1"},
+        )
+        assert decision.verdict == "autonomous-ok"
+
+    def test_unregistered_generic_skill_still_needs_confirmation(self, store):
+        _authz, runtime = faces(store)
+        decision = ActionGate(runtime).authorize(
+            skill_id=f"{SK_WATCH}_v1.0", tool_name=SK_WATCH, arguments={},
+        )
+        assert decision.verdict == "needs-confirmation"
 
 
 # ───────────────────────── GWT-7 · 交还不伪装完成 ─────────────────────────
@@ -343,6 +369,7 @@ class TestCrossLayerPins:
             approved_rule(SK_WATCH),
             EvolutionRiskRule(prefix="skill.", risk_class="collaborative-required"),
         ))
+        runtime.set_tier("collaborative")                 # 显式收到协作档（出厂缺省是自主）
         gate = ActionGate(runtime)
         held = gate.authorize(skill_id=f"{SK_WATCH}_v1.0", tool_name=SK_WATCH, arguments={})
         assert held.verdict == "needs-confirmation"

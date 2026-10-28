@@ -134,6 +134,8 @@ _GET_ROUTES: dict[str, Callable[[UiApp, str], dict]] = {
     "/api/settings/data/job": lambda app, _q: app.api_settings_data_job(),
     "/api/settings/sources": lambda app, _q: app.api_settings_sources(),
     "/api/settings/privacy": lambda app, _q: app.api_settings_privacy(),
+    # 运行期授权页（[D-143]）：档位 + 动作级分级清单 + 缺省来源 + `agent-change/` 留痕。
+    "/api/settings/agent-authorization": lambda app, _q: app.api_settings_agent_authorization(),
     "/api/settings/maintenance": lambda app, _q: app.api_settings_maintenance(),
     "/api/settings/network": lambda app, q: app.api_settings_network(hours=_query(q, "hours")),
     "/api/settings/offline": lambda app, _q: app.api_settings_offline(),
@@ -231,6 +233,10 @@ _POST_ROUTES: dict[str, Callable[[UiApp, dict], dict]] = {
     # 设置区的写面（[`T-UI-018`]）：设置落值（经 [01 §7] 统一注册表）/ 备份 / 恢复 / 清空 /
     # 凭据增改吊销 / 网络活动导出——六条全部是**显式动作**，故进写表。
     "/api/settings/apply": lambda app, body: app.api_settings_apply(body),
+    # 运行期授权（[D-143]）：回滚一条 `agent-change/` 记录——显式动作，非幂等读面。
+    "/api/settings/agent-authorization/rollback": lambda app, body: (
+        app.api_settings_agent_rollback(body)
+    ),
     "/api/settings/store/relocate": lambda app, body: app.api_settings_store_relocate(body),
     "/api/settings/llm/bootstrap": lambda app, body: app.api_settings_llm_bootstrap(body),
     "/api/settings/data/sync": lambda app, body: app.api_settings_data_sync(body),

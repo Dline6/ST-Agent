@@ -277,6 +277,52 @@ def test_convert_writes_a_new_root_and_leaves_the_source_alone(m5) -> None:
         assert _get(running, "/api/settings/storage")["summary"]["status"] == "ok"
 
 
+def test_agent_authorization_page_writes_and_rolls_back_through_the_real_facade(m5) -> None:
+    """T-AGT-012.2：出厂来源可辨、修改落 `agent-change/`、回滚本身再落一条。"""
+    runtime = m5.m5
+    with serve(dev=False, settings=runtime.settings, reflection=runtime.reflection) as running:
+        first = _get(running, "/api/settings/agent-authorization")
+        assert first["panel"]["status"] == "ok", first["panel"].get("reason")
+        tier, grading = first["panel"]["data"]["slots"]["entries"]
+        assert tier["config_id"] == "agent.authorization"
+        assert tier["current"] == "autonomous"
+        assert "出厂缺省" in tier["note"]
+        assert [option["value"] for option in tier["options"]] == [
+            "manual", "collaborative", "autonomous",
+        ]
+        assert grading["config_id"] == "evolution.risk-grading"
+        assert grading["actions"] == []                      # 清单只呈现
+        assert "skill.sk_local_sql" in {
+            rule["prefix"] for rule in grading["detail"]
+        }
+
+        applied = _post(
+            running, "/api/settings/apply",
+            {"config_id": "agent.authorization", "value": "manual"},
+        )
+        assert applied["status"] == "ok" and applied["data"]["changed"] is True
+
+        second = _get(running, "/api/settings/agent-authorization")
+        assert second["panel"]["data"]["slots"]["entries"][0]["current"] == "manual"
+        assert "用户设置" in second["panel"]["data"]["slots"]["entries"][0]["note"]
+        changes = second["trail"]["data"]["slots"]["values"]["changes"]
+        assert [item["old_value"] for item in changes] == ["autonomous"]
+        assert any(
+            name.startswith("agent-change/")
+            for name in runtime.store.list_files("execution_log")
+        )
+
+        rolled = _post(
+            running, "/api/settings/agent-authorization/rollback",
+            {"change_id": changes[0]["change_id"]},
+        )
+        assert rolled["status"] == "ok" and rolled["data"]["applied"] is True
+
+        final = _get(running, "/api/settings/agent-authorization")
+        assert final["panel"]["data"]["slots"]["entries"][0]["current"] == "autonomous"
+        assert len(final["trail"]["data"]["slots"]["values"]["changes"]) == 2
+
+
 def test_wipe_needs_three_ordered_tokens_then_stops_the_data_face(m5) -> None:
     """GWT-3：三次确认是 L0 的硬门；足量后删根并**置重启闸门**——不假装进程仍健康。"""
     runtime = m5.m5

@@ -26,13 +26,14 @@ function el(tag, className, text) {
   return node;
 }
 
-/** 六视图的键与标签——左栏二级与页内取数共用这一份（不另造词表）。 */
-export const VIEWS = ['storage', 'llm', 'sources', 'privacy', 'data', 'maintenance', 'network'];
+/** 设置区各视图的键与标签——左栏二级与页内取数共用这一份（不另造词表）。 */
+export const VIEWS = ['storage', 'llm', 'sources', 'privacy', 'agent', 'data', 'maintenance', 'network'];
 export const VIEW_TITLES = {
   storage: '存储',
   llm: 'LLM 提供方',
   sources: '数据源',
   privacy: '隐私与留存',
+  agent: '运行期授权',
   data: '数据同步',
   maintenance: '备份 / 恢复 / 清空',
   network: '网络活动',
@@ -1999,6 +2000,56 @@ function densityChrome(mount) {
   mount.append(box);
 }
 
+/** 运行期授权页：服务端面板 + 留痕，回滚按钮由本页 chrome 承载（[D-143]）。 */
+async function renderAgentAuthorization(root) {
+  const payload = await renderParts(
+    '/api/settings/agent-authorization', root, ['panel', 'trail'],
+  );
+  if (!payload || payload.status) return;
+  const changes = partValues(payload.trail).changes || [];
+  if (!changes.length) return;
+
+  const box = el('section', 'page__block');
+  box.append(el('h3', 'page__block-title', '回滚档位变更'));
+  box.append(el('p', 'component__meta',
+    '按每条变更的变更前取值回放；回滚本身也是一次变更。'));
+  const status = el('p', 'component__meta', '');
+  for (const change of changes) {
+    const button = el('button', 'feedback__button',
+      `回滚 ${change.old_value} → ${change.new_value}`);
+    button.type = 'button';
+    button.addEventListener('click', async () => {
+      try {
+        const result = await runBusy(button, () => postJson(
+          '/api/settings/agent-authorization/rollback',
+          { change_id: change.change_id },
+        ));
+        if (result.status === 'ok') {
+          const data = result.data || {};
+          status.textContent = data.note
+            || (data.applied ? '已回滚' : '当前取值已是变更前取值');
+          status.className = 'component__meta';
+          showToast(data.applied ? '档位变更已回滚' : '无需回滚', {
+            type: data.applied ? 'success' : 'info',
+          });
+          if (data.applied && root.parentElement) {
+            renderSettingsPage(null, root.parentElement);
+          }
+        } else {
+          status.textContent = `未回滚（${result.status}）：${result.reason || ''}`;
+          status.className = 'state state--error';
+        }
+      } catch (error) {
+        status.textContent = `请求失败：${error.message}`;
+        status.className = 'state state--error';
+      }
+    });
+    box.append(button);
+  }
+  box.append(status);
+  root.append(box);
+}
+
 export async function renderSettingsPage(page, mount) {
   const view = readView();
   const root = el('div', 'page');
@@ -2019,6 +2070,8 @@ export async function renderSettingsPage(page, mount) {
     await renderParts('/api/settings/sources', root, ['panel']);
   } else if (view === 'privacy') {
     await renderParts('/api/settings/privacy', root, ['panel']);
+  } else if (view === 'agent') {
+    await renderAgentAuthorization(root);
   } else if (view === 'data') {
     await renderDataView(root);
   } else if (view === 'maintenance') {

@@ -29,10 +29,12 @@ _GET_PATHS = (
     "/api/settings/maintenance",
     "/api/settings/network",
     "/api/settings/offline",
+    "/api/settings/agent-authorization",
 )
 
 _POST_PATHS = (
     "/api/settings/apply",
+    "/api/settings/agent-authorization/rollback",
     "/api/settings/store/relocate",
     "/api/settings/llm/bootstrap",
     "/api/settings/data/sync",
@@ -172,6 +174,77 @@ def test_bytes_text_uses_fixed_binary_steps() -> None:
     assert _bytes_text(1023) == "1023 B"
     assert _bytes_text(1536) == "1.5 KiB"
     assert _bytes_text(3 * 1024 * 1024) == "3.0 MiB"
+
+
+# ── 运行期授权页（[T-AGT-012.2]） ──────────────────────────────────────────────
+
+class _AgentAuthFace:
+    """运行期授权面的替身（形状同 `ReflectionFacade.agent_authorization`）。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def agent_authorization(self) -> dict:
+        return {
+            "available": True,
+            "tier": "autonomous",
+            "tiers": ["manual", "collaborative", "autonomous"],
+            "default_tier": "autonomous",
+            "tier_source": "default",
+            "tier_config_id": "agent.authorization",
+            "grading_config_id": "evolution.risk-grading",
+            "grading_note": "与演进授权共用同一张清单；本页只呈现",
+            "grading": [
+                {"prefix": "skill.sk_local_sql", "risk_class": "autonomous-ok"},
+            ],
+            "risk_classes": [
+                "autonomous-ok", "collaborative-required", "never-autonomous",
+            ],
+            "changes": [],
+        }
+
+    def rollback_agent_change(self, change_id: str) -> dict:
+        self.calls.append(change_id)
+        return {"available": True, "applied": True, "note": "已按变更前取值回放"}
+
+
+def test_agent_authorization_panel_shows_default_source_and_read_only_grading() -> None:
+    app = build_ui(host="127.0.0.1", port=0, reflection=_AgentAuthFace())
+    payload = app.api_settings_agent_authorization()
+    assert payload["panel"]["status"] == "ok"
+    slots = payload["panel"]["data"]["slots"]
+    tier, grading = slots["entries"]
+    assert tier["config_id"] == "agent.authorization"
+    assert tier["current"] == "autonomous" and tier["actions"] == ["set"]
+    assert "当前来源" in tier["description"] and "出厂缺省" in tier["description"]
+    assert "出厂缺省" in tier["note"] and "尚未由用户修改" in tier["note"]
+    assert grading["config_id"] == "evolution.risk-grading"
+    assert grading["actions"] == [] and grading["detail"]
+    assert "只呈现" in grading["note"]
+    assert payload["trail"]["status"] == "ok"
+
+
+def test_agent_authorization_is_unavailable_without_the_reflection_face() -> None:
+    app = build_ui(host="127.0.0.1", port=0)
+    payload = app.api_settings_agent_authorization()
+    for part in payload.values():
+        assert part["status"] == "unavailable"
+        assert "未接入" in part["reason"]
+
+
+def test_agent_rollback_requires_a_change_id() -> None:
+    app = build_ui(host="127.0.0.1", port=0, reflection=_AgentAuthFace())
+    payload = app.api_settings_agent_rollback({})
+    assert payload["status"] == "validation_failed"
+    assert "change_id" in payload["reason"]
+
+
+def test_agent_rollback_delegates_to_the_face() -> None:
+    face = _AgentAuthFace()
+    app = build_ui(host="127.0.0.1", port=0, reflection=face)
+    payload = app.api_settings_agent_rollback({"change_id": "chg_agent"})
+    assert payload["status"] == "ok" and payload["data"]["applied"] is True
+    assert face.calls == ["chg_agent"]
 
 
 # ── 同步目录的折叠态与点选行为（[T-UI-030]；静态断言，不跑 JS） ──────────────────

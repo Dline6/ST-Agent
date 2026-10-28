@@ -91,6 +91,10 @@ DEFAULT_RISK_GRADING: tuple[EvolutionRiskRule, ...] = (
     EvolutionRiskRule(prefix="daily-report.", risk_class="autonomous-ok"),
     EvolutionRiskRule(prefix="weekly-report.", risk_class="autonomous-ok"),
     EvolutionRiskRule(prefix="channel-delivery.", risk_class="autonomous-ok"),
+    # 可自主——**只读原语**（运行期动作标识，[D-143]）：须写在 `skill.` 通则以**前**，
+    # `classify` 按首个前缀命中；未登记的写类 / 出网原语仍落到下面的通则。
+    EvolutionRiskRule(prefix="skill.sk_local_sql", risk_class="autonomous-ok"),
+    EvolutionRiskRule(prefix="skill.sk_data_status", risk_class="autonomous-ok"),
     # 必须协作——[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md) 原文「Skill 参数、注意力预算、视角阵容必须协作」
     EvolutionRiskRule(prefix="skill.", risk_class="collaborative-required"),
     EvolutionRiskRule(prefix="workflow.", risk_class="collaborative-required"),
