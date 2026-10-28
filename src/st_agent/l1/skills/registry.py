@@ -227,6 +227,10 @@ class SkillRegistry:
         latest = self.get_latest(base)
         if latest is None:
             raise SkillNotFoundError(f"base {base!r} 无已注册版本，首版请用 register")
+        if latest.source == "builtin":
+            raise SkillValidationError(
+                f"Skill base {base!r} 为内置原语，不可发布新版本（01 §2「不可版本化」）"
+            )
         _, old_ver = parse_skill_id(latest.skill_id)
         if not (new_ver.major > old_ver.major
                 or (new_ver.major == old_ver.major and new_ver.minor > old_ver.minor)):
@@ -258,8 +262,15 @@ class SkillRegistry:
         return descriptor
 
     def set_parameters(self, skill_id: str, values: dict[str, Any]) -> SkillDescriptor:
-        """改 Skill 参数默认值（GWT-3 Studio 入口；超范围即拒不保存，GWT-7）。"""
+        """改 Skill 参数默认值（GWT-3 Studio 入口；超范围即拒不保存，GWT-7）。
+
+        内置原语（`source=builtin`）**不可编辑**（01 §2），此处显式拒绝、不落盘。
+        """
         descriptor = self._load(skill_id)
+        if descriptor.source == "builtin":
+            raise SkillValidationError(
+                f"Skill {skill_id!r} 为内置原语，参数默认值不可编辑（01 §2「不可编辑」）"
+            )
         merged = validate_param_values(descriptor.parameters, values)
         new_params = tuple(
             p.model_copy(update={"default": merged[p.name]}) for p in descriptor.parameters

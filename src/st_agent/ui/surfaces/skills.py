@@ -80,7 +80,7 @@ def _skill_param_description(spec: Any) -> str:
     return "；".join(bits)
 
 
-def _skill_param_entry(skill_id: str, spec: Any) -> dict[str, Any]:
+def _skill_param_entry(skill_id: str, spec: Any, *, editable: bool = True) -> dict[str, Any]:
     """一个 `ParameterSpec` → `setting_panel` 的一条（取值面按 `type` 三态选）。
 
     三态口径见渲染件头注：`enum` / `boolean` 给 `options` 走下拉（布尔**刻意不走**
@@ -103,9 +103,11 @@ def _skill_param_entry(skill_id: str, spec: Any) -> dict[str, Any]:
         "description": _skill_param_description(spec),
         "current": current,
         "options": options,
-        "actions": ["apply"],
+        "actions": ["apply"] if editable else [],
         "params": {"skill_id": skill_id, "name": spec.name},
     }
+    if not editable:
+        entry["note"] = "内置原语不可编辑（01 §2）"
     if not options:
         entry["input"] = "text"
     return entry
@@ -223,8 +225,9 @@ _SKILL_SOURCE_LABELS: dict[str, str] = {
     "user-built": "自建",
     "mcp-mapped": "MCP 映射",
     "imported": "导入",
+    "builtin": "内置原语",
 }
-"""Skill 来源的中文名（系统文案；`SkillDescriptor.source` 的四个取值）。"""
+"""Skill 来源的中文名（系统文案；`SkillDescriptor.source` 的五个取值）。"""
 
 
 _SKILL_OFFLINE_LABELS: dict[str, str] = {
@@ -348,7 +351,11 @@ class SkillsSurface(SurfaceBase):
                 f"「{descriptor.name}」未声明可配参数（03 §1.2：parameters 可为空，"
                 "该 Skill 无参数可配）"
             )
-        entries = [_skill_param_entry(descriptor.skill_id, spec) for spec in descriptor.parameters]
+        entries = [
+            _skill_param_entry(
+                descriptor.skill_id, spec, editable=descriptor.source != "builtin")
+            for spec in descriptor.parameters
+        ]
         return ResultEnvelope.ok(self._gated_description(
             "setting_panel",
             slots={

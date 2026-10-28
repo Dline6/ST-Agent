@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 
+from st_agent.contracts.capability_types import ParameterSpec
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.l1.runner import SkillRunner
 from st_agent.l1.skills import SkillRegistry, ensure_official_pack
@@ -280,6 +281,66 @@ def test_gwt6_missing_permission_is_judged_by_l1(runner, tools):
         runner, tools, FakeProtocol([call(SK_PERM), finish()]), approved_permissions=(PERM,),
     )
     assert with_perm.steps[0].envelope.status == "ok"
+
+
+# ───────────────── 008.3 · 实参按描述体拆两通道（05 §10） ─────────────────
+
+OBJ = "sk_object_probe"
+
+
+@pytest.fixture()
+def object_skill(skills: SkillRegistry) -> str:
+    return skills.register(
+        OBJ, name="对象参数探针", description="对象与标量并列的探针",
+        input_schema={
+            "type": "object",
+            "properties": {"portfolio": {"type": "object"}},
+        },
+        output_schema={"type": "object"},
+        parameters=(
+            ParameterSpec(name="window", type="integer", default=5, description="统计窗口"),
+        ),
+    ).skill_id
+
+
+def test_object_arguments_are_routed_to_inputs(runner, skills, object_skill):
+    seen: dict = {}
+
+    def executor(ctx, params):
+        seen["params"] = dict(params)
+        seen["inputs"] = dict(ctx.inputs)
+        return ResultEnvelope.ok({})
+
+    runner.register_executor(object_skill, executor)
+    gate = FakeGate()
+    outcome = drive(
+        runner, skills.tool_catalog(),
+        FakeProtocol([
+            call(OBJ, {"window": 9, "portfolio": {"codes": ["sh.600000"]}}),
+            finish(),
+        ]),
+        gate=gate,
+    )
+    assert outcome.termination == "finished"
+    assert seen["params"] == {"window": 9}
+    assert seen["inputs"] == {"portfolio": {"codes": ["sh.600000"]}}
+    # 闸门仍看整份 arguments（拆通道只发生在执行前）
+    assert gate.seen[0]["arguments"] == {
+        "window": 9, "portfolio": {"codes": ["sh.600000"]},
+    }
+
+
+def test_undeclared_keys_are_rejected_not_dropped(runner, skills, object_skill):
+    called: list[int] = []
+    runner.register_executor(
+        object_skill, lambda ctx, params: called.append(1) or ResultEnvelope.ok({}))
+    outcome = drive(
+        runner, skills.tool_catalog(),
+        FakeProtocol([call(OBJ, {"typo": 1}), finish()]),
+    )
+    assert outcome.steps[0].envelope.status == "validation_failed"
+    assert "未知参数" in outcome.steps[0].envelope.reason
+    assert called == []
 
 
 # ───────────────────────── GWT-7 · 协议端口可替换 ─────────────────────────

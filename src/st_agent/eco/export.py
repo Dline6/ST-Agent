@@ -99,6 +99,10 @@ class ShareExporter:
         """
         registry = self._need(self._skills, "SkillRegistry", "Skill")
         descriptor = registry.get(skill_id)
+        if descriptor.source == "builtin":
+            raise ShareExportError(
+                f"Skill {skill_id!r} 为内置原语，不可导出、不可分享（01 §2「不可导出分享」）"
+            )
         self._check_neutral(descriptor.name, descriptor.description, label=f"Skill {skill_id}")
         inbound = descriptor.provenance if previous is None else previous
         return self._pack(

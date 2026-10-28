@@ -35,6 +35,7 @@ from st_agent.contracts.identifiers import TraceId
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.trace import Trace
 from st_agent.l0.llm import ToolCall
+from st_agent.l1.skills.tool_catalog import split_arguments
 from st_agent.l3.errors import AgentRuntimeValidationError
 from st_agent.l3.runtime.context import (
     DEFAULT_WORK_CONTEXT_BUDGET,
@@ -314,9 +315,13 @@ def run_agent_loop(
             )
 
         # ── ③ 执行（经 L1 既有流水线；参数/权限/沙箱/留痕全在那边判） ──
+        # 实参按描述体拆两通道（05 §10）：对象键走 inputs、其余走 values；
+        # 未声明的键交给 L1 按「未知参数」显式拒，循环不替它猜。
+        values, object_inputs = split_arguments(entry, dict(call.arguments))
         run = runner.run(
             entry.skill_id,
-            dict(call.arguments),
+            values,
+            inputs=object_inputs,
             trace=chain,
             approved_permissions=tuple(approved_permissions),
             initiator=initiator,
