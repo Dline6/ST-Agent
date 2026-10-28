@@ -43,6 +43,8 @@ AGGREGATE = "sk_data_aggregate_v1.0"
 FLOW_ID = "wf_m0_gate_v1.0"
 
 OFFICIAL_BASE_COUNT = 12
+BUILTIN_BASES = ("sk_data_status", "sk_local_sql")
+BASE_COUNT = OFFICIAL_BASE_COUNT + len(BUILTIN_BASES)
 
 EGRESS_BASE = "sk_gate_egress"
 EGRESS_ID = "sk_gate_egress_v1.0"
@@ -101,9 +103,11 @@ class TestGwt1AssemblyIsUsable:
 
     def test_official_pack_is_fully_listed(self, bare_rig: Rig):
         descriptors = bare_rig.runtime.skills.list_all()
-        assert len(descriptors) == OFFICIAL_BASE_COUNT
-        assert len({base_of(d.skill_id) for d in descriptors}) == OFFICIAL_BASE_COUNT
-        # 播种完整性：12 个 base 全部有执行器（无「列得出但跑不了」的悬空项）
+        assert len(descriptors) == BASE_COUNT
+        bases = {base_of(d.skill_id) for d in descriptors}
+        assert len(bases) == BASE_COUNT
+        assert set(BUILTIN_BASES) <= bases
+        # 播种完整性：12 个官方 base 全部有执行器（无「列得出但跑不了」的悬空项）
         assert uncovered_bases() == ()
 
     def test_sandbox_carries_endpoints_and_provider_hosts(self, bare_rig: Rig):
@@ -359,7 +363,7 @@ class TestGwt5BackupLoop:
         rt2 = again.runtime
 
         # ── 5) 断言：运行时可用 + config 面用户数据可查 ──
-        assert len(rt2.skills.list_all()) == OFFICIAL_BASE_COUNT
+        assert len(rt2.skills.list_all()) == BASE_COUNT
         formats = {p.default for p in rt2.skills.get(AGGREGATE).parameters
                    if p.name == "format"}
         assert formats == {"trend"}

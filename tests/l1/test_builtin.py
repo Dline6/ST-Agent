@@ -221,7 +221,7 @@ class TestInstallSemantics:
         assert seen["keys"] == {"market_db"}
 
     def test_empty_seed_table_installs_nothing(self, registry, runner):
-        assert install_builtins(registry, runner) == ()
+        assert install_builtins(registry, runner, primitives=()) == ()
         assert registry.list_all() == ()
 
 

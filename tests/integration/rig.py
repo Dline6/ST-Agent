@@ -89,8 +89,11 @@ class MarketData:
     def bound(self) -> bool:
         return self._db is not None
 
-    def query(self, sql: str, params: tuple = ()):  # noqa: ANN201（鸭子类型）
-        return self._require().query(sql, tuple(params))
+    def query(self, sql: str, params: tuple = (), **limits):  # noqa: ANN201（鸭子类型）
+        return self._require().query(sql, tuple(params), **limits)
+
+    def status_snapshot(self, **options):
+        return self._require().status_snapshot(**options)
 
     def snapshot_id(self) -> str:
         return self._require().snapshot_id()

@@ -129,8 +129,11 @@ class DeferredMarketQuery:
         """绑到运行时的 `Store`（组合根在 `open_runtime` 返回后调用）。"""
         self._db = MarketDb(store)
 
-    def query(self, sql: str, params: tuple = ()) -> Any:
-        return self._require().query(sql, tuple(params))
+    def query(self, sql: str, params: tuple = (), **limits: Any) -> Any:
+        return self._require().query(sql, tuple(params), **limits)
+
+    def status_snapshot(self, **options: Any) -> dict[str, Any]:
+        return self._require().status_snapshot(**options)
 
     def snapshot_id(self) -> str:
         return self._require().snapshot_id()

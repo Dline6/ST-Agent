@@ -16,6 +16,7 @@ import pytest
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.registry_types import SemVer
 from st_agent.l0.storage import Store
+from st_agent.l1.builtin import BUILTIN_PRIMITIVES
 from st_agent.l1.runtime import L1Runtime, build_l1_runtime
 from st_agent.l1.skills.ids import base_of
 from st_agent.l1.skills.official.install import uncovered_bases
@@ -92,7 +93,7 @@ class TestGwt2OfficialPack:
         assert runtime.vault.list_credentials() == ()     # 未配任何凭据
 
         bases = {base_of(d.skill_id) for d in runtime.skills.list_all()}
-        assert len(bases) == 12
+        assert len(bases) == 12 + len(BUILTIN_PRIMITIVES)
         assert AGGREGATE in {d.skill_id for d in runtime.skills.list_all()}
 
     def test_every_base_has_an_executor(self):
@@ -150,7 +151,7 @@ class TestGwt4RebuildIdempotent:
 
         desc = again.skills.get(AGGREGATE)
         assert {p.default for p in desc.parameters if p.name == "format"} == {"trend"}
-        assert len(again.skills.list_all()) == 12
+        assert len(again.skills.list_all()) == 12 + len(BUILTIN_PRIMITIVES)
 
     def test_registered_workflow_survives_rebuild(self, store: Store,
                                                   market_query: _FakeMarketQuery):

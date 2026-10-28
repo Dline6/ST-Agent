@@ -11,8 +11,9 @@
 **原子性口径**：先校验全部种子（形态 / 重复 / 权限语法 / ``requires`` 依赖），
 再落任何描述体——任一种子不成立即整体拒，不留半个原语。
 
-**本叶不接组合根**：种子表 :data:`BUILTIN_PRIMITIVES` 为空，首个真实原语由后续
-任务（``T-AGT-010.*`` 等）追加，并在组合根以 ``context`` 注入后调用本函数。
+**本叶不接组合根**：安装入口由 :func:`st_agent.l1.runtime.build_l1_runtime` 与官方
+Pack 同点调用；种子表 :data:`BUILTIN_PRIMITIVES` 目前含本地数据面的两条原语
+（``local_sql`` / ``data_status``，T-AGT-010.*）。
 """
 
 from __future__ import annotations
@@ -23,15 +24,17 @@ from typing import Any
 
 from st_agent.contracts.capability_types import Provenance
 from st_agent.contracts.registry_types import validate_permissions
+from st_agent.l1.builtin.data_status import DATA_STATUS
 from st_agent.l1.builtin.errors import BuiltinRegistrationError
+from st_agent.l1.builtin.local_sql import LOCAL_SQL
 from st_agent.l1.builtin.models import BuiltinPrimitive
 from st_agent.l1.skills.errors import SkillExistsError, SkillValidationError
 from st_agent.l1.skills.ids import skill_id_for
 
 __all__ = ["BUILTIN_PRIMITIVES", "install_builtins"]
 
-BUILTIN_PRIMITIVES: tuple[BuiltinPrimitive, ...] = ()
-"""内置原语种子表（本叶为空；后续原语叶按 :class:`BuiltinPrimitive` 追加）。
+BUILTIN_PRIMITIVES: tuple[BuiltinPrimitive, ...] = (LOCAL_SQL, DATA_STATUS)
+"""内置原语种子表（当前为本地数据面两条；后续原语叶按 :class:`BuiltinPrimitive` 追加）。
 
 一行一条能力。权限必须逐条显式给出（见 ``models.BuiltinPrimitive.permissions``）。
 """
