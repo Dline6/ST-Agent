@@ -7,6 +7,7 @@ GWT-1..6 逐条；另加三条边界用例（非 ok 结果不被截断 / 空目�
 from __future__ import annotations
 
 import json
+from datetime import timedelta
 
 import pytest
 
@@ -15,7 +16,10 @@ from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.l1.runner import RUN_PREFIX
 from st_agent.l1.skills import project_catalog
 from st_agent.l1.skills.tool_catalog import ToolEntry
+from st_agent.l2.memory.reader import MemorySlice
+from st_agent.l3.chat.session import ChatMessage
 from st_agent.l3.errors import AgentRuntimeValidationError
+from l3_helpers import NOW as L3_NOW, node
 from st_agent.l3.runtime import (
     CATALOG_EMPTY_REASON,
     DEFAULT_WORK_CONTEXT_BUDGET,
@@ -71,6 +75,26 @@ def entry_list(tools):
     """``None`` → 默认两条目；否则原样（供空目录用例传 ``[]``）。"""
     return [entry("sk_probe_echo"), entry("sk_probe_quote", description="取行情")] \
         if tools is None else tools
+
+
+def chat(text: str, *, role: str = "user", index: int = 0) -> ChatMessage:
+    """构造一条会话消息（时间序由 ``index`` 决定）。"""
+    return ChatMessage(
+        message_id=f"msg_{index:020x}",
+        session_id="sess_" + "0" * 20,
+        parent_id=None if index == 0 else f"msg_{index - 1:020x}",
+        role=role,  # type: ignore[arg-type]
+        text=text,
+        created_at=L3_NOW + timedelta(minutes=index),
+    )
+
+
+def mem(node_id: str) -> MemorySlice:
+    """构造一条记忆切片（attention 节点；04 §1 的最小合法形态）。"""
+    return MemorySlice(
+        node=node("attention", memory_node_id=node_id),
+        as_of=L3_NOW, confidence=0.9, base_confidence=0.8, source="user_stated",
+    )
 
 
 # ───────────────────────── GWT-1 · 目录进上下文且可追溯 ─────────────────────────
@@ -255,3 +279,95 @@ def test_consumes_l1_tool_catalog_projection():
     assert [e.name for e in context.tools] == ["sk_probe_echo"]
     assert context.tools[0].skill_id == "sk_probe_echo_v1.1"     # 执行目标取最高版本
     assert "text" in context.tool_specs()[0].parameters["properties"]
+
+
+# ─────────── T-AGT-009.2 · 历史与记忆注入（05 §10） ───────────
+
+
+def test_gwt1_history_and_memory_are_rendered_into_the_prompt():
+    """Given 多轮会话与记忆, When 装配, Then 两者都进模型可见面（含上一轮任务与结果）。"""
+    history = (
+        chat("查一下 sh.600000", index=0),
+        chat("已给出公告摘要", role="agent", index=1),
+    )
+    history = (history[0], history[1].model_copy(
+        update={"payload": {"type": "table", "rows": [{"title": "公告 A"}]}}
+    ))
+    memory = (mem("mn_" + "a" * 20),)
+
+    context = assemble(history=history, memory=memory)
+    prompt = context.render_prompt(include_tools=True)
+
+    assert "会话历史（近端 2 条，按时间序）：" in prompt
+    assert "用户：查一下 sh.600000" in prompt
+    assert "副驾：已给出公告摘要" in prompt
+    assert '出站载荷：{"rows": [{"title": "公告 A"}], "type": "table"}' in prompt
+    assert "相关记忆（1 条）：" in prompt
+    assert "mn_" + "a" * 20 in prompt
+    assert context.history == history and context.memory == memory
+    assert context.dropped == ()
+
+
+def test_gwt3_empty_history_and_memory_are_explicit_not_silent():
+    """Given 无历史且无记忆, Then 上下文仍可装配，空态显式成行。"""
+    prompt = assemble().render_prompt(include_tools=True)
+    assert "会话历史：无（本会话无更早消息）" in prompt
+    assert "相关记忆：无（无相关记忆切片）" in prompt
+
+
+def test_gwt2_under_budget_keeps_history_and_memory_verbatim():
+    """Given 未超预算, Then 历史与记忆逐字节原样（不截断、不重排、不丢项）。"""
+    history = (chat("一", index=0), chat("二", index=1))
+    memory = (mem("mn_" + "a" * 20),)
+    context = assemble(history=history, memory=memory)
+    assert context.history == history
+    assert context.memory == memory
+    assert context.dropped == ()
+    assert context.over_budget is False
+
+
+# ─────────── T-AGT-009.3 · 预算与超限取舍（05 §10） ───────────
+
+
+def test_gwt1_over_budget_drops_memory_then_history_and_marks_dropped():
+    """Given 超预算, Then 按声明顺序取舍（记忆 → 历史旧→新），被舍项如实标注。"""
+    history = (chat("一", index=0), chat("二", index=1))
+    memory = (mem("mn_" + "a" * 20), mem("mn_" + "b" * 20))
+
+    envelope = assemble_work_context(
+        "任务", [entry()], [step()],
+        history=history, memory=memory, budget_chars=10,
+    )
+    context = envelope.data
+
+    assert context.history == () and context.memory == ()
+    assert context.dropped == (
+        "memory:mn_" + "b" * 20,      # 记忆自末向首
+        "memory:mn_" + "a" * 20,
+        "history:msg_" + "0" * 19 + "0",   # 历史自旧向新（index=0 的消息）
+        "history:msg_" + "0" * 19 + "1",
+    )
+    assert len(context.steps) == 1          # 已执行动作**不参与取舍**
+    assert context.over_budget is True
+
+    prompt = context.render_prompt(include_tools=True)
+    assert "相关记忆：已按预算舍弃 2 条" in prompt
+    assert "会话历史：已按预算舍弃 2 条最早消息" in prompt
+
+
+def test_gwt1_steps_are_never_dropped_even_when_far_over_budget():
+    """D-090 冻结范围：不丢步骤——超限只舍历史 / 记忆，步骤照实保留。"""
+    context = assemble_work_context(
+        "任务", [entry()], [step(), step(run_id=RUN_ID_B)],
+        history=(chat("一"),), memory=(mem("mn_" + "a" * 20),), budget_chars=10,
+    ).data
+    assert [s.skill_run_id for s in context.steps] == [RUN_ID_A, RUN_ID_B]
+    assert {item.split(":", 1)[0] for item in context.dropped} == {"memory", "history"}
+
+
+def test_bad_history_and_memory_shapes_rejected():
+    """坏形态不静默跳过（半份上下文比空上下文更危险）。"""
+    with pytest.raises(AgentRuntimeValidationError, match="会话历史条目须为 ChatMessage"):
+        assemble_work_context("任务", [entry()], history=({"text": "x"},))
+    with pytest.raises(AgentRuntimeValidationError, match="记忆切片须为 MemorySlice"):
+        assemble_work_context("任务", [entry()], memory=({"node": "x"},))

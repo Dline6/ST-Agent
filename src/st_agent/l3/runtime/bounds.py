@@ -37,10 +37,13 @@ from st_agent.l1.registry.naming import (
     new_change_id,
 )
 from st_agent.l3.errors import AgentRuntimeValidationError
+from st_agent.l3.runtime.context import DEFAULT_WORK_CONTEXT_BUDGET
 from st_agent.l3.runtime.loop import DEFAULT_MAX_LLM_CALLS, DEFAULT_MAX_STEPS
 
 __all__ = [
     "CHANGE_PREFIX",
+    "CONTEXT_BUDGET_CEILING",
+    "CONTEXT_BUDGET_CONFIG_ID",
     "INVESTIGATE_CONFIG_PREFIX",
     "MAX_LLM_CALLS_CEILING",
     "MAX_LLM_CALLS_CONFIG_ID",
@@ -59,6 +62,10 @@ MAX_STEPS_CONFIG_ID = "investigate.max_steps"
 MAX_LLM_CALLS_CONFIG_ID = "investigate.max_llm_calls"
 """LLM 调用次数上界的 ``config_id``（落盘 ``investigate/max_llm_calls.json``）。"""
 
+CONTEXT_BUDGET_CONFIG_ID = "investigate.context_budget"
+"""工作上下文预算的 ``config_id``（[05 §10](../../../docs/技术架构-v2/05-L3-对话主入口.md)；
+落盘 ``config`` 分区 ``investigate/context_budget.json``）。"""
+
 CHANGE_PREFIX = "investigate-change/"
 """本族变更留痕（``ChangeRecord``）的落盘目录前缀。"""
 
@@ -67,6 +74,9 @@ MAX_STEPS_CEILING = 32
 
 MAX_LLM_CALLS_CEILING = 64
 """LLM 调用次数上界的**上限**（防跑飞；缺省 12 的 5×）。"""
+
+CONTEXT_BUDGET_CEILING = 32000
+"""工作上下文预算的**上限**（字符数；防单次装配塞爆模型窗口）。取值属实现口径。"""
 
 
 def _system_now() -> datetime:
@@ -128,25 +138,53 @@ _MAX_LLM_CALLS_ENTRY = ConfigEntry(
 )
 """LLM 调用次数上界条目（同上一目，落 [01 §7](../../../docs/技术架构-v2/01-平台共享契约.md)）。"""
 
+_CONTEXT_BUDGET_ENTRY = ConfigEntry(
+    config_id=CONTEXT_BUDGET_CONFIG_ID,
+    display_name="自主查证上下文预算",
+    value_schema={"type": "integer", "minimum": 1, "maximum": CONTEXT_BUDGET_CEILING},
+    default=DEFAULT_WORK_CONTEXT_BUDGET,
+    description_for_chat=(
+        "自主查证循环每一轮的上下文最多占多少字符（含任务、工具目录、已执行动作、"
+        "近端会话历史与记忆切片）。"
+        f"缺省 {DEFAULT_WORK_CONTEXT_BUDGET}；超限时先舍记忆、再舍最早的历史消息，"
+        "并在运行报告里如实标注被舍项。"
+        f"取值范围 1–{CONTEXT_BUDGET_CEILING}"
+    ),
+    panel_form_spec=PanelField(
+        widget="number",
+        label="自主查证上下文预算",
+        help_text=(
+            f"每轮自查证上下文的最大字符数（1–{CONTEXT_BUDGET_CEILING}）；"
+            f"缺省 {DEFAULT_WORK_CONTEXT_BUDGET}"
+        ),
+    ),
+    scope="global",
+    change_policy=ChangePolicy(requires_confirmation=True),
+)
+"""工作上下文预算条目（[05 §10](../../../docs/技术架构-v2/05-L3-对话主入口.md)，落 [01 §7](../../../docs/技术架构-v2/01-平台共享契约.md)）。"""
+
 _ENTRIES: dict[str, ConfigEntry] = {
     MAX_STEPS_CONFIG_ID: _MAX_STEPS_ENTRY,
     MAX_LLM_CALLS_CONFIG_ID: _MAX_LLM_CALLS_ENTRY,
+    CONTEXT_BUDGET_CONFIG_ID: _CONTEXT_BUDGET_ENTRY,
 }
 
 _DEFAULTS: dict[str, int] = {
     MAX_STEPS_CONFIG_ID: DEFAULT_MAX_STEPS,
     MAX_LLM_CALLS_CONFIG_ID: DEFAULT_MAX_LLM_CALLS,
+    CONTEXT_BUDGET_CONFIG_ID: DEFAULT_WORK_CONTEXT_BUDGET,
 }
 
 _CEILINGS: dict[str, int] = {
     MAX_STEPS_CONFIG_ID: MAX_STEPS_CEILING,
     MAX_LLM_CALLS_CONFIG_ID: MAX_LLM_CALLS_CEILING,
+    CONTEXT_BUDGET_CONFIG_ID: CONTEXT_BUDGET_CEILING,
 }
 
 
 def loop_bounds_config_entries() -> tuple[ConfigEntry, ...]:
-    """两条目的**规范形态**（缺省＝循环入口缺省；当前取值经 :meth:`LoopBounds.entry` 取）。"""
-    return (_MAX_STEPS_ENTRY, _MAX_LLM_CALLS_ENTRY)
+    """三条目的**规范形态**（缺省＝运行期缺省；当前取值经 :meth:`LoopBounds.entry` 取）。"""
+    return (_MAX_STEPS_ENTRY, _MAX_LLM_CALLS_ENTRY, _CONTEXT_BUDGET_ENTRY)
 
 
 class LoopBounds:
@@ -174,9 +212,17 @@ class LoopBounds:
         """生效的 **LLM 调用次数**上界（未落值 → 缺省 12；损坏 / 越界 → 显式抛）。"""
         return self._read(MAX_LLM_CALLS_CONFIG_ID)
 
+    def budget_chars(self) -> int:
+        """生效的**工作上下文预算**（未落值 → 缺省 4000；损坏 / 越界 → 显式抛）。"""
+        return self._read(CONTEXT_BUDGET_CONFIG_ID)
+
     def entries(self) -> tuple[ConfigEntry, ...]:
-        """两条目（`default` 携**当前生效值**，供面板 / 对话通道展示）。"""
-        return (self.entry(MAX_STEPS_CONFIG_ID), self.entry(MAX_LLM_CALLS_CONFIG_ID))  # type: ignore[return-value]
+        """三条目（`default` 携**当前生效值**，供面板 / 对话通道展示）。"""
+        return (  # type: ignore[return-value]
+            self.entry(MAX_STEPS_CONFIG_ID),
+            self.entry(MAX_LLM_CALLS_CONFIG_ID),
+            self.entry(CONTEXT_BUDGET_CONFIG_ID),
+        )
 
     def entry(self, config_id: str) -> ConfigEntry | None:
         """按 ``config_id`` 取条目；不属本族 → ``None``。"""
@@ -194,6 +240,12 @@ class LoopBounds:
     def set_llm_calls(self, value: object, *, trace_id: str | None = None) -> ChangeRecord | None:
         """落一次 **LLM 调用次数**上界（值未变 → ``None``）。"""
         return self._set(MAX_LLM_CALLS_CONFIG_ID, value, trace_id=trace_id)
+
+    def set_context_budget(
+        self, value: object, *, trace_id: str | None = None
+    ) -> ChangeRecord | None:
+        """落一次**工作上下文预算**（值未变 → ``None``）。"""
+        return self._set(CONTEXT_BUDGET_CONFIG_ID, value, trace_id=trace_id)
 
     # ───────────────────────── 内部 ─────────────────────────
 

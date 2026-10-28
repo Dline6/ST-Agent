@@ -8,9 +8,9 @@ arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P0
 milestone: M8
 depends_on: [T-AGT-009.1]
-status: todo
-decisions: [D-137]
-verify:
+status: done
+decisions: [D-137, D-142]
+verify: "范围 1279 passed；全量 4622 passed（2 例已知环境性 ERROR）；见执行日志 [T-AGT-009.2]"
 ---
 
 # T-AGT-009.2 · 历史与记忆注入
@@ -24,15 +24,25 @@ verify:
 - GWT-3：Given 无历史且无记忆，Then 上下文仍可装配，空态**显式**而非静默。
 
 ## 接口面
-<④ 对齐时实填（`doing` 起不可留占位），见 [工作流](../工作流.md) 第 ④ 步>
 - 输入（消费的前置接口）：
+  - `T-AGT-009.1` 交付的 `session_id` 透传（`DispatchBus.dispatch` → 循环端口）
+  - `SessionStore` 与 `assemble_context`（`l3/chat/session.py`）
+  - `MemoryReader.query(SliceQuery)`（`l2/memory/reader.py`）
+  - `run_agent_loop` / `assemble_work_context`（`l3/runtime/loop.py` / `context.py`）
 - 输出（本任务交付的公共 API / 落盘位置）：
+  - `WorkContext.history: tuple[ChatMessage, ...]` 与 `WorkContext.memory: tuple[MemorySlice, ...]`（缺省空元组）
+  - `assemble_work_context(..., history=(), memory=())` 与 `run_agent_loop(..., history=(), memory=())`
+  - 组合根 `_AgentInvestigator` 增 `sessions` / `reader` 注入；`build_m4_runtime` 的装配缝把 L2 句柄传入
+  - `WorkContext.render_prompt` 增历史 / 记忆两段，空态**显式成行**
 
 ## 可关闭的遗留
-<④ 对齐时实填：扫 [遗留问题](../遗留问题/README.md) 各层册的未闭区，逐条列「归属＝本任务」或「解封条件＝本任务 `done`」的条目（册内 id + 处置）；无命中写 `无`。>
+无（同父任务）
 
 ## 假设与前提
-<④ 对齐时实填；每条 `A<n>` 含 前提内容 / 若错的影响 / 验证方式；确认无假设写 `无（<原因>）`>
+- A1：只并入 `assemble_context` 的两个产出（`messages` / `memory.slices`），不把 `SessionContext` 当工作上下文（调研报告 §8.4 已钉死）。若错：上下文语义混淆、预算双算。验证：字段断言 + 既有会话装配用例不变。
+- A2：无历史且无记忆时 `render_prompt` **显式给出空态行**（不静默省略）。若错：模型无法区分「空」与「未注入」。验证：GWT-3 用例。
+- A3：循环本体不读存储——历史与记忆由组合根预取后注入，`run_agent_loop` 保持纯函数可测。若错：循环与 L0 / L2 存储耦合、单测需建真库。验证：循环既有 Fake 用例零改动。
+- A4：L3 消费 L2 的 `MemorySlice` 属向下依赖（`l3 > l2`），不违反铁律 7。若错：`tests/test_layering.py` 先红。验证：跨层套件。
 
 ## 涉及契约
 - [05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md) —— 循环工作上下文的字段面

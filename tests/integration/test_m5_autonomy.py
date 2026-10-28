@@ -125,6 +125,27 @@ class TestGwt1EndToEndInvestigate:
         assert final["prompt"].count("调用 sk_") == 2
 
 
+# ──────────── T-AGT-009 · 会话身份与历史进循环（跨层装配） ────────────
+
+
+class TestSessionContextWiring:
+    def test_session_identity_and_history_reach_the_loop_and_the_record(self, rig):
+        """Given 一次带会话的 investigate, Then 派发载荷 / 循环 / 留痕三处都有会话身份，
+        且循环第一轮的 prompt 里确有本会话历史（不是无历史单次查证）。"""
+        _make_autonomous(rig.m5)
+
+        turn = rig.m5.chat.post(TASK_TEXT)
+        outcome = rig.m5.chat.confirm_and_dispatch(turn.session_id)
+
+        assert outcome.session_id == turn.session_id
+        assert outcome.investigation.session_id == turn.session_id
+        record = outcome.investigation.report.record
+        assert record.session_id == turn.session_id
+        assert record.context_note == ""                 # 有会话，不是「无历史」降级
+        assert record.budget_chars > 0
+        assert "会话历史（近端" in rig.endpoint.loop_calls[0]["prompt"]
+
+
 # ───────────────────────── GWT-2 · 闸门真的在链上 ─────────────────────────
 
 

@@ -111,6 +111,11 @@ class AgentRunRecord(BaseModel):
     trace_id: str = Field(min_length=1)
     endpoint_id: str = Field(min_length=1)
     task: str = Field(min_length=1)
+    session_id: str | None = None
+    """本次循环所属会话（[05 §4](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的会话身份）；
+    ``None`` 即无历史的单次查证——如实记录，**不臆造会话**。"""
+    context_note: str = ""
+    """上下文形态的显式标注（如未携带会话标识、后续 `.2` / `.3` 的记忆与取舍说明）。"""
     termination: TerminationReason
     reason: str = ""
     at_bound: bool = False
@@ -121,6 +126,12 @@ class AgentRunRecord(BaseModel):
     """本次生效的**步数上界**（取值可注入，故记实际生效值而非缺省值）。"""
     max_llm_calls: int = Field(ge=1)
     """本次生效的 **LLM 调用次数上界**。"""
+    budget_chars: int = Field(default=0, ge=0)
+    """本次生效的**工作上下文预算**（[01 §7](../../../../docs/技术架构-v2/01-平台共享契约.md)
+    的 `investigate.context_budget`；0 即未跑装配的终止）。"""
+    context_dropped: tuple[str, ...] = ()
+    """被预算**舍弃**的上下文项（``memory:<node_id>`` / ``history:<message_id>``）——
+    [05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 要求如实标注被舍项。"""
     at_bound_kind: str = ""
     """触界的那一条（``step_limit`` / ``llm_call_limit``；未触界为空）。"""
     recorded_at: datetime
@@ -162,6 +173,8 @@ def record_agent_run(
         trace_id=outcome.trace.trace_id.value,
         endpoint_id=outcome.endpoint_id,
         task=outcome.task,
+        session_id=outcome.session_id,
+        context_note=outcome.context_note,
         termination=outcome.termination,
         reason=outcome.reason,
         at_bound=outcome.at_bound,
@@ -177,6 +190,8 @@ def record_agent_run(
         llm_calls=outcome.llm_calls,
         max_steps=outcome.max_steps,
         max_llm_calls=outcome.max_llm_calls,
+        budget_chars=outcome.budget_chars,
+        context_dropped=outcome.dropped,
         recorded_at=now if now is not None else _now(),
     )
     store.put("execution_log", agent_log_ref_of(agent_run_id),

@@ -401,7 +401,7 @@ def build_m4_runtime(
     bounds = LoopBounds(runtime.store)
     investigations = (
         None if investigations_of is None
-        else investigations_of(runtime, l6, bounds)
+        else investigations_of(runtime, l6, bounds, l2)
     )
     # L3 最后叠——它的 `train` 去向与回访面要注入 L6 的面（层间只认鸭子面，铁律 7）。
     l3 = _build_l3(

@@ -15,6 +15,7 @@ from st_agent.contracts.registry_types import ChangeRecord, ConfigEntry, ConfigS
 from st_agent.l1.registry.errors import RegistryValidationError
 from st_agent.l3.errors import AgentRuntimeValidationError
 from st_agent.l3.runtime.bounds import (
+    CONTEXT_BUDGET_CONFIG_ID,
     INVESTIGATE_CONFIG_PREFIX,
     MAX_LLM_CALLS_CONFIG_ID,
     MAX_STEPS_CONFIG_ID,
@@ -26,6 +27,7 @@ __all__ = ["InvestigateFamily", "investigate_family"]
 _WRITABLE: dict[str, str] = {
     MAX_STEPS_CONFIG_ID: "set_steps",
     MAX_LLM_CALLS_CONFIG_ID: "set_llm_calls",
+    CONTEXT_BUDGET_CONFIG_ID: "set_context_budget",
 }
 
 

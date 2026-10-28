@@ -222,6 +222,10 @@ class DispatchOutcome(BaseModel):
     route: IntentKind
     wired: bool
     owner: str | None = None
+    session_id: str | None = None
+    """本次派发所属的会话标识（[05 §4](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的
+    会话身份进派发载荷）。**未提供即为 ``None``**——那时下游按「无历史的单次查证」运行并
+    显式标注，**不臆造会话**；存量调用方不传该参数时该字段保持缺省。"""
     run: Any = None
     """``query`` 去向的 ``RunOutcome``；其余去向为 ``None``。"""
     draft: Any = None
@@ -260,6 +264,21 @@ class DispatchOutcome(BaseModel):
 def _now() -> datetime:
     """用户本地时区当前时刻（01 §8）。"""
     return datetime.now().astimezone()
+
+
+def _session_id_or_none(value: object) -> str | None:
+    """会话标识的形态门（[05 §4](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+
+    ``None`` / 空白串 ⇒ ``None``（下游按无历史的单次查证运行，不臆造会话）；非字符串
+    即显式拒——不把 ``123`` 静默当会话标识传下去。
+    """
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise IntentValidationError(
+            f"session_id 须为字符串或 None，得到 {type(value).__name__}"
+        )
+    return value.strip() or None
 
 
 def _as_cards(payload: Any) -> tuple[ConflictAdjudication, ...] | None:
@@ -326,6 +345,7 @@ class DispatchBus:
         trace: Trace | None = None,
         structure: Mapping[str, Any] | None = None,
         now: datetime | None = None,
+        session_id: str | None = None,
     ) -> DispatchOutcome:
         """派发一张**已确认**的意图确认卡（§4）。
 
@@ -335,32 +355,40 @@ class DispatchBus:
         :param structure: ``configure`` 去向的工作流结构载荷——**非空即工作流分支**
             （[05 §5](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的判定只有这一处）
         :param now: 本次派发时刻（缺省取本机当前带时区时间）
+        :param session_id: 所属会话（[05 §4](../../../../docs/技术架构-v2/05-L3-对话主入口.md)
+            的会话身份进派发载荷）；缺省 ``None`` ⇒ 下游按无历史的单次查证运行并显式标注，
+            **不臆造会话**。空白串按 ``None`` 处理。
         """
         moment = now if now is not None else _now()
+        session = _session_id_or_none(session_id)
         spec = ROUTE_BY_INTENT[confirmation.intent]
         if not confirmation.confirmed:
             chain = Trace(trace_id=TraceId.generate())
-            return self._outcome(
+            outcome = self._outcome(
                 ResultEnvelope.validation_failed(
                     "意图确认卡未经用户确认，拒绝派发（05 §3.2）"),
                 chain, spec,
             )
-        if confirmation.intent == "query":
-            return self._dispatch_query(
+        elif confirmation.intent == "query":
+            outcome = self._dispatch_query(
                 confirmation, spec, values, inputs, approved_permissions, trace, moment)
-        if confirmation.intent == "explain":
-            return self._dispatch_explain(spec, trace, moment)
-        if confirmation.intent == "configure":
-            return self._dispatch_configure(confirmation, spec, structure, moment)
-        if confirmation.intent == "memory_op":
-            return self._dispatch_memory_op(confirmation, spec, moment)
-        if confirmation.intent == "analyze":
-            return self._dispatch_analyze(confirmation, spec, values, moment)
-        if confirmation.intent == "train":
-            return self._dispatch_train(confirmation, spec, values, moment)
-        if confirmation.intent == "investigate":
-            return self._dispatch_investigate(confirmation, spec, values, moment)
-        return self._pending(spec, moment)
+        elif confirmation.intent == "explain":
+            outcome = self._dispatch_explain(spec, trace, moment)
+        elif confirmation.intent == "configure":
+            outcome = self._dispatch_configure(confirmation, spec, structure, moment)
+        elif confirmation.intent == "memory_op":
+            outcome = self._dispatch_memory_op(confirmation, spec, moment)
+        elif confirmation.intent == "analyze":
+            outcome = self._dispatch_analyze(confirmation, spec, values, moment)
+        elif confirmation.intent == "train":
+            outcome = self._dispatch_train(confirmation, spec, values, moment)
+        elif confirmation.intent == "investigate":
+            outcome = self._dispatch_investigate(confirmation, spec, values, moment, session)
+        else:
+            outcome = self._pending(spec, moment)
+        return outcome if outcome.session_id == session else outcome.model_copy(
+            update={"session_id": session}
+        )
 
     # ───────────────────────── 去向实现 ─────────────────────────
 
@@ -618,6 +646,7 @@ class DispatchBus:
         spec: RouteSpec,
         values: Mapping[str, Any] | None,
         moment: datetime,
+        session_id: str | None,
     ) -> DispatchOutcome:
         """``investigate`` 去向：经注入的循环端口触发 [05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 自主查证循环（§3.1）。
 
@@ -638,7 +667,12 @@ class DispatchBus:
                 ResultEnvelope.unavailable(INVESTIGATE_ABSENT_REASON, last_updated_at=moment),
                 chain, spec,
             )
-        payload = self._investigations.investigate(confirmation, values=values, now=moment)
+        # 会话身份只对**声明了该入参**的端口传（存量 Fake 端口签名不含它）——未提供会话时
+        # 不传，端口按自身的无会话口径运行；提供时透传，由端口决定如何取历史。
+        port_kwargs: dict[str, Any] = {"values": values, "now": moment}
+        if session_id is not None:
+            port_kwargs["session_id"] = session_id
+        payload = self._investigations.investigate(confirmation, **port_kwargs)
         envelope = getattr(payload, "envelope", None)
         if not isinstance(envelope, ResultEnvelope):
             return self._outcome(
