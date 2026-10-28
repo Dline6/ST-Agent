@@ -44,8 +44,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: pyproject.toml
+          # 不配 `cache: pip`：push 路径会跳过「安装依赖」，pip 从未运行，
+          # setup-python 的 post 步骤保存 ~/.cache/pip 时直接失败（2026-10-28 实测）。
+          # 安装本身 5–8 秒，缓存收益不值得引入这条耦合。
       - name: 判定变更范围
         id: scope
         run: |
