@@ -252,10 +252,10 @@ repos:
 
 ### 5.2 PR 合入 gate（solo 也走 PR）
 
-**机器强制部分**（[`.github/workflows/ci.yml`](../.github/workflows/ci.yml)，`push → main`、`pull_request → main` 与手动 dispatch 触发；仓库 ruleset `main-require-ci` 要求必检 `check`，故 `main` 始终绿不再依赖自觉）：
+**机器强制部分**（[`.github/workflows/ci.yml`](../.github/workflows/ci.yml)，`push → main`、`pull_request → main`、每日 schedule（03:17）与手动 dispatch 触发；仓库 ruleset `main-require-ci` 要求必检 `check`，故 `main` 始终绿不再依赖自觉）：
 
 1. `python 项目管理/tools/verify_docs.py --strict` 通过——0 断链 / 0 悬空依赖 / 0 环 / 账本同步 / 无过期措辞 / 假设·接口面·集成关卡完整。**任何变更都跑，含文档-only**。
-2. `python -m pytest` ——**按变更范围分层**（口径见 [工作流.md「测试分层」](工作流.md)，由 `ci.yml` 自动判定）：文档-only **跳过**；代码 PR 按层映射（`src/st_agent/contracts/**` 或 `pyproject.toml` 变更即全量）；`push → main` 全量兜底。
+2. `python -m pytest` ——**按变更范围分层**（口径见 [工作流.md「测试分层」](工作流.md)，由 [`ci_scope.py`](tools/ci_scope.py) 判定、[`tests/test_tools.py`](../tests/test_tools.py) 钉住）：文档-only **跳过**；代码 PR 按层映射（`src/st_agent/contracts/**` 或 `pyproject.toml` 变更即全量）；`push → main` 只跑 `verify_docs`。**全量由 nightly（每日 03:17）与里程碑收口兜底**——合入后不再重跑全量，squash 合入的树与 PR 头一致，再跑一遍只是重复。
 
 > **为什么文档-only 仍触发 workflow**：`check` 是 ruleset `main-require-ci` 要求的必检 context，而被路径过滤跳过的 workflow **不报状态**——若用 `paths-ignore` 跳过整个 workflow，必检会永远 pending、**auto-merge 卡死**。故实现只能是 `check` 照跑（只跑 `verify_docs`，几秒），在 job 内条件跳过 `pytest` 步骤。改 CI 触发条件时务必守住这条。
 
