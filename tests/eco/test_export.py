@@ -325,6 +325,22 @@ class TestGwt5BytesAndSave:
         assert {p: sorted(store.list_files(p)) for p in PARTITION_NAMES} == before
 
 
+# ───────────────────────── 内置原语不可导出分享 ─────────────────────────
+
+class TestBuiltinIsNotShareable:
+    def test_builtin_skill_export_is_rejected_by_name(self, exporter, skills):
+        descriptor = skills.register(
+            "sk_eco_builtin", name="内置探针", description="不可导出的内置原语",
+            input_schema={"type": "object", "properties": {}},
+            output_schema={"type": "object", "properties": {}},
+            source="builtin",
+        )
+        with pytest.raises(ShareExportError) as exc:
+            exporter.export_skill(descriptor.skill_id, author=AUTHOR)
+        assert descriptor.skill_id in str(exc.value)
+        assert "不可导出" in str(exc.value)
+
+
 # ───────────────────────── 取材面缺失 ─────────────────────────
 
 class TestMissingSourceIsExplicit:

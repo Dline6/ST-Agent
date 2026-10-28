@@ -21,12 +21,17 @@ base（版本剥离的能力身份）、描述取 ``description``、参数面由
   导入走**同一条投影路径**，无特例分支（两描述体仅 ``source`` 不同 ⇒ 投影相等）。
 - **不吞失败、只读**——描述体缺失 / 形态坏 / 参数面冲突一律**显式失败**并点明
   出错的 ``skill_id``，**不留半个条目、不静默跳过**；投影**不写任何存储**。
+- **通道声明随条目带出**（T-AGT-008.3 / [05 §10]）——条目记下两处声明的键名：
+  ``scalar_parameters``（``parameters``，运行期走 ``values``）与
+  ``object_properties``（``input_schema.properties`` ∪ ``required``，走 ``inputs``）。
+  循环据此把模型给的实参拆进两条通道（:func:`split_arguments`），**决策权仍在
+  描述体**——未声明的键不猜、交 L1 按未知参数显式拒。
 """
 
 from __future__ import annotations
 
 import copy
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -39,6 +44,7 @@ __all__ = [
     "ToolEntry",
     "project_catalog",
     "project_tool_entry",
+    "split_arguments",
 ]
 
 _KEY_TYPE = "type"
@@ -72,6 +78,33 @@ class ToolEntry(BaseModel):
     """做什么的、何时该被调用（供模型选择）。"""
     parameters: dict[str, Any] = Field(default_factory=dict)
     """参数的 JSON Schema（**object** 根；[01 §2] 方言，可直喂 L0 ``ToolSpec``）。"""
+    scalar_parameters: tuple[str, ...] = ()
+    """``parameters`` 声明的标量名（运行期走 ``values`` 通道；[01 §2] 通道①）。"""
+    object_properties: tuple[str, ...] = ()
+    """``input_schema.properties`` ∪ ``required`` 的对象键（走 ``inputs`` 通道；通道②）。"""
+
+
+def split_arguments(
+    entry: ToolEntry, arguments: Mapping[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """按描述体把模型给的实参拆成 ``(values, inputs)`` 两条通道（[05 §10] ③）。
+
+    - ``object_properties`` 的键 → ``inputs``（对象类输入，由 L1 按 ``input_schema``
+      核验，不合契约即 ``validation_failed``）；
+    - 其余键（含 ``scalar_parameters``）→ ``values``（标量通道，未声明的键由 L1
+      按「未知参数」显式拒，**不静默丢弃**）。
+
+    两处声明同名在投影期即被拒（:func:`project_tool_entry`），故无歧义。
+    """
+    objects = set(entry.object_properties)
+    values: dict[str, Any] = {}
+    inputs: dict[str, Any] = {}
+    for name, value in arguments.items():
+        if name in objects:
+            inputs[name] = value
+        else:
+            values[name] = value
+    return values, inputs
 
 
 def project_tool_entry(descriptor: SkillDescriptor) -> ToolEntry:
@@ -81,11 +114,14 @@ def project_tool_entry(descriptor: SkillDescriptor) -> ToolEntry:
     → ``SkillValidationError``（携出错的 ``skill_id`` 与违规点），不返回半成品。
     """
     base = _base_of(descriptor)
+    schema = _checked_input_schema(descriptor)
     return ToolEntry(
         name=base,
         skill_id=descriptor.skill_id,
         description=descriptor.description,
-        parameters=_derive_parameters(descriptor),
+        parameters=_derive_parameters(descriptor, schema),
+        scalar_parameters=tuple(spec.name for spec in descriptor.parameters),
+        object_properties=_object_keys(schema),
     )
 
 
@@ -124,9 +160,10 @@ def _version_of(descriptor: SkillDescriptor) -> tuple[int, int]:
     return (version.major, version.minor)
 
 
-def _derive_parameters(descriptor: SkillDescriptor) -> dict[str, Any]:
+def _derive_parameters(
+    descriptor: SkillDescriptor, schema: Mapping[str, Any]
+) -> dict[str, Any]:
     """由 ``parameters`` 与 ``input_schema`` 派生条目的 object 根参数 schema。"""
-    schema = _checked_input_schema(descriptor)
     properties: dict[str, Any] = {
         name: copy.deepcopy(raw) for name, raw in dict(schema.get(_KEY_PROPERTIES) or {}).items()
     }
@@ -172,7 +209,19 @@ def _checked_input_schema(descriptor: SkillDescriptor) -> dict[str, Any]:
         raise SkillValidationError(
             f"工具目录投影失败：{descriptor.skill_id!r} 的 input_schema.required 须为数组"
         )
+    if required is not None and any(not isinstance(item, str) for item in required):
+        raise SkillValidationError(
+            f"工具目录投影失败：{descriptor.skill_id!r} 的 input_schema.required "
+            "须为字符串数组"
+        )
     return schema
+
+
+def _object_keys(schema: Mapping[str, Any]) -> tuple[str, ...]:
+    """``input_schema`` 声明的对象键（``properties`` ∪ ``required``，升序去重）。"""
+    properties = dict(schema.get(_KEY_PROPERTIES) or {})
+    required = list(schema.get(_KEY_REQUIRED) or [])
+    return tuple(sorted({*properties, *required}))
 
 
 def _param_schema(spec: ParameterSpec) -> dict[str, Any]:

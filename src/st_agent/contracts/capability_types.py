@@ -27,7 +27,9 @@ __all__ = [
 
 # ───────────────────────── §2 SkillDescriptor ─────────────────────────
 
-SkillSource = Literal["official", "user-built", "mcp-mapped", "imported"]
+SkillSource = Literal["official", "user-built", "mcp-mapped", "imported", "builtin"]
+"""01 §2 的 `source` 枚举。`builtin` 是内置原语（2026-10-28 定案）：与其余来源共用
+同一条描述体与注册面，差别只在三条写面语义——不可编辑 / 不可版本化 / 不可导出分享。"""
 OfflineLevel = Literal["full", "degraded", "none"]
 VersionPolicy = Literal["follow-latest", "locked"]
 

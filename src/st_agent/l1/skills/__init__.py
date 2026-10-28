@@ -36,6 +36,7 @@ from st_agent.l1.skills.tool_catalog import (
     ToolEntry,
     project_catalog,
     project_tool_entry,
+    split_arguments,
 )
 
 __all__ = [
@@ -64,5 +65,6 @@ __all__ = [
     "project_catalog",
     "project_tool_entry",
     "skill_id_for",
+    "split_arguments",
     "validate_param_values",
 ]

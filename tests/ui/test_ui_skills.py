@@ -176,6 +176,13 @@ def test_catalog_lists_every_registered_version(http_get, auth) -> None:
     assert rows[1]["dependencies"] == "sk_other_v1.0"
 
 
+def test_catalog_labels_builtin_primitives(http_get, auth) -> None:
+    """`source=builtin` 有独立中文名（01 §2 的第五个来源）。"""
+    face = _FakeSkills(_FakeRegistry(_descriptor(source="builtin")))
+    payload = _get(http_get, auth, "/api/skills/catalog", skills=face)
+    assert payload["data"]["slots"]["rows"][0]["source"] == "内置原语"
+
+
 # ───────────────────────── 详情 ─────────────────────────
 
 
@@ -222,6 +229,18 @@ def test_param_entries_pick_the_value_surface_by_type(http_get, auth) -> None:
     assert entries["top_n"]["input"] == "text"
     assert entries["keywords"]["input"] == "text"
     assert entries["top_n"]["params"] == {"skill_id": "sk_demo_v1.0", "name": "top_n"}
+
+
+def test_builtin_params_are_read_only(http_get, auth) -> None:
+    """内置原语不可编辑（01 §2）：条目不给可点动作，并说明原因。"""
+    face = _FakeSkills(_FakeRegistry(_descriptor(
+        parameters=(_param("top_n", "integer", 20, min_value=1, max_value=100),),
+        source="builtin",
+    )))
+    payload = _get(http_get, auth, "/api/skills/params?skill=sk_demo_v1.0", skills=face)
+    entry = payload["data"]["slots"]["entries"][0]
+    assert entry["actions"] == []
+    assert "不可编辑" in entry["note"]
 
 
 def test_params_of_a_skill_without_parameters_is_empty(http_get, auth) -> None:
