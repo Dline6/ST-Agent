@@ -109,6 +109,15 @@ class SettingsWriteSurface(SurfaceBase):
             lambda face: ResultEnvelope.ok(self._apply_config(face, body)),
         )
 
+    def api_settings_agent_rollback(self, body: dict[str, Any]) -> dict[str, Any]:
+        """回滚一条运行期档位变更——按变更前取值回放，回放本身也是一次变更（[D-143]）。"""
+        return self._call_face(
+            "settings-agent-rollback", self.reflection, "L6 反思演进面",
+            lambda face: ResultEnvelope.ok(
+                face.rollback_agent_change(str(_required(body, "change_id")))
+            ),
+        )
+
     def api_settings_convert(self, body: dict[str, Any]) -> dict[str, Any]:
         """明密双向转换：**源不动、写新根**（[02 §2.2](../../docs/技术架构-v2/02-L0-本地优先基座.md)）。
 

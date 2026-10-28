@@ -62,6 +62,8 @@ _EXPECTED_POST_ROUTES = frozenset({
     "/api/settings/apply",
     "/api/settings/store/relocate",
     "/api/settings/llm/bootstrap",
+    # 运行期授权页（[`T-AGT-012.2`]）：回滚档位变更——显式动作，非幂等读面。
+    "/api/settings/agent-authorization/rollback",
     "/api/settings/data/sync",
     # 数据同步范围与运行态（[`T-UI-028.6`] / [`.7`]）：预检与停止都是显式动作。
     "/api/settings/data/preflight",

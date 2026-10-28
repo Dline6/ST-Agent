@@ -50,10 +50,10 @@ def rig(tmp_path: Path):
 
 
 def _make_autonomous(runtime: M5Runtime) -> None:
-    """把闸门调成「可自主」：清单把 `skill.` 判为可自主 + 档位切 `autonomous`。
+    """把这两个示例官方 Skill 放进「可自主」：清单把 `skill.` 判为可自主。
 
-    两步都必要——清单恒判 `skill.` 为 `collaborative-required`（缺省），而档位独立于清单
-    （[D-090] ① 的两条独立条目）；这正是 [01 §7] 共享清单的设计用法。
+    运行期档出厂已是 `autonomous`（[D-143]），故只需放宽清单；清单恒判 `skill.` 为
+    `collaborative-required`（缺省），而档位独立于清单（[D-090] ① 的两条独立条目）。
     """
     runtime.l6.authorization.set_grading(
         [EvolutionRiskRule(prefix="skill.", risk_class="autonomous-ok")]
@@ -150,10 +150,10 @@ class TestSessionContextWiring:
 
 
 class TestGwt2GateIsOnTheChain:
-    def test_default_tier_is_collaborative_and_executes_nothing(self, rig):
+    def test_factory_config_blocks_unregistered_skills(self, rig):
         outcome = _investigate(rig.m5)
 
-        # 缺省档 `collaborative`：模型出了一步，但闸门**拦下**，一步都没执行
+        # 出厂档 `autonomous`，但 `sk_data_aggregate` 只命中 `skill.` 通则 ⇒ 闸门**拦下**
         assert len(rig.endpoint.loop_calls) == 1
         assert outcome.investigation.report.record.steps == ()
         # 交还**显式**：非 ok 状态 + 待确认的那一步 + 已收集证据数（为零也明说）
@@ -161,6 +161,21 @@ class TestGwt2GateIsOnTheChain:
         assert "下一步需确认" in outcome.envelope.reason
         assert SK_A in outcome.envelope.reason
         assert "本次已收集证据 0 步" in outcome.envelope.reason
+
+    def test_factory_config_runs_a_read_only_primitive_autonomously(self, tmp_path: Path):
+        """出厂的运行期档 + 共享清单即让只读原语自主执行（[D-143] 的 GWT-1）。"""
+        rig = seeded_m5(
+            tmp_path / ROOT_NAME,
+            script=[("sk_local_sql", {"sql": "SELECT 1"})],
+        )
+
+        outcome = _investigate(rig.m5)
+
+        assert outcome.envelope.status == "ok"
+        assert [step.tool_name for step in outcome.investigation.report.record.steps] == [
+            "sk_local_sql"
+        ]
+        assert outcome.investigation.report.record.steps[0].status == "ok"
 
     def test_autonomous_tier_with_relaxed_grading_executes(self, rig):
         _make_autonomous(rig.m5)

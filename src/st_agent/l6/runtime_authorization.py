@@ -22,9 +22,10 @@
   的闸门只做派生与适配（[D-096](../../../项目管理/决策日志.md) ②）。
 - **清单是单一事实源**（[08 §7](../../../docs/技术架构-v2/08-L6-反思演进.md) 红线**单点生效**）：
   `classify` 一律转发注入的清单面；**未注入清单面即无清单可判**（fail-closed，不臆造一张）。
-- **缺省与损坏都不放行**（[01 §7](../../../docs/技术架构-v2/01-平台共享契约.md)）：档位条目未落值 ⇒
-  取 `collaborative`（本就不自动）；**条目损坏 / 清单读不出 ⇒ 一律 `denied` 并给出成因**，
-  **不臆测为自主**。
+- **缺省自主、损坏不放行**（[01 §7](../../../docs/技术架构-v2/01-平台共享契约.md)）：档位条目未落值 ⇒
+  取 **`autonomous`**（出厂缺省，[D-143](../../项目管理/决策日志.md)）——但清单里只有**显式登记为只读**
+  的动作是 `autonomous-ok`（`skill.sk_local_sql` / `skill.sk_data_status`），其余工具仍由 `skill.`
+  通则判为**必须协作**；**条目损坏 / 清单读不出 ⇒ 一律 `denied` 并给出成因**，**不臆测为自主**。
 - **运行期动作不进变更流**（[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md)）：本模块**只读**判据、
   **不写任何留痕**——工具调用不产生 `ChangeRecord`（每次调用都立变更记录会把变更历史淹掉）；
   档位**配置切换**照 01 §7 的登记项口径**留痕**，但落 `agent-change/` 而**不混进**
@@ -35,6 +36,7 @@
 前缀外，判据也接受**运行期动作标识**：:func:`skill_action_id` 产 `skill.<base>`（工具调用），
 :data:`MEMORY_WRITE_ACTION` / :data:`NET_EGRESS_ACTION` 是该键空间登记的另两类。**清单本体不变**：
 `skill.` 前缀（须协作）与 `memory.` 前缀（红线）已在 [`:data:`DEFAULT_RISK_GRADING`](authorization.py) 内，
+只读原语的具体规则（`skill.sk_local_sql` / `skill.sk_data_status`）写在 `skill.` 通则**之前**，
 `net.egress` 未命中即保守（[01 §7](../../../docs/技术架构-v2/01-平台共享契约.md) 的白名单语义）。
 """
 
@@ -53,7 +55,6 @@ from st_agent.contracts.registry_types import (
     PanelField,
 )
 from st_agent.l6.authorization import (
-    DEFAULT_TIER,
     TIERS,
     RiskClass,
     Tier,
@@ -66,6 +67,7 @@ __all__ = [
     "AGENT_CHANGE_PREFIX",
     "AGENT_CONFIG_PREFIX",
     "AGENT_TIER_CONFIG_ID",
+    "DEFAULT_AGENT_TIER",
     "MEMORY_WRITE_ACTION",
     "NET_EGRESS_ACTION",
     "SKILL_ACTION_PREFIX",
@@ -74,6 +76,15 @@ __all__ = [
     "RuntimeAuthorization",
     "skill_action_id",
 ]
+
+DEFAULT_AGENT_TIER: Tier = "autonomous"
+"""运行期授权档位的出厂缺省（[D-143](../../项目管理/决策日志.md)；**与演进档**的缺省
+`authorization.DEFAULT_TIER = "collaborative"` **互不相干**——两档独立，清单共用）。
+
+缺省为 `autonomous` 并不等于「全局自主」：清单里只有显式登记为只读的动作是
+`autonomous-ok`（见 [`DEFAULT_RISK_GRADING`](authorization.py)），写类 / 出网原语仍走
+`skill.` 通则判为必须协作。
+"""
 
 AGENT_CONFIG_PREFIX = "agent."
 """本模块条目的 ``config_id`` 前缀（[01 §7](../../../docs/技术架构-v2/01-平台共享契约.md) 点分语义）。"""
@@ -176,15 +187,27 @@ class RuntimeAuthorization:
         self._registry = registry
         self._grading = grading
         self._now = _system_now if now is None else now
-        self._default_tier: Tier = DEFAULT_TIER
+        self._default_tier: Tier = DEFAULT_AGENT_TIER
+        self._tier_set = False
 
     # ───────────────────────── 档位 ─────────────────────────
 
     def tier(self) -> Tier:
-        """当前运行期档位（条目缺失 ⇒ 缺省 `collaborative`；**损坏 ⇒ 抛**，不静默回落）。"""
+        """当前运行期档位（条目缺失 ⇒ 出厂缺省 `autonomous`；**损坏 ⇒ 抛**，不静默回落）。"""
         if self._store is None:
             return self._default_tier
         return _require_tier(self._store.current(AGENT_TIER_CONFIG_ID, self._default_tier))
+
+    def tier_source(self) -> str:
+        """当前档位的来源：``"user"``（已落值）或 ``"default"``（未落值、取出厂缺省）。
+
+        表现层据此**显示缺省来源**，不把缺省值伪装成用户选择（[D-143](../../项目管理/决策日志.md)）。
+        """
+        if self._store is None:
+            return "user" if self._tier_set else "default"
+        return (
+            "user" if self._store.entry(AGENT_TIER_CONFIG_ID) is not None else "default"
+        )
 
     def set_tier(self, value: Any, *, trace_ref: str | None = None) -> ChangeRecord | None:
         """切换运行期档位（**留痕**；取值未变 ⇒ 不落盘、不留痕，同 `evolution.authorization`）。
@@ -193,13 +216,38 @@ class RuntimeAuthorization:
         """
         target = _require_tier(value)
         self._default_tier = target
+        self._tier_set = True
         if self._store is None:
             return None
         return self._store.set(
             self._entry(AGENT_TIER_CONFIG_ID, target),
-            previous=self._store.current(AGENT_TIER_CONFIG_ID, DEFAULT_TIER),
+            previous=self._store.current(AGENT_TIER_CONFIG_ID, DEFAULT_AGENT_TIER),
             trace_ref=trace_ref,
         )
+
+    def rollback(
+        self, change_id: str, *, trace_ref: str | None = None
+    ) -> ChangeRecord | None:
+        """按一条 `agent-change/` 记录的**变更前取值**回放档位。
+
+        回放**经同一落值面**，故本身也是一次变更（新 `change_id`、新留痕）——不直改落盘
+        （同 [08 §6](../../../docs/技术架构-v2/08-L6-反思演进.md) 的回滚口径）。取值已是变更前
+        取值时返回 ``None``（**不写假痕**）。
+
+        :raises AuthorizationError: 无 ``Store`` / 变更不存在 / 变更前取值缺失
+        """
+        if self._store is None:
+            raise AuthorizationError("无存储句柄，无法回滚运行期档位变更")
+        change = next(
+            (item for item in self.changes() if item.change_id == change_id), None
+        )
+        if change is None:
+            raise AuthorizationError(f"运行期档位变更不存在：{change_id!r}")
+        if change.old_value is None:
+            raise AuthorizationError(
+                f"变更 {change_id!r} 没有变更前取值——不回放、不写假值冒充恢复"
+            )
+        return self.set_tier(change.old_value, trace_ref=trace_ref)
 
     # ───────────────────────── 判据 ─────────────────────────
 
@@ -317,11 +365,11 @@ def _require_tier(value: Any) -> Tier:
 _AGENT_TIER_ENTRY = (
     "运行期授权档位",
     {"type": "string", "enum": list(TIERS)},
-    "自主查证循环调用工具前的授权档位：manual（只建议，永不自主）/ collaborative（缺省，不自动调用"
-    "任何工具）/ autonomous（清单标为「可自主」的动作自动调用，其余照旧交还确认）",
+    "自主查证循环调用工具前的授权档位：manual（只建议，永不自主）/ collaborative（不自动调用"
+    "任何工具）/ autonomous（缺省；清单标为「可自主」的只读动作自动调用，其余照旧交还确认）",
     PanelField(
         widget="select", label="运行期授权档位",
-        help_text="三档之一；缺省 collaborative（与演进授权档位相互独立）",
+        help_text="三档之一；缺省 autonomous（与演进授权档位相互独立）",
         choices=TIERS,
     ),
 )

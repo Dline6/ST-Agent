@@ -139,6 +139,129 @@ class SettingsReadSurface(SurfaceBase):
             lambda sync: sync.preflight(keys, start=start, end=end, scope=scope),
         )
 
+    def api_settings_agent_authorization(self) -> dict[str, Any]:
+        """设置-运行期授权页：档位（可改）+ 动作级分级清单（只呈现）+ 缺省来源 + 留痕。
+
+        档位与清单共用 L6 的运行期授权面：档位条目 `agent.authorization` 走统一落值面；
+        分级清单归 `evolution.risk-grading`（单一事实源），本页**只呈现**。`trail` 段把
+        `agent-change/` 的留痕按 `table` 列出，并附 `values.changes` 供页面级 chrome 逐条
+        回滚（回滚走固定回环路由，动作不进描述）。
+        """
+        if self.restart_gate.reason:
+            return self._agent_authorization_error(ResultEnvelope.unavailable(
+                self.restart_gate.reason, last_updated_at=_now()
+            ))
+        face = self.reflection
+        if face is None:
+            return self._agent_authorization_error(ResultEnvelope.unavailable(
+                "未接入L6 反思演进面，该端点不可用（装配归生产入口）",
+                last_updated_at=_now(),
+            ))
+        try:
+            return self._agent_authorization_parts(face)
+        except (ValueError, KeyError) as exc:
+            _LOG.info(
+                "表现层端点 settings-agent-authorization 拒绝请求（%s）：%s",
+                type(exc).__name__, exc,
+            )
+            return self._agent_authorization_error(
+                ResultEnvelope.validation_failed(str(exc) or "请求不合契约")
+            )
+        except Exception as exc:  # noqa: BLE001 —— 内部失败：不吞，落日志 + 显式 failed
+            log_ref = f"ui/settings-agent-authorization-{uuid.uuid4().hex[:12]}"
+            _LOG.exception(
+                "表现层端点 settings-agent-authorization 未预期失败（log_ref=%s）：%s",
+                log_ref, exc,
+            )
+            return self._agent_authorization_error(ResultEnvelope.failed(
+                "该端点未预期失败，详见服务端日志", log_ref=log_ref
+            ))
+
+    @staticmethod
+    def _agent_authorization_error(envelope: ResultEnvelope) -> dict[str, Any]:
+        """多段端点的错误态：**每一段都是同一支错误信封**（同 `_settings_parts`）。"""
+        payload = envelope_payload(envelope)
+        return {"panel": payload, "trail": payload}
+
+    def _agent_authorization_parts(self, face: Any) -> dict[str, Any]:
+        info = face.agent_authorization()
+        if not info.get("available"):
+            return self._agent_authorization_error(ResultEnvelope.unavailable(
+                str(info.get("reason") or "运行期授权面未接线"), last_updated_at=_now()
+            ))
+        source = (
+            "用户设置" if info.get("tier_source") == "user"
+            else "出厂缺省（尚未由用户修改）"
+        )
+        entries = [
+            {
+                "config_id": info.get("tier_config_id"),
+                "params": {"config_id": info.get("tier_config_id")},
+                "identifier": "运行期授权档位",
+                "current": info.get("tier"),
+                "options": [{"value": value} for value in info.get("tiers") or ()],
+                "actions": ["set"],
+                "description": (
+                    f"自主查证循环调用工具前的授权档位；当前来源：{source}"
+                ),
+                "note": f"当前来源：{source}；出厂缺省 {info.get('default_tier')}",
+            },
+            {
+                "config_id": info.get("grading_config_id"),
+                "identifier": "动作级风险分级清单",
+                "current": f"{len(info.get('grading') or ())} 条规则",
+                "detail": info.get("grading") or [],
+                "options": [],
+                "actions": [],
+                "note": info.get("grading_note") or "",
+            },
+        ]
+        panel = self._part(
+            "setting_panel",
+            slots={
+                "entries": entries,
+                "surface": "settings-config",
+                "labels": {
+                    "set": "应用",
+                    "manual": "手动",
+                    "collaborative": "协作",
+                    "autonomous": "自主",
+                },
+            },
+            text_kinds={"entries": "data", "surface": "data", "labels": "generated"},
+            title="运行期授权",
+        )
+        changes = list(info.get("changes") or [])
+        rows = [
+            {
+                "change_id": item.get("change_id", ""),
+                "applied_at": item.get("applied_at", ""),
+                "old_value": item.get("old_value", "—"),
+                "new_value": item.get("new_value", "—"),
+                "trace_ref": item.get("trace_ref") or "—",
+            }
+            for item in changes
+        ]
+        trail = self._part(
+            "table",
+            slots={
+                **table_slots(
+                    (
+                        Column("applied_at", "时刻"),
+                        Column("old_value", "原值"),
+                        Column("new_value", "新值"),
+                        Column("trace_ref", "trace 依据"),
+                        Column("change_id", "变更 id"),
+                    ),
+                    rows,
+                ),
+                "values": {"changes": changes},
+            },
+            text_kinds={**table_text_kinds(), "values": "data"},
+            title="运行期档位变更（agent-change/）",
+        )
+        return {"panel": panel, "trail": trail}
+
     def api_settings_privacy(self) -> dict[str, Any]:
         """设置-隐私页：数据留存策略 + 出网审计开关（两条都经 [01 §7] 注册表落值）。
 
