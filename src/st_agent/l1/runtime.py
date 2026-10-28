@@ -46,6 +46,7 @@ from st_agent.l0.net.gateway import EgressGateway
 from st_agent.l0.secrets.errors import CredentialNotFoundError
 from st_agent.l0.secrets.vault import CredentialVault
 from st_agent.l0.storage.store import Store
+from st_agent.l1.builtin import install_builtins
 from st_agent.l1.mcp.lifecycle import McpHubStateMachine
 from st_agent.l1.mcp.mapping import McpSkillMapper
 from st_agent.l1.mcp.permissions import McpPermissionBook
@@ -430,6 +431,7 @@ def build_l1_runtime(
     )
     workflows = WorkflowStore(store, skills)
     install_official_pack(skills, runner, market_query=market_query)
+    install_builtins(skills, runner, context={"market": market_query})
 
     machine: McpHubStateMachine | None = None
     mapper: McpSkillMapper | None = None

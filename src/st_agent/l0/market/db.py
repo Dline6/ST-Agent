@@ -30,9 +30,9 @@
 from __future__ import annotations
 
 import re
-import re
 import sqlite3
 import tempfile
+import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from datetime import datetime
@@ -91,6 +91,14 @@ _SCHEMA_OBJECT_RE = re.compile(
     r"(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)",
     re.IGNORECASE,
 )
+
+_SCHEMA_TABLE_RE = re.compile(
+    r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
+
+_READONLY_HEADS: tuple[str, ...] = ("SELECT", "WITH", "PRAGMA", "EXPLAIN")
+"""只读 SQL 白名单（``MarketDb.query`` 与 ``local_sql`` 原语共用的唯一口径）。"""
 
 
 def _st_pool_unavailable(reason: str) -> dict[str, Any]:
@@ -181,6 +189,114 @@ def _schema_text() -> str:
     return resources.files(__package__).joinpath(_SCHEMA_RESOURCE).read_text(
         encoding="utf-8"
     )
+
+
+def _schema_table_names() -> tuple[str, ...]:
+    """``schema.sql`` 声明的业务表（排除元数据表；供「表缺 / 表空」判定）。"""
+    names: list[str] = []
+    for statement in _schema_text().split(";"):
+        match = _SCHEMA_TABLE_RE.search(statement)
+        if match and match.group(1) not in _META_TABLES:
+            names.append(match.group(1))
+    return tuple(dict.fromkeys(names))
+
+
+def _expected_task_tables() -> tuple[tuple[str, tuple[str, ...]], ...]:
+    """全部同步任务的 ``(task_key, 写入表)``（行情 + 信息面）。"""
+    from st_agent.l0.info.sources import INFO_TASKS
+    from st_agent.l0.market.tasks import SYNC_TASKS
+
+    rows: list[tuple[str, tuple[str, ...]]] = [
+        (task.task_key, (task.table_name,)) for task in SYNC_TASKS
+    ]
+    rows.extend((task.task_key, task.written_tables) for task in INFO_TASKS)
+    return tuple(rows)
+
+
+def _task_status(
+    task_key: str, table_names: tuple[str, ...], state: dict[str, Any] | None
+) -> dict[str, Any]:
+    """逐任务状态：``synced`` / ``incomplete`` / ``never_synced``。"""
+    if state is None:
+        status = "never_synced"
+    elif state.get("last_status") == "ok" and state.get("last_success_at"):
+        status = "synced"
+    else:
+        status = "incomplete"
+    return {
+        "task_key": task_key,
+        "tables": list(table_names),
+        "state": status,
+        "last_status": (state or {}).get("last_status"),
+        "last_success_at": (state or {}).get("last_success_at"),
+        "watermark": (state or {}).get("watermark"),
+        "last_error": (state or {}).get("last_error"),
+    }
+
+
+def _table_status(
+    name: str,
+    counts: dict[str, int],
+    existing: set[str],
+    owners: set[str],
+    states: dict[str, dict[str, Any]],
+) -> dict[str, Any]:
+    """逐表状态：``present`` / ``known_empty`` / ``missing``。
+
+    「已知空集」要求该表存在、行数为 0，且其所属任务**全部**已成功同步——否则
+    0 行只说明「尚未写入」，属数据缺失而非可知的空集（T-AGT-010.2 GWT-2）。
+    """
+    if name in counts:
+        rows: int | None = counts[name]
+    elif name in existing:
+        rows = 0
+    else:
+        return {"table": name, "rows": None, "state": "missing"}
+    if rows > 0:
+        return {"table": name, "rows": rows, "state": "present"}
+    synced = all(
+        states.get(key, {}).get("last_status") == "ok"
+        and bool(states.get(key, {}).get("last_success_at"))
+        for key in owners
+    )
+    return {"table": name, "rows": rows, "state": "known_empty" if owners and synced else "missing"}
+
+
+def _coverage_status(
+    rows: Iterable[tuple[Any, ...]], *, dataset: str | None, max_codes: int
+) -> tuple[list[dict[str, Any]], list[str], int]:
+    """覆盖账本 → 按数据集/变体汇总，缺口 = **无任何 ``ok`` 行**的码。"""
+    buckets: dict[tuple[str, str], dict[str, Any]] = {}
+    for dataset_id, variant, unit, code, status, groups in rows:
+        if dataset and str(dataset_id) != dataset:
+            continue
+        key = (str(dataset_id), str(variant or ""))
+        bucket = buckets.setdefault(
+            key,
+            {"unit": str(unit), "codes": set(), "ok": set(), "gap": set(), "groups": set()},
+        )
+        bucket["codes"].add(str(code))
+        (bucket["ok"] if str(status) == "ok" else bucket["gap"]).add(str(code))
+        if groups and str(groups) != "all":
+            bucket["groups"].update(part for part in str(groups).split(",") if part)
+    entries: list[dict[str, Any]] = []
+    all_gaps: set[str] = set()
+    for (dataset_id, variant), bucket in sorted(buckets.items()):
+        gaps = sorted(bucket["gap"] - bucket["ok"])
+        all_gaps.update(gaps)
+        entries.append({
+            "dataset_id": dataset_id,
+            "variant": variant,
+            "unit": bucket["unit"],
+            "groups": sorted(bucket["groups"]),
+            "code_count": len(bucket["codes"]),
+            "covered_code_count": len(bucket["ok"]),
+            "gap_count": len(gaps),
+            "gap_codes": gaps[:max_codes],
+            "truncated": len(gaps) > max_codes,
+        })
+    ordered = sorted(all_gaps)
+    return entries, ordered[:max_codes], len(ordered)
 
 
 class MarketDb:
@@ -438,16 +554,31 @@ class MarketDb:
 
     # ───────────────────────── 查询面（上层统一入口） ─────────────────────────
 
-    def query(self, sql: str, params: tuple[Any, ...] = ()) -> ResultEnvelope:
+    def query(
+        self,
+        sql: str,
+        params: tuple[Any, ...] = (),
+        *,
+        max_rows: int | None = None,
+        timeout_ms: int | None = None,
+    ) -> ResultEnvelope:
         """执行只读 SQL（白名单：SELECT / WITH / PRAGMA / EXPLAIN 单语句）。
 
         空结果走 ``empty``（带原因）；库缺失/表缺失走 ``unavailable``（标注
         最后更新时间）；非法 SQL 走 ``validation_failed``。
+
+        :param max_rows: 可选行数上限。给出时 ok 载荷增 ``row_count`` / ``truncated`` /
+            ``limit`` / ``hint``；超出即**显式**截断，不静默丢行（T-AGT-010.1 GWT-3）。
+        :param timeout_ms: 可选执行时限。超时中止查询并走 ``failed``（附收窄建议），
+            不返回半截结果。
         """
-        head = sql.strip().split(";")[0].strip().upper()
-        if ";" in sql.strip().rstrip(";") or not head.startswith(
-            ("SELECT", "WITH", "PRAGMA", "EXPLAIN")
-        ):
+        if max_rows is not None and max_rows < 1:
+            return ResultEnvelope.validation_failed("行数上限须为正整数")
+        if timeout_ms is not None and timeout_ms < 1:
+            return ResultEnvelope.validation_failed("执行时限须为正整数（毫秒）")
+        stripped = sql.strip()
+        head = stripped.split(";")[0].strip().upper()
+        if ";" in stripped.rstrip(";") or not head.startswith(_READONLY_HEADS):
             return ResultEnvelope.validation_failed(
                 "只读查询仅支持 SELECT / WITH / PRAGMA / EXPLAIN 单语句"
             )
@@ -458,12 +589,18 @@ class MarketDb:
                 last_updated_at=now, as_of=now,
             )
         try:
-            with self._readonly() as con:
-                cur = con.execute(sql, params)
-                columns = [d[0] for d in (cur.description or [])]
-                rows = [dict(zip(columns, r)) for r in cur.fetchall()]
+            with self._readonly(timeout_ms=timeout_ms) as con:
+                columns, rows, truncated = self._run_readonly(
+                    con, stripped, params, max_rows
+                )
         except sqlite3.OperationalError as exc:
             message = str(exc)
+            if "interrupted" in message.lower() and timeout_ms is not None:
+                return ResultEnvelope.failed(
+                    f"查询超过执行时限 {timeout_ms} ms 已中止；"
+                    "请用更窄的 WHERE / LIMIT 或减少列后重试",
+                    log_ref=f"data_cache/{MARKET_DB_NAME}",
+                )
             if "no such table" in message or "no such view" in message:
                 stamp = self.last_updated_at() or _now()
                 return ResultEnvelope.unavailable(
@@ -478,7 +615,45 @@ class MarketDb:
         as_of = self._domain_as_of()
         if not rows:
             return ResultEnvelope.empty("查询合法但结果为空（该条件无匹配行）", as_of=as_of)
-        return ResultEnvelope.ok({"columns": columns, "rows": rows}, as_of=as_of)
+        data: dict[str, Any] = {"columns": columns, "rows": rows}
+        if max_rows is not None:
+            data.update({
+                "row_count": len(rows),
+                "truncated": truncated,
+                "limit": max_rows,
+                "hint": (
+                    f"结果已截断：仅返回前 {max_rows} 行。"
+                    "用更窄的 WHERE 条件或 LIMIT / OFFSET 子句继续查询。"
+                    if truncated else ""
+                ),
+            })
+        return ResultEnvelope.ok(data, as_of=as_of)
+
+    @staticmethod
+    def _run_readonly(
+        con: sqlite3.Connection,
+        sql: str,
+        params: tuple[Any, ...],
+        max_rows: int | None,
+    ) -> tuple[list[str], list[dict[str, Any]], bool]:
+        """在给定只读连接上执行查询 → ``(列名, 行, 是否截断)``。
+
+        ``SELECT`` / ``WITH`` 以子查询包裹并加 ``LIMIT``，避免大表整表取回；其余只读
+        语句（``PRAGMA`` / ``EXPLAIN``）无法包裹，退化为多取一行再切片。
+        """
+        wrapped = max_rows is not None and sql.split()[0].upper() in ("SELECT", "WITH")
+        if wrapped:
+            assert max_rows is not None
+            statement = f"SELECT * FROM ({sql.rstrip(';')}) LIMIT ?"
+            cur = con.execute(statement, (*params, max_rows + 1))
+        else:
+            cur = con.execute(sql, params)
+        columns = [d[0] for d in (cur.description or [])]
+        if max_rows is None:
+            return columns, [dict(zip(columns, r)) for r in cur.fetchall()], False
+        fetched = cur.fetchmany(max_rows + 1)
+        truncated = len(fetched) > max_rows
+        return columns, [dict(zip(columns, r)) for r in fetched[:max_rows]], truncated
 
     def freshness(self) -> tuple[dict[str, Any], ...]:
         """统一自检入口（05 文档 SQL：``sync_state`` 非 ok 行；空 = 数据面完整）。"""
@@ -502,6 +677,111 @@ class MarketDb:
         with self._readonly() as con:
             row = con.execute(_AS_OF_SQL[domain]).fetchone()
         return row[0] if row else None
+
+    def status_snapshot(
+        self, *, dataset: str | None = None, max_codes: int = 50
+    ) -> dict[str, Any]:
+        """数据现状的**一次只读连接**快照（T-AGT-010.2；02 §5 / 05 新鲜度契约）。
+
+        面向模型的数据自检面：逐任务状态与最后成功时间、逐表行数与
+        「已知空集 / 数据缺失」区分、数据域实际截止时间、覆盖账本缺口。
+        不发网络、不写任何存储。
+        """
+        if not self.exists():
+            return {
+                "db_exists": False,
+                "snapshot_id": None,
+                "as_of": {},
+                "tasks": [],
+                "tables": [],
+                "freshness": [],
+                "coverage": [],
+                "gap_codes": [],
+                "gap_count": 0,
+                "last_updated_at": None,
+                "notes": ["本地市场数据库尚未建立（首次同步未完成）"],
+            }
+        expected = _expected_task_tables()
+        owners: dict[str, set[str]] = {}
+        for task_key, table_names in expected:
+            for name in table_names:
+                owners.setdefault(name, set()).add(task_key)
+        notes: list[str] = []
+        with self._readonly() as con:
+            try:
+                states = self._sync_state_rows_in(con)
+            except sqlite3.OperationalError as exc:
+                states = ()
+                notes.append(f"sync_state 读取失败：{exc}（旧 schema；需升级本地库）")
+            counts = self._counts_in(con)
+            existing = {
+                row[0] for row in con.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            as_of: dict[str, Any] = {}
+            for domain, statement in _AS_OF_SQL.items():
+                try:
+                    row = con.execute(statement).fetchone()
+                    as_of[domain] = row[0] if row and row[0] else None
+                except sqlite3.OperationalError:
+                    as_of[domain] = None
+            try:
+                coverage_rows = con.execute(
+                    "SELECT dataset_id, variant, unit, code, status, groups "
+                    "FROM sync_coverage"
+                ).fetchall()
+            except sqlite3.OperationalError:
+                coverage_rows = []
+                notes.append("本地库缺少 sync_coverage 覆盖账本（旧 schema；需升级本地库）")
+
+        states_by_key = {row["task_key"]: row for row in states}
+        tasks = [
+            _task_status(task_key, table_names, states_by_key.get(task_key))
+            for task_key, table_names in expected
+        ]
+        tables = [
+            _table_status(name, counts, existing, owners.get(name, set()), states_by_key)
+            for name in _schema_table_names()
+        ]
+        freshness = [
+            {
+                "task_key": row["task_key"],
+                "last_status": row.get("last_status"),
+                "last_success_at": row.get("last_success_at"),
+                "last_error": row.get("last_error"),
+            }
+            for row in states
+            if row.get("last_status") != "ok" or not row.get("last_success_at")
+        ]
+        coverage, gap_codes, gap_count = _coverage_status(
+            coverage_rows, dataset=dataset, max_codes=max_codes
+        )
+        if dataset and not coverage:
+            notes.append(f"数据集 {dataset!r} 无覆盖账本记录（尚未按该数据集同步）")
+        if not states:
+            notes.append("sync_state 为空：尚未执行任何同步任务（数据缺失，不是已知空集）")
+        last_success = max(
+            (str(row["last_success_at"]) for row in states if row.get("last_success_at")),
+            default=None,
+        )
+        components = "|".join(
+            f"{row['task_key']}:{row.get('watermark') or '-'}@{row.get('last_success_at') or '-'}"
+            for row in states
+        )
+        return {
+            "db_exists": True,
+            "snapshot_id": digest_id("snap", components),
+            "as_of": as_of,
+            "tasks": tasks,
+            "tables": tables,
+            "freshness": freshness,
+            "coverage": coverage,
+            "gap_codes": gap_codes,
+            "gap_count": gap_count,
+            "last_updated_at": last_success,
+            "notes": notes,
+        }
 
     def snapshot_id(self) -> str:
         """数据快照 ID（01 §1 ``dataset_snapshot_id``：形态 ``snap_<20 位十六进制>``）。
@@ -537,8 +817,12 @@ class MarketDb:
     # ───────────────────────── 内部：工作拷贝 ─────────────────────────
 
     @contextmanager
-    def _readonly(self) -> Iterator[sqlite3.Connection]:
-        """读工作拷贝（blob → 临时文件 → 只读连接）。"""
+    def _readonly(self, *, timeout_ms: int | None = None) -> Iterator[sqlite3.Connection]:
+        """读工作拷贝（blob → 临时文件 → 只读连接）。
+
+        :param timeout_ms: 可选执行时限；给出时以 SQLite progress handler 在超时后中止
+            当前语句（``OperationalError: interrupted``），调用方据此显式失败。
+        """
         blob = self._store.get("data_cache", MARKET_DB_NAME)
         with tempfile.TemporaryDirectory(prefix="st-market-") as tmp:
             path = str(Path(tmp) / MARKET_DB_NAME)
@@ -546,6 +830,11 @@ class MarketDb:
             con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
             try:
                 con.execute("PRAGMA foreign_keys = ON")
+                if timeout_ms is not None:
+                    deadline = time.monotonic() + timeout_ms / 1000
+                    con.set_progress_handler(
+                        lambda: 1 if time.monotonic() >= deadline else 0, 1000
+                    )
                 yield con
             finally:
                 con.close()
@@ -602,9 +891,7 @@ class MarketDb:
     def check_readonly_sql(sql: str) -> str:
         """只读 SQL 形状校验（供同步管道复用同一口径；非法 → 异常）。"""
         head = sql.strip().split(";")[0].strip().upper()
-        if ";" in sql.strip().rstrip(";") or not head.startswith(
-            ("SELECT", "WITH", "PRAGMA", "EXPLAIN")
-        ):
+        if ";" in sql.strip().rstrip(";") or not head.startswith(_READONLY_HEADS):
             raise MarketValidationError(
                 "只读查询仅支持 SELECT / WITH / PRAGMA / EXPLAIN 单语句"
             )
