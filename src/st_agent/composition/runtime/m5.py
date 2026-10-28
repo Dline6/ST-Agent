@@ -49,6 +49,7 @@ from st_agent.l2.memory import (
     new_node_id,
     official_onboarding_entry,
 )
+from st_agent.l3.chat.session import SessionStore
 from st_agent.l3.commands import COMMAND_KIND, CommandRegistry, official_command_entry
 from st_agent.l3.workspace import SOURCE_BY_COMPONENT_TYPE, WorkspaceFacade, WorkspacePinStore
 from st_agent.l3.runtime import (
@@ -401,8 +402,14 @@ def build_m5_runtime(
     """
     holder: list[_AgentInvestigator] = []          # 装配缝唯一被调一次，取回端口句柄
 
-    def investigations_of(runtime: L1Runtime, l6_stack: L6Stack, bounds: LoopBounds):
-        """造循环端口（在此处而非调用方，因为这些句柄在 `open_runtime` 之后才存在）。"""
+    def investigations_of(
+        runtime: L1Runtime, l6_stack: L6Stack, bounds: LoopBounds, l2: Any,
+    ):
+        """造循环端口（在此处而非调用方，因为这些句柄在 `open_runtime` 之后才存在）。
+
+        ``l2`` 提供会话与记忆读面——端口据此为带 ``session_id`` 的派发预取历史与记忆
+        （[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)；循环本体仍不读存储）。
+        """
         port = _AgentInvestigator(
             store=runtime.store,
             runner=runtime.runner,
@@ -414,6 +421,8 @@ def build_m5_runtime(
             ),
             endpoint_id=_LLM_ENDPOINT_ID,
             authorization=l6_stack.agent_authorization,
+            sessions=SessionStore(runtime.store),
+            reader=l2.reader,
         )
         holder.append(port)
         return port

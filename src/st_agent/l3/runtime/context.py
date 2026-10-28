@@ -38,6 +38,8 @@ from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.l0.llm import ToolSpec
 from st_agent.l1.runner import RUN_PREFIX
 from st_agent.l1.skills.tool_catalog import ToolEntry
+from st_agent.l2.memory.reader import MemorySlice
+from st_agent.l3.chat.session import ROLE_LABELS, ChatMessage
 from st_agent.l3.errors import AgentRuntimeValidationError
 
 __all__ = [
@@ -173,6 +175,16 @@ class WorkContext(BaseModel):
     """工具目录（**模型可见面与执行目标的共同来源**；每条可回指 ``skill_id``，GWT-1）。"""
     steps: tuple[WorkStep, ...] = ()
     """已执行的动作与结果，**按发生顺序**（GWT-5）。"""
+    history: tuple[ChatMessage, ...] = ()
+    """**近端会话历史**（按时间序；取自 :func:`assemble_context <../chat/session.py>` 的
+    ``messages`` 产出）。它是工作上下文的第四样，**不是**把会话上下文当工作上下文
+    （[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)；调研报告 §8.4）。"""
+    memory: tuple[MemorySlice, ...] = ()
+    """**记忆切片**（取自 ``assemble_context`` 的 ``memory.slices``；受预算约束，超限时
+    先于历史被舍，见 [05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。"""
+    dropped: tuple[str, ...] = ()
+    """**被预算舍弃的项**（``memory:<node_id>`` / ``history:<message_id>``）——如实标注，
+    不静默丢；用于空态区分「本来没有」与「有但装不下」。"""
     budget_chars: int = Field(ge=1)
     """本次装配的规模预算（字符数）。"""
     size_chars: int = Field(ge=0)
@@ -197,6 +209,8 @@ class WorkContext(BaseModel):
             （目录经 ``tools`` 入参下发），走 prompt 约定的端口则需要；由端口按自身形态选。
         """
         lines: list[str] = [f"任务：{self.task}"]
+        lines.append("")
+        lines.extend(self._render_history_lines())
         if include_tools:
             lines.append("")
             lines.append(f"可用工具（{len(self.tools)} 个）：")
@@ -216,7 +230,38 @@ class WorkContext(BaseModel):
                 )
                 lines.append(f"   依据：{_json(step.arguments)}")
                 lines.append(f"   结果：{_render_result(step)}")
+        lines.append("")
+        lines.extend(self._render_memory_lines())
         return "\n".join(lines)
+
+    def _render_history_lines(self) -> list[str]:
+        """会话历史段（**空态显式**，且区分「本来没有」与「被预算舍弃」）。"""
+        if self.history:
+            out = [f"会话历史（近端 {len(self.history)} 条，按时间序）："]
+            for message in self.history:
+                label = ROLE_LABELS.get(message.role, message.role)
+                out.append(f"- {label}：{message.text}")
+                if message.payload is not None:
+                    # 助手轮的结果在出站载荷里（text 只是中性摘要）——不带它就答不了
+                    # 「上一轮拿到了什么」；超出预算时整条消息一起被舍（不半截丢）。
+                    out.append(f"  出站载荷：{_json(message.payload)}")
+            return out
+        dropped = sum(1 for item in self.dropped if item.startswith("history:"))
+        if dropped:
+            return [f"会话历史：已按预算舍弃 {dropped} 条最早消息（见运行报告）"]
+        return ["会话历史：无（本会话无更早消息）"]
+
+    def _render_memory_lines(self) -> list[str]:
+        """记忆切片段（同历史的空态口径：无 / 已舍弃 / 有）。"""
+        if self.memory:
+            out = [f"相关记忆（{len(self.memory)} 条）："]
+            for slice_ in self.memory:
+                out.append(f"- {_render_memory(slice_)}")
+            return out
+        dropped = sum(1 for item in self.dropped if item.startswith("memory:"))
+        if dropped:
+            return [f"相关记忆：已按预算舍弃 {dropped} 条（原文仍可从记忆图谱读面取回）"]
+        return ["相关记忆：无（无相关记忆切片）"]
 
 
 def assemble_work_context(
@@ -224,6 +269,8 @@ def assemble_work_context(
     tools: Sequence[ToolEntry],
     steps: Sequence[WorkStep] = (),
     *,
+    history: Sequence[ChatMessage] = (),
+    memory: Sequence[MemorySlice] = (),
     budget_chars: int = DEFAULT_WORK_CONTEXT_BUDGET,
     max_result_chars: int = RESULT_TRUNCATE_CHARS,
 ) -> ResultEnvelope:
@@ -233,10 +280,17 @@ def assemble_work_context(
     :param tools: 工具目录（``SkillRegistry.tool_catalog()`` 的产出）；**空目录即显式空态**
         （GWT-2）——返回 ``empty`` + 原因，**不**装配出「可调用但无工具」的上下文
     :param steps: 已执行的动作与结果（按发生顺序；逐条过截断，GWT-3 / GWT-4）
+    :param history: 近端会话历史（按时间序；取自 ``assemble_context`` 的 ``messages``）
+    :param memory: 记忆切片（取自 ``assemble_context`` 的 ``memory.slices``）
     :param budget_chars: 规模预算（字符数）
     :param max_result_chars: 单条结果的截断阈值（字符数）
     :returns: ``ok``（载荷为 :class:`WorkContext`）或 ``empty``（目录为空）；入参非法抛
         :class:`~st_agent.l3.errors.AgentRuntimeValidationError`
+
+    **超限取舍**（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）：先舍记忆切片
+    （自末向首），再舍历史消息（自旧向新）；任务、工具目录与已执行动作**不参与取舍**
+    （D-090 冻结范围：不压缩、不丢步骤）。被舍项记进 ``WorkContext.dropped``。取舍后仍超限
+    则照实标 ``over_budget``——**不假装装得下**。
 
     结果**不写任何存储**、不读时钟——故同一输入两次装配逐字节一致（GWT-6）。
     """
@@ -252,17 +306,56 @@ def assemble_work_context(
     if not entries:
         return ResultEnvelope.empty(CATALOG_EMPTY_REASON)
     ordered = _checked_steps(steps)
-    context = WorkContext(
+    context, size = _fit_budget(
         task=task,
         tools=entries,
         steps=tuple(_apply_truncation(step, max_result_chars) for step in ordered),
+        history=_checked_history(history),
+        memory=_checked_memory(memory),
         budget_chars=budget_chars,
-        size_chars=0,
     )
-    size = len(context.render_prompt(include_tools=True))
     return ResultEnvelope.ok(
         context.model_copy(update={"size_chars": size, "over_budget": size > budget_chars})
     )
+
+
+def _fit_budget(
+    *,
+    task: str,
+    tools: tuple[ToolEntry, ...],
+    steps: tuple[WorkStep, ...],
+    history: tuple[ChatMessage, ...],
+    memory: tuple[MemorySlice, ...],
+    budget_chars: int,
+) -> tuple[WorkContext, int]:
+    """按声明顺序取舍直至装下（或无可再舍），返回上下文与最终规模。
+
+    取舍顺序＝**记忆 → 历史（旧→新）**；步骤 / 任务 / 工具目录恒保留（[05 §10]）。
+    """
+    kept_history = list(history)
+    kept_memory = list(memory)
+    dropped: list[str] = []
+
+    def build() -> WorkContext:
+        return WorkContext(
+            task=task, tools=tools, steps=steps,
+            history=tuple(kept_history), memory=tuple(kept_memory),
+            dropped=tuple(dropped), budget_chars=budget_chars, size_chars=0,
+        )
+
+    context = build()
+    size = len(context.render_prompt(include_tools=True))
+    while size > budget_chars and kept_memory:
+        item = kept_memory.pop()
+        dropped.append(f"memory:{item.node.memory_node_id}")
+        context = build()
+        size = len(context.render_prompt(include_tools=True))
+    while size > budget_chars and kept_history:
+        item = kept_history.pop(0)
+        dropped.append(f"history:{item.message_id}")
+        context = build()
+        size = len(context.render_prompt(include_tools=True))
+    return context, size
 
 
 # ───────────────────────── 内部 ─────────────────────────
@@ -291,6 +384,47 @@ def _checked_steps(steps: Iterable[WorkStep]) -> tuple[WorkStep, ...]:
             )
         out.append(step)
     return tuple(out)
+
+
+def _checked_history(history: Iterable[ChatMessage]) -> tuple[ChatMessage, ...]:
+    """会话历史的形态自检（保序；不静默丢弃坏条目）。"""
+    out: list[ChatMessage] = []
+    for message in history:
+        if not isinstance(message, ChatMessage):
+            raise AgentRuntimeValidationError(
+                f"会话历史条目须为 ChatMessage，得到 {type(message).__name__}"
+                "（历史取自 assemble_context 的 messages 产出）"
+            )
+        out.append(message)
+    return tuple(out)
+
+
+def _checked_memory(memory: Iterable[MemorySlice]) -> tuple[MemorySlice, ...]:
+    """记忆切片的形态自检（保序；同上）。"""
+    out: list[MemorySlice] = []
+    for item in memory:
+        if not isinstance(item, MemorySlice):
+            raise AgentRuntimeValidationError(
+                f"记忆切片须为 MemorySlice，得到 {type(item).__name__}"
+                "（切片取自 assemble_context 的 memory.slices 产出）"
+            )
+        out.append(item)
+    return tuple(out)
+
+
+def _render_memory(slice_: MemorySlice) -> str:
+    """一条记忆切片的可读形态（节点内容 + 有效置信度 / 来源 / 时间锚点）。
+
+    **不**改写字句——记忆是用户数据（[D-053](../../../项目管理/决策日志.md)）；这里只是
+    确定性地序列化，供模型读取。
+    """
+    node = slice_.node.model_dump(
+        mode="json", exclude={"revision_history", "provenance"}
+    )
+    return (
+        f"{_json(node)}（有效置信度 {slice_.confidence:.2f}，"
+        f"来源 {slice_.source}，as_of {slice_.as_of.isoformat()}）"
+    )
 
 
 def _apply_truncation(step: WorkStep, max_result_chars: int) -> WorkStep:

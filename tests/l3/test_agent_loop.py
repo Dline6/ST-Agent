@@ -7,17 +7,23 @@ LLM 端与闸门是注入的替身）——故「不绕过 L1 流水线」「指
 
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 
 from st_agent.contracts.capability_types import ParameterSpec
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.l1.runner import SkillRunner
 from st_agent.l1.skills import SkillRegistry, ensure_official_pack
+from st_agent.l2.memory.reader import MemorySlice
+from st_agent.l3.chat.session import ChatMessage
 from st_agent.l3.errors import AgentRuntimeValidationError
+from l3_helpers import NOW as L3_NOW, node
 from st_agent.l3.runtime import (
     AGENT_GATE_METHOD,
     DEFAULT_MAX_LLM_CALLS,
     DEFAULT_MAX_STEPS,
+    DEFAULT_WORK_CONTEXT_BUDGET,
     GateDecision,
     ToolCallProtocol,
     TurnResult,
@@ -467,3 +473,58 @@ def test_runner_is_required(tools):
             task=TASK, endpoint_id=EP, protocol=FakeProtocol([finish()]),
             runner=None, tools=tools,
         )
+
+
+# ─────────── T-AGT-009 · 会话身份、历史、记忆与预算进循环 ───────────
+
+SESSION = "sess_" + "0" * 20
+
+
+def _chat(text: str, index: int = 0) -> ChatMessage:
+    return ChatMessage(
+        message_id=f"msg_{index:020x}",
+        session_id=SESSION,
+        parent_id=None if index == 0 else f"msg_{index - 1:020x}",
+        role="user", text=text, created_at=L3_NOW + timedelta(minutes=index),
+    )
+
+
+def _memory(node_id: str) -> MemorySlice:
+    return MemorySlice(
+        node=node("attention", memory_node_id=node_id),
+        as_of=L3_NOW, confidence=0.9, base_confidence=0.8, source="user_stated",
+    )
+
+
+def test_gwt1_session_history_and_memory_reach_the_model_context(runner, tools):
+    """Given 带会话的循环, Then 历史 / 记忆进每一轮的上下文，会话标识与预算进产出。"""
+    history = (_chat("查一下 sh.600000"),)
+    memory = (_memory("mn_" + "a" * 20),)
+    protocol = FakeProtocol([finish()])
+
+    outcome = drive(
+        runner, tools, protocol, session_id=SESSION,
+        history=history, memory=memory,
+    )
+
+    context = protocol.contexts[0]
+    assert context.history == history
+    assert context.memory == memory
+    assert context.budget_chars == DEFAULT_WORK_CONTEXT_BUDGET
+    assert "会话历史（近端 1 条" in context.render_prompt(include_tools=True)
+    assert outcome.session_id == SESSION
+    assert outcome.budget_chars == DEFAULT_WORK_CONTEXT_BUDGET
+    assert outcome.dropped == ()
+
+
+def test_gwt3_over_budget_drops_are_carried_on_the_outcome(runner, tools):
+    """Given 预算装不下历史, Then 产出如实带 ``dropped`` 与生效预算（留痕可核）。"""
+    outcome = drive(
+        runner, tools, FakeProtocol([finish()]), budget_chars=10,
+        history=(_chat("一", 0), _chat("二", 1)),
+    )
+    assert outcome.budget_chars == 10
+    assert outcome.dropped == (
+        f"history:msg_{0:020x}",
+        f"history:msg_{1:020x}",
+    )

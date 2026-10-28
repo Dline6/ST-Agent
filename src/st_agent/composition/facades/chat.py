@@ -168,6 +168,7 @@ class DialogFacade:
         confirmation = self._intent.confirm(draft, answers).mark_confirmed()
         outcome = self._bus.dispatch(
             confirmation, values=values, structure=structure, now=self._now(),
+            session_id=session_id,
         )
         if outcome.envelope.status == "ok":
             self._pending.pop(session_id, None)

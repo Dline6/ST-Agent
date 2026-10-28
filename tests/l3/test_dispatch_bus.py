@@ -35,6 +35,7 @@ from st_agent.l3.intent import (
     ConfirmationItem,
     checked_confirmation,
 )
+from st_agent.l3.errors import IntentValidationError
 
 from typing import get_args
 
@@ -395,6 +396,49 @@ class TestInvestigateRoute:
         outcome = DispatchBus(investigations=Broken()).dispatch(_card("investigate"), now=NOW)
         assert outcome.envelope.status == "dependency_failed"
         assert "非法结构" in outcome.envelope.reason
+
+
+# ─────────────── T-AGT-009.1 · 会话身份进派发链（05 §4） ───────────────
+
+
+class _SessionLoopPort:
+    """接受 ``session_id`` 的循环端口替身（记录它实际收到的值）。"""
+
+    def __init__(self) -> None:
+        self.seen: str | None = "未调用"
+        self.payload = _LoopPayload(ResultEnvelope.ok({}))
+
+    def investigate(self, confirmation, *, values=None, now=None, session_id=None):
+        self.seen = session_id
+        return self.payload
+
+
+class TestSessionIdentityOnDispatch:
+    """派发载荷携带会话身份；未提供时不臆造，存量调用方不受影响。"""
+
+    def test_session_id_rides_the_payload_and_reaches_the_port(self) -> None:
+        port = _SessionLoopPort()
+        outcome = DispatchBus(investigations=port).dispatch(
+            _card("investigate"), now=NOW, session_id="sess_abc",
+        )
+        assert outcome.session_id == "sess_abc"
+        assert port.seen == "sess_abc"
+
+    def test_absent_session_is_not_fabricated(self) -> None:
+        port = _SessionLoopPort()
+        outcome = DispatchBus(investigations=port).dispatch(_card("investigate"), now=NOW)
+        assert outcome.session_id is None
+        assert port.seen is None          # kwarg 未传 → 端口缺省（存量签名仍可用）
+
+    def test_session_rides_every_route_payload(self) -> None:
+        outcome = DispatchBus().dispatch(_card("explain"), now=NOW, session_id="sess_abc")
+        assert outcome.session_id == "sess_abc"
+
+    def test_blank_session_is_none_and_non_str_is_rejected(self) -> None:
+        outcome = DispatchBus().dispatch(_card("explain"), now=NOW, session_id="   ")
+        assert outcome.session_id is None
+        with pytest.raises(IntentValidationError, match="session_id 须为字符串"):
+            DispatchBus().dispatch(_card("explain"), now=NOW, session_id=123)
 
 
 # ─────────── T-L3-007：派发面的异常不穿透（05 §4 的「派发面的异常面」） ───────────

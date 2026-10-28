@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.trace import Trace
+from st_agent.l3.errors import SessionNotFoundError, SessionValidationError
 from st_agent.l3.runtime import (
     ActionGate,
     AgentRunReport,
@@ -24,6 +25,16 @@ M5_ABSENT_TASK_REASON = (
 )
 """`investigate` 去向缺任务文本时的**显式**失败原因（不静默跑一个空任务）。"""
 
+NO_SESSION_NOTE = "未携带会话标识：本次按无历史的单次查证运行（05 §4）"
+"""无会话时的**显式标注**（[05 §4](../../docs/技术架构-v2/05-L3-对话主入口.md)）——不臆造会话、
+也不静默当「有会话但历史为空」：两者对模型是可区分的两种上下文。"""
+
+SESSION_INVALID_NOTE = "会话标识无法读取（会话不存在或记录损坏）：本次按无历史的单次查证运行"
+"""会话标识给了但读不出时的**显式标注**——不伪造历史，也不让一次可解释的降级变成崩溃。"""
+
+CONTEXT_ABSENT_NOTE = "会话 / 记忆读面未装配：本次按无历史的单次查证运行"
+"""带会话但组合根未注入读面时的**显式标注**（装配缺口如实呈现，不静默当空历史）。"""
+
 
 @dataclass(frozen=True)
 class InvestigationOutcome:
@@ -40,6 +51,10 @@ class InvestigationOutcome:
     envelope: ResultEnvelope
     report: AgentRunReport | None = None
     trace: Trace | None = None
+    session_id: str | None = None
+    """本次循环所属会话；``None`` 即无历史的单次查证（唯与 ``context_note`` 一起看才不歧义）。"""
+    context_note: str = ""
+    """上下文形态的显式标注（无会话 / 无历史为空等）——[05 §4] 要求「产出中标注」。"""
 
     @property
     def agent_run_id(self) -> str:
@@ -73,6 +88,8 @@ class _AgentInvestigator:
         protocol: Any,
         endpoint_id: str,
         authorization: Any = None,
+        sessions: Any = None,
+        reader: Any = None,
     ) -> None:
         self._store = store
         self._runner = runner
@@ -81,20 +98,32 @@ class _AgentInvestigator:
         self._protocol = protocol
         self._endpoint_id = endpoint_id
         self._authorization = authorization
+        self._sessions = sessions
+        self._reader = reader
 
     def investigate(
-        self, confirmation: Any, *, values: Mapping[str, Any] | None = None, now: Any = None
+        self,
+        confirmation: Any,
+        *,
+        values: Mapping[str, Any] | None = None,
+        now: Any = None,
+        session_id: str | None = None,
     ) -> InvestigationOutcome:
         """跑一次自主查证循环并把产出装成信封（[05 §10]；载荷见 :class:`InvestigationOutcome`）。"""
         merged = {
             **dict(getattr(confirmation, "values", {}) or {}),
             **dict(values or {}),
         }
+        session = (session_id or "").strip() or None
         task = str(merged.get("task") or getattr(confirmation, "target", "") or "").strip()
+        history, memory, note = self._context_inputs(session, task)
         if not task:
             return InvestigationOutcome(
-                envelope=ResultEnvelope.validation_failed(M5_ABSENT_TASK_REASON)
+                envelope=ResultEnvelope.validation_failed(M5_ABSENT_TASK_REASON),
+                session_id=session,
+                context_note=note,
             )
+        budget_chars = self._bounds.budget_chars()
         outcome = run_agent_loop(
             task=task,
             endpoint_id=self._endpoint_id,
@@ -104,8 +133,35 @@ class _AgentInvestigator:
             gate=ActionGate(self._authorization),
             max_steps=self._bounds.steps(),
             max_llm_calls=self._bounds.llm_calls(),
+            budget_chars=budget_chars,
+            session_id=session,
+            history=history,
+            memory=memory,
         )
+        outcome = outcome.model_copy(update={"context_note": note})
         report = conclude_agent_run(self._store, outcome, now=now)
         return InvestigationOutcome(
-            envelope=report.envelope, report=report, trace=outcome.trace
+            envelope=report.envelope, report=report, trace=outcome.trace,
+            session_id=session, context_note=note,
         )
+
+    def _context_inputs(self, session_id: str | None, task: str) -> tuple[Any, Any, str]:
+        """取近端历史与记忆切片（[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+
+        只并入 ``assemble_context`` 的**两个产出**（``messages`` / ``memory.slices``），不把
+        会话上下文当工作上下文（调研报告 §8.4）。三种降级**各有显式标注**——无会话、
+        会话读不出、读面未装配：都返回空上下文，但 ``context_note`` 不同，叫作方不能
+        把「没有」与「没注入」混为一谈。
+        """
+        if session_id is None:
+            return (), (), NO_SESSION_NOTE
+        if self._sessions is None or self._reader is None:
+            return (), (), CONTEXT_ABSENT_NOTE
+        try:
+            context = self._sessions.assemble_context(
+                session_id, self._reader, topic=task,
+                token_budget=self._bounds.budget_chars(),
+            )
+        except (SessionNotFoundError, SessionValidationError):
+            return (), (), SESSION_INVALID_NOTE
+        return tuple(context.messages), tuple(context.memory.slices), ""

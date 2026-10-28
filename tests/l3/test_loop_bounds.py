@@ -18,9 +18,13 @@ from st_agent.l1.registry.facade import ConfigRegistryFacade
 from st_agent.l1.runner import SkillRunner
 from st_agent.l1.skills import SkillRegistry, ensure_official_pack
 from st_agent.l3.errors import AgentRuntimeValidationError
+from st_agent.l3.chat.session import ChatMessage
 from st_agent.l3.runtime import (
+    CONTEXT_BUDGET_CEILING,
+    CONTEXT_BUDGET_CONFIG_ID,
     DEFAULT_MAX_LLM_CALLS,
     DEFAULT_MAX_STEPS,
+    DEFAULT_WORK_CONTEXT_BUDGET,
     MAX_LLM_CALLS_CEILING,
     MAX_LLM_CALLS_CONFIG_ID,
     MAX_STEPS_CEILING,
@@ -111,6 +115,12 @@ def test_gwt1_entries_registered_with_both_channels(store) -> None:
     # 两条目都在全局列举里
     ids = {e.config_id for e in facade.list("global")}
     assert {MAX_STEPS_CONFIG_ID, MAX_LLM_CALLS_CONFIG_ID} <= ids
+    # T-AGT-009.3：工作上下文预算也是本族条目（缺省取装配件常量，单一事实源）
+    budget_entry = facade.entry(CONTEXT_BUDGET_CONFIG_ID)
+    assert budget_entry is not None
+    assert budget_entry.default == DEFAULT_WORK_CONTEXT_BUDGET
+    assert budget_entry.value_schema["maximum"] == CONTEXT_BUDGET_CEILING
+    assert CONTEXT_BUDGET_CONFIG_ID in ids
 
 
 # ───────────────────────── GWT-2 · 落值生效 + 留痕 ─────────────────────────
@@ -199,3 +209,27 @@ def test_gwt5_value_drives_the_real_loop(store, runner, tools) -> None:
     assert outcome.max_steps == 2                                   # 生效的是配置项的值
     assert len(outcome.steps) == 2
     assert [s.envelope.status for s in outcome.steps] == ["ok", "ok"]
+
+
+# ─────────── T-AGT-009.3 · 预算是本族配置项，改动下次装配生效 ───────────
+
+
+def test_gwt3_budget_change_takes_effect_on_next_assembly(store, runner, tools) -> None:
+    facade, _ = _facade(store)
+    facade.set(CONTEXT_BUDGET_CONFIG_ID, 10, trace_id="tr_budget")
+
+    bounds = LoopBounds(store)
+    history = (ChatMessage(
+        message_id="msg_" + "0" * 20, session_id="sess_" + "0" * 20,
+        parent_id=None, role="user", text="上一轮的问题", created_at=NOW,
+    ),)
+    outcome = run_agent_loop(
+        task=TASK, endpoint_id=EP, protocol=FakeProtocol([TurnResult(text="结束")]),
+        runner=runner, tools=tools, gate=FakeGate(),
+        budget_chars=bounds.budget_chars(), history=history,
+    )
+
+    assert bounds.budget_chars() == 10
+    assert outcome.budget_chars == 10
+    assert outcome.dropped == ("history:msg_" + "0" * 20,)          # 下次装配按新预算取舍
+    assert [c.config_id for c in facade.changes()] == [CONTEXT_BUDGET_CONFIG_ID]

@@ -36,6 +36,8 @@ from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.trace import Trace
 from st_agent.l0.llm import ToolCall
 from st_agent.l1.skills.tool_catalog import split_arguments
+from st_agent.l2.memory.reader import MemorySlice
+from st_agent.l3.chat.session import ChatMessage
 from st_agent.l3.errors import AgentRuntimeValidationError
 from st_agent.l3.runtime.context import (
     DEFAULT_WORK_CONTEXT_BUDGET,
@@ -136,6 +138,12 @@ class LoopOutcome(BaseModel):
     termination: TerminationReason
     reason: str = ""
     """终止的中性说明（``finished`` 时可空；其余**必有**——不静默终止）。"""
+    session_id: str | None = None
+    """本轮的**会话标识**（[05 §4](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的会话身份进
+    派发载荷；本叶只透传与留痕，不据此取历史）。``None`` ⇒ 无历史的单次查证，由产出装配显式标注。"""
+    context_note: str = ""
+    """上下文形态的**显式标注**（无会话 / 无历史 / 取舍说明等）——与 ``reason`` 分开：
+    `reason` 讲终止原因，本字段讲「模型看到的是什么上下文」，两者不互相顶替。"""
     steps: tuple[WorkStep, ...] = ()
     """已执行的动作与结果（按发生顺序；失败步**照实**在内）。"""
     llm_calls: int = 0
@@ -152,6 +160,12 @@ class LoopOutcome(BaseModel):
     """本次生效的步数上界（留痕用；取值可注入，故如实记录实际生效值）。"""
     max_llm_calls: int = DEFAULT_MAX_LLM_CALLS
     """本次生效的 LLM 调用次数上界（同上）。"""
+    budget_chars: int = DEFAULT_WORK_CONTEXT_BUDGET
+    """本次生效的**工作上下文预算**（[01 §7](../../../../docs/技术架构-v2/01-平台共享契约.md)
+    的 `investigate.context_budget`；记实际生效值，供留痕核对）。"""
+    dropped: tuple[str, ...] = ()
+    """被预算**舍弃**的上下文项（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)：
+    超限如实取舍并标注；末次装配的取值）。"""
     failure: ResultEnvelope | None = None
     """``llm_failed`` 时端点侧给的信封（[01 §5](../../../../docs/技术架构-v2/01-平台共享契约.md)）
     ——**产出装配原样透出它**，不重包、不改 status、不吞 reason（既有口径）。"""
@@ -183,6 +197,9 @@ def run_agent_loop(
     budget_chars: int = DEFAULT_WORK_CONTEXT_BUDGET,
     max_result_chars: int = RESULT_TRUNCATE_CHARS,
     trace: Trace | None = None,
+    session_id: str | None = None,
+    history: Sequence[ChatMessage] = (),
+    memory: Sequence[MemorySlice] = (),
 ) -> LoopOutcome:
     """驱动自主查证循环（四段一轮，直至模型给出「结束」或触界）。
 
@@ -200,6 +217,10 @@ def run_agent_loop(
     :param max_steps: **步数**上界（可注入；到界即终止并如实标注）
     :param max_llm_calls: **LLM 调用次数**上界（可注入；同上）
     :param trace: 调用方传入的推理链（``None`` 即新建一条）
+    :param session_id: 本次循环所属会话（[05 §4](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）；
+        ``None`` ⇒ 无历史的单次查证（本叶只透传与留痕，取历史归 `.2`）
+    :param history: 近端会话历史（组合根预取后注入——循环本体**不读存储**，保持可单测）
+    :param memory: 记忆切片（同上；受 ``budget_chars`` 约束，超限时先被舍）
     :returns: :class:`LoopOutcome`——终止原因、已执行步骤、链、以及被拦下未执行的那一步
 
     入参非法（上界非正 / 任务为空 / 目录形态坏）抛
@@ -217,6 +238,7 @@ def run_agent_loop(
     chain = trace if trace is not None else Trace(trace_id=TraceId.generate())
     steps: list[WorkStep] = []
     llm_calls = 0
+    dropped: tuple[str, ...] = ()
     by_name = {entry.name: entry for entry in tools}
 
     if not protocol.tool_calls_supported():
@@ -226,7 +248,8 @@ def run_agent_loop(
                 f"端点 {endpoint_id!r} 未声明支持工具调用，自主查证循环无法运行"
                 "（02 §4 能力诚实性：缺省不得假定为真）"
             ),
-            max_steps=max_steps, max_llm_calls=max_llm_calls,
+            max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
+            dropped=dropped, budget_chars=budget_chars,
         )
 
     while True:
@@ -235,28 +258,33 @@ def run_agent_loop(
             return _outcome(
                 task, endpoint_id, "llm_call_limit", chain, steps, llm_calls,
                 reason=f"已达到 LLM 调用次数上界（{max_llm_calls}），终止",
-                max_steps=max_steps, max_llm_calls=max_llm_calls,
+                max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
+                dropped=dropped, budget_chars=budget_chars,
             )
 
         # ── ① 出动作（工作上下文每轮重装：任务 + 目录 + 已执行动作与结果） ──
         assembled = assemble_work_context(
             task, tuple(tools), steps,
+            history=history, memory=memory,
             budget_chars=budget_chars, max_result_chars=max_result_chars,
         )
         if assembled.status != "ok":
             return _outcome(
                 task, endpoint_id, "catalog_empty", chain, steps, llm_calls,
                 reason=assembled.reason or "",
-                max_steps=max_steps, max_llm_calls=max_llm_calls,
+                max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
+                dropped=dropped, budget_chars=budget_chars,
             )
         context: WorkContext = assembled.data
+        dropped = context.dropped
         turn = protocol.invoke_turn(context, initiator=initiator, purpose=purpose)
         llm_calls += 1
         if turn.envelope is not None:
             return _outcome(
                 task, endpoint_id, "llm_failed", chain, steps, llm_calls,
                 reason=turn.envelope.reason or "LLM 调用失败",
-                max_steps=max_steps, max_llm_calls=max_llm_calls,
+                max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
+                dropped=dropped, budget_chars=budget_chars,
                 failure=turn.envelope,
             )
 
@@ -265,7 +293,8 @@ def run_agent_loop(
             return _outcome(
                 task, endpoint_id, "finished", chain, steps, llm_calls,
                 answer=turn.text,
-                max_steps=max_steps, max_llm_calls=max_llm_calls,
+                max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
+                dropped=dropped, budget_chars=budget_chars,
             )
 
         # ── 上界（步数）：有动作要执行才判 —— 恰在第 N 步给出「结束」不算触界（GWT-5） ──
@@ -273,7 +302,8 @@ def run_agent_loop(
             return _outcome(
                 task, endpoint_id, "step_limit", chain, steps, llm_calls,
                 reason=f"已达到步数上界（{max_steps}），终止",
-                max_steps=max_steps, max_llm_calls=max_llm_calls,
+                max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
+                dropped=dropped, budget_chars=budget_chars,
             )
 
         # 顺序驱动（并行工具调用不在本期，D-090 冻结范围）：一轮只认第一个调用
@@ -286,7 +316,8 @@ def run_agent_loop(
                     f"模型请求的工具 {call.name!r} 不在工具目录内，无法执行"
                     "（目录是 01 §2 描述体的投影，循环不臆造能力）"
                 ),
-                max_steps=max_steps, max_llm_calls=max_llm_calls,
+                max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
+                dropped=dropped, budget_chars=budget_chars,
             )
 
         # ── ② 过闸门（缺省 fail-closed：一步都不执行） ──
@@ -298,7 +329,8 @@ def run_agent_loop(
                     "未注入授权端口，按 fail-closed 拒绝执行任何动作"
                     "（闸门缺省不得放行；见 05 §10 授权闸门与交还）"
                 ),
-                max_steps=max_steps, max_llm_calls=max_llm_calls,
+                max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
+                dropped=dropped, budget_chars=budget_chars,
             )
         if decision.verdict != "autonomous-ok":
             termination: TerminationReason = (
@@ -310,7 +342,8 @@ def run_agent_loop(
                     f"下一步（调用 {call.name}）未获自主执行授权（{decision.verdict}），"
                     "终止并把该步交还用户确认"
                 ),
-                max_steps=max_steps, max_llm_calls=max_llm_calls,
+                max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
+                dropped=dropped, budget_chars=budget_chars,
                 pending=call, gate_reason=decision.reason,
             )
 
@@ -377,11 +410,17 @@ def _outcome(
     pending: ToolCall | None = None,
     gate_reason: str = "",
     failure: ResultEnvelope | None = None,
+    session_id: str | None = None,
+    context_note: str = "",
+    dropped: tuple[str, ...] = (),
+    budget_chars: int = DEFAULT_WORK_CONTEXT_BUDGET,
 ) -> LoopOutcome:
     """装配一次循环的产出（``failure`` 即端点侧给的原信封，产出装配原样透出）。"""
     return LoopOutcome(
         task=task, endpoint_id=endpoint_id, termination=termination, reason=reason,
         steps=tuple(steps), llm_calls=llm_calls, trace=chain, answer=answer,
         pending=pending, gate_reason=gate_reason,
-        max_steps=max_steps, max_llm_calls=max_llm_calls, failure=failure,
+        max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
+        context_note=context_note, dropped=dropped, budget_chars=budget_chars,
+        failure=failure,
     )
