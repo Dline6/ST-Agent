@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import io
 import pathlib
 import re
 import sys
@@ -25,6 +26,7 @@ import pytest
 
 sys.dont_write_bytecode = True   # 别在 项目管理/tools/ 生成 __pycache__
 
+import ci_scope as cs  # noqa: E402
 import render_ledger as rl  # noqa: E402
 import verify_docs as vd  # noqa: E402
 
@@ -235,6 +237,15 @@ def test_agt_layer_sits_after_ui():
     assert rl.layer_of("T-AGT-001.2") == "AGT"
     assert "AGT" in rl.LAYER_ORDER
     assert rl.LAYER_ORDER["UI"] < rl.LAYER_ORDER["AGT"] < rl.LAYER_ORDER["L4"]
+    assert rl.LAYER_ORDER["INT"] == len(rl.LAYERS) - 1
+
+
+def test_proc_layer_sits_before_int():
+    """PROC 层（工程流程 / CI）置于 L6 之后、INT 之前（T-PROC-001）；INT 仍居末。"""
+    assert rl.ID_RE.match("T-PROC-001")
+    assert rl.layer_of("T-PROC-001") == "PROC"
+    assert "PROC" in rl.LAYER_ORDER
+    assert rl.LAYER_ORDER["L6"] < rl.LAYER_ORDER["PROC"] < rl.LAYER_ORDER["INT"]
     assert rl.LAYER_ORDER["INT"] == len(rl.LAYERS) - 1
 
 
@@ -613,6 +624,68 @@ def test_convert_store_cli_refuses_passphrase_in_argv(tmp_path):
         cs.main(["--source", str(tmp_path), "--target", str(tmp_path / "o"),
                  "--to", "plain", "--passphrase", "oops"])
 
+
+
+# ───────────────────────── CI 范围判定（T-PROC-001） ─────────────────────────
+
+def test_ci_scope_docs_only_skips_pytest():
+    assert cs.decide(
+        "pull_request", ["docs/PRD-v2-Agent/README.md", "项目管理/执行日志.md"]
+    ) == (False, [])
+
+
+def test_ci_scope_packaging_readme_is_not_code():
+    """README 不是代码——归档 PR #155 曾因它白跑 11 分 38 秒全量。"""
+    assert cs.decide("pull_request", ["packaging/README.md"]) == (False, [])
+
+
+def test_ci_scope_packaging_script_runs_everything():
+    for path in ("packaging/build.py", "packaging/st-agent-shell.spec"):
+        assert cs.decide("pull_request", [path]) == (True, ["tests"])
+
+
+def test_ci_scope_contracts_and_pyproject_run_everything():
+    for path in ("src/st_agent/contracts/result_envelope.py", "pyproject.toml"):
+        assert cs.decide("pull_request", [path]) == (True, ["tests"])
+
+
+def test_ci_scope_tools_only_runs_layer_and_tool_suites():
+    """与工作流同口径：工具面只锁层方向与工具行为，不跑跨层基表（817 条）。"""
+    assert cs.decide(
+        "pull_request", ["项目管理/tools/ci_scope.py", "tests/test_tools.py"]
+    ) == (True, ["tests/test_layering.py", "tests/test_tools.py"])
+
+
+def test_ci_scope_layer_change_appends_that_layer_to_the_base():
+    run, targets = cs.decide("pull_request", ["src/st_agent/l1/skills/registry.py"])
+    assert run is True
+    assert targets == [*cs.BASE, "tests/l1"]
+
+
+def test_ci_scope_multiple_layers_keep_the_layer_order():
+    _, targets = cs.decide(
+        "pull_request", ["tests/ui/test_ui_server.py", "src/st_agent/l0/storage.py"]
+    )
+    assert targets == [*cs.BASE, "tests/l0", "tests/ui"]
+
+
+def test_ci_scope_composition_change_runs_the_base_only():
+    assert cs.decide(
+        "pull_request", ["src/st_agent/composition/adapters.py"]
+    ) == (True, list(cs.BASE))
+
+
+def test_ci_scope_push_skips_and_schedule_runs_all():
+    """合入 main 只留 verify_docs；全量交给夜间与手动 dispatch。"""
+    assert cs.decide("push", ["src/st_agent/l1/x.py"]) == (False, [])
+    assert cs.decide("schedule", []) == (True, ["tests"])
+    assert cs.decide("workflow_dispatch", []) == (True, ["tests"])
+
+
+def test_ci_scope_cli_emits_github_output(capsys, monkeypatch):
+    monkeypatch.setattr(sys, "stdin", io.StringIO("docs/a.md\n"))
+    assert cs.main(["--event", "pull_request"]) == 0
+    assert capsys.readouterr().out == "run=false\n"
 
 
 # ───────────────────────── 测试树：模块名全树唯一 ─────────────────────────
