@@ -46,6 +46,7 @@ OFFICIAL_BASE_COUNT = 12
 BUILTIN_BASES = (
     "sk_data_status", "sk_local_sql", "sk_plan_update", "sk_ask_user",
     "sk_data_sync", "sk_data_fetch", "sk_docs",
+    "sk_file_read", "sk_file_glob", "sk_file_grep", "sk_file_write",
 )
 BASE_COUNT = OFFICIAL_BASE_COUNT + len(BUILTIN_BASES)
 

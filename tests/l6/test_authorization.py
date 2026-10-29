@@ -151,13 +151,17 @@ class TestGwt4RiskGrading:
             ("daily-report.time", "autonomous-ok"),
             ("weekly-report.template", "autonomous-ok"),
             ("channel-delivery.quiet-hours", "autonomous-ok"),
-            # 只读原语的具体规则（[D-143] / [D-145]）——写在 `skill.` 通则之前，故先命中
+            # 只读原语的具体规则（[D-143] / [D-145] / [D-146]）——写在 `skill.` 通则之前，故先命中
             ("skill.sk_local_sql", "autonomous-ok"),
             ("skill.sk_data_status", "autonomous-ok"),
             ("skill.sk_docs", "autonomous-ok"),
-            # 写 / 出网动作显式登记为必须协作（[D-145]）
+            ("skill.sk_file_read", "autonomous-ok"),
+            ("skill.sk_file_glob", "autonomous-ok"),
+            ("skill.sk_file_grep", "autonomous-ok"),
+            # 写 / 出网动作显式登记为必须协作（[D-145] / [D-146]）
             ("skill.sk_data_sync", "collaborative-required"),
             ("skill.sk_data_fetch", "collaborative-required"),
+            ("skill.sk_file_write", "collaborative-required"),
             ("skill.sk_local_write", "collaborative-required"),
             ("skill.demo.param", "collaborative-required"),
             ("attention-budget.max-per-slot", "collaborative-required"),
@@ -175,8 +179,12 @@ class TestGwt4RiskGrading:
         assert prefixes.index("skill.sk_local_sql") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_data_status") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_docs") < prefixes.index("skill.")
+        assert prefixes.index("skill.sk_file_read") < prefixes.index("skill.")
+        assert prefixes.index("skill.sk_file_glob") < prefixes.index("skill.")
+        assert prefixes.index("skill.sk_file_grep") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_data_sync") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_data_fetch") < prefixes.index("skill.")
+        assert prefixes.index("skill.sk_file_write") < prefixes.index("skill.")
 
     def test_grading_can_be_replaced_and_validated(self, tmp_path):
         auth = face(tmp_path)

@@ -98,6 +98,7 @@ class _AgentInvestigator:
         authorization: Any = None,
         sessions: Any = None,
         reader: Any = None,
+        permissions: Any = None,
     ) -> None:
         self._store = store
         self._runner = runner
@@ -108,6 +109,7 @@ class _AgentInvestigator:
         self._authorization = authorization
         self._sessions = sessions
         self._reader = reader
+        self._permissions = permissions
 
     def investigate(
         self,
@@ -139,6 +141,7 @@ class _AgentInvestigator:
             runner=self._runner,
             tools=self._skills.tool_catalog(),
             gate=ActionGate(self._authorization),
+            approved_permissions=self._permissions or (),
             max_steps=self._bounds.steps(),
             max_llm_calls=self._bounds.llm_calls(),
             budget_chars=budget_chars,
@@ -186,6 +189,7 @@ class _AgentInvestigator:
                 runner=self._runner,
                 tools=self._skills.tool_catalog(),
                 gate=ActionGate(self._authorization),
+                approved_permissions=self._permissions or (),
                 max_steps=self._bounds.steps(),
                 max_llm_calls=self._bounds.llm_calls(),
                 budget_chars=self._bounds.budget_chars(),

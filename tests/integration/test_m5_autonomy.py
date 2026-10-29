@@ -383,6 +383,14 @@ def test_m9_builtin_data_ports_are_bound_in_the_production_root(rig):
     assert l1.builtin_sync.get() is runtime.data_sync
     names = {entry.name for entry in l1.skills.tool_catalog()}
     assert {"sk_data_sync", "sk_data_fetch", "sk_docs"} <= names
+    # 文件原语在生产组合根可见，且内置声明已落批准账本（T-AGT-014 / D-146）
+    assert {"sk_file_read", "sk_file_glob", "sk_file_grep", "sk_file_write"} <= names
+    assert l1.skill_permissions.approved_permissions("sk_file_read") == (
+        "local_read:<workspace/**>", "local_read:<inbox/**>",
+    )
+    assert l1.skill_permissions.approved_permissions("sk_file_write") == (
+        "local_write:<workspace/**>",
+    )
 
 
 # ───────────────────────────── 内部 ─────────────────────────────

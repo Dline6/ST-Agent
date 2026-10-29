@@ -243,12 +243,19 @@ class TestSection9Versioning:
 
 
 class TestSection10Permissions:
-    """GWT-SC10：仅接受三项权限且 scope 语法合法。"""
+    """GWT-SC10：仅接受四项权限且 scope 语法合法。"""
 
-    def test_parse_three_actions(self):
+    def test_parse_four_actions(self):
         assert parse_permission("local_read:<data/cache/**>") == ("local_read", "<data/cache/**>")
+        assert parse_permission("local_write:<workspace/**>") == ("local_write", "<workspace/**>")
         assert parse_permission("net_access:<*.baostock.com>") == ("net_access", "<*.baostock.com>")
         assert parse_permission("exec_command") == ("exec_command", "*")
+
+    def test_local_write_needs_a_scope(self):
+        with pytest.raises(ContractViolation):
+            parse_permission("local_write")              # 写必须声明范围
+        with pytest.raises(ContractViolation):
+            parse_permission("local_write:workspace")    # 缺尖括号 scope
 
     def test_unknown_action_rejected(self):
         with pytest.raises(ContractViolation, match="语法非法"):
@@ -261,6 +268,8 @@ class TestSection10Permissions:
             parse_permission("exec_command:<rm -rf />")
 
     def test_validate_list_rejects_duplicates(self):
-        validate_permissions(("exec_command", "local_read:<data/**>"))
+        validate_permissions(("exec_command", "local_read:<data/**>", "local_write:<workspace/**>"))
         with pytest.raises(ContractViolation, match="重复"):
             validate_permissions(("local_read:<a/**>", "local_read:<a/**>"))
+        with pytest.raises(ContractViolation, match="重复"):
+            validate_permissions(("local_write:<a/**>", "local_write:<a/**>"))

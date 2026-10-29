@@ -1,9 +1,9 @@
 """L0 存储子系统（02-L0 §2）。
 
 职责（§2.1–§2.3）：
-- **存储分区**：七个逻辑分区（memory / config / chat_history / execution_log /
-  reflection / data_cache / secrets），物理组织为「每分区一个目录」，分区边界
-  可独立导出、独立清空
+- **存储分区**：八个逻辑分区（memory / config / chat_history / execution_log /
+  reflection / data_cache / workspace / secrets），物理组织为「每分区一个目录」，
+  分区边界可独立导出、独立清空
 - **落盘加密（可选项、默认关）**：新建存储默认不加密（免口令、明文落盘）；用户
   可开启加密，此时分区内容 AES-256-GCM 加密、主密钥由用户主密码经
   PBKDF2-HMAC-SHA256 派生（§2.2「业界验证的标准构造」；迭代次数 600_000，

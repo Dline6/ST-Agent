@@ -4,7 +4,7 @@
 
 - :class:`BuiltinPrimitive`——一条原语的声明（种子 + 执行器工厂）
 - :func:`install_builtins`——幂等安装进同一个 ``SkillRegistry`` / ``SkillRunner``
-- :data:`BUILTIN_PRIMITIVES`——种子表（本地数据、取数 / 同步、文档取数与循环控制）
+- :data:`BUILTIN_PRIMITIVES`——种子表（本地数据、取数 / 同步、文档取数、循环控制与文件面）
 - :class:`SyncPort`——同步执行面的**后置绑定**容器（组合根造好 runner 后注入）
 
 口径见 [01 §2](../../../docs/技术架构-v2/01-平台共享契约.md) 与

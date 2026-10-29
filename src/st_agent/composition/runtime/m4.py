@@ -18,6 +18,7 @@ from st_agent.eco import (
     ShareExporter,
     ShareImporter,
 )
+from st_agent.l0.file_workspace import INBOX_DIR_NAME
 from st_agent.l1.events import EventBus
 from st_agent.l1.runtime import (
     DOTENV_NAME,
@@ -294,10 +295,6 @@ class M4Runtime:
             self.l6.proposals.detect(now=moment)
         except Exception as exc:  # noqa: BLE001 —— 记因不吞；一次识别失败不该拖垮当轮报告
             self.l6_failures.append(f"模式识别未完成（{type(exc).__name__}）：{exc}")
-
-
-INBOX_DIR_NAME = "inbox"
-"""导入收件目录名（同上）。"""
 
 
 def _eco_dir(root: Path | str, name: str) -> Path:

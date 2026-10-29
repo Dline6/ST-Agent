@@ -146,6 +146,45 @@ class TestGwtS1FileBoundary:
         assert len(SkillSandbox(store).violations()) == 1
 
 
+# ───────────────────────── 写出口（local_write，T-AGT-014.1） ─────────────────────────
+
+
+class TestLocalWriteBoundary:
+    WS = "local_write:<workspace/**>"
+    READ_WS = "local_read:<workspace/**>"
+
+    def test_declared_and_approved_write_allowed(self, registry, sandbox):
+        desc = make_skill(registry, base="sk_fw_ok", permissions=(self.WS,))
+        ses = sandbox.session(desc, (self.WS,), trace_id="tr_fw_1")
+        env = ses.write_file("workspace/a.txt", lambda p: {"path": p})
+        assert env.status == "ok" and env.data == {"path": "workspace/a.txt"}
+
+    def test_outside_scope_blocked_without_writing(self, registry, sandbox):
+        desc = make_skill(registry, base="sk_fw_out", permissions=(self.WS,))
+        ses = sandbox.session(desc, (self.WS,), trace_id="tr_fw_2")
+        touched: list = []
+        env = ses.write_file("inbox/a.txt", lambda p: touched.append(p))
+        assert env.status == "validation_failed"
+        assert touched == []          # 原操作未执行
+        assert "这个 Skill 行为异常" in (env.reason or "")
+
+    def test_declared_but_unapproved_write_blocked(self, registry, sandbox):
+        desc = make_skill(registry, base="sk_fw_unapp", permissions=(self.WS,))
+        ses = sandbox.session(desc, (self.READ_WS,), trace_id="tr_fw_3")
+        verdict = ses.check_write("workspace/a.txt")
+        assert not verdict.allowed and verdict.kind == "local_write"
+
+    def test_read_permission_does_not_authorize_write(self, registry, sandbox):
+        desc = make_skill(registry, base="sk_fw_readonly", permissions=(self.READ_WS,))
+        ses = sandbox.session(desc, (self.READ_WS,), trace_id="tr_fw_4")
+        assert not ses.check_write("workspace/a.txt").allowed
+
+    def test_traversal_blocked(self, registry, sandbox):
+        desc = make_skill(registry, base="sk_fw_trav", permissions=(self.WS,))
+        ses = sandbox.session(desc, (self.WS,), trace_id="tr_fw_5")
+        assert not ses.check_write("workspace/../secrets/x").allowed
+
+
 # ───────────────────────── GWT-S2 网络越界拦截 ─────────────────────────
 
 

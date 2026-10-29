@@ -12,8 +12,8 @@
 再落任何描述体——任一种子不成立即整体拒，不留半个原语。
 
 **本叶不接组合根**：安装入口由 :func:`st_agent.l1.runtime.build_l1_runtime` 与官方
-Pack 同点调用；种子表 :data:`BUILTIN_PRIMITIVES` 目前含本地数据面的两条原语
-（``local_sql`` / ``data_status``，T-AGT-010.*）。
+Pack 同点调用；种子表 :data:`BUILTIN_PRIMITIVES` 目前含本地数据面、取数 / 同步、
+文档取数、循环控制与文件面共 11 条原语。
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from st_agent.l1.builtin.data_status import DATA_STATUS
 from st_agent.l1.builtin.data_sync import DATA_SYNC
 from st_agent.l1.builtin.docs import DOCS
 from st_agent.l1.builtin.errors import BuiltinRegistrationError
+from st_agent.l1.builtin.files import FILE_GLOB, FILE_GREP, FILE_READ, FILE_WRITE
 from st_agent.l1.builtin.local_sql import LOCAL_SQL
 from st_agent.l1.builtin.models import BuiltinPrimitive
 from st_agent.l1.builtin.plan_update import PLAN_UPDATE
@@ -40,14 +41,17 @@ __all__ = ["BUILTIN_PRIMITIVES", "install_builtins"]
 
 BUILTIN_PRIMITIVES: tuple[BuiltinPrimitive, ...] = (
     LOCAL_SQL, DATA_STATUS, DATA_SYNC, DATA_FETCH, DOCS, PLAN_UPDATE, ASK_USER,
+    FILE_READ, FILE_GLOB, FILE_GREP, FILE_WRITE,
 )
-"""内置原语种子表（本地数据面四条 + 循环控制面两条 + 文档取数一条）。
+"""内置原语种子表（本地数据面四条 + 循环控制面两条 + 文档取数一条 + 文件面四条）。
 
 一行一条能力。权限必须逐条显式给出（见 ``models.BuiltinPrimitive.permissions``）。
 循环控制面两条（``sk_plan_update`` / ``sk_ask_user``）在循环内由 L3 拦截执行，
 登记的目的是让它们进入**同一个**工具目录（注册面＝可见面），不是第二条执行路径。
 ``sk_data_sync`` / ``sk_data_fetch`` 的执行面（``DataSyncRunner``）由 M5 组合根后置
 注入（``L1Runtime.bind_data_sync``），未注入时原语显式 ``unavailable``。
+文件面四条经 ``FileWorkspace`` 访问工作区分区与导入收件目录，按 01 §10 声明
+``local_read`` / ``local_write``（D-146）。
 """
 
 _SOURCE = "builtin"
@@ -59,6 +63,7 @@ def install_builtins(
     *,
     context: Mapping[str, Any] | None = None,
     primitives: Sequence[BuiltinPrimitive] | None = None,
+    permissions: Any | None = None,
 ) -> tuple[str, ...]:
     """安装内置原语 → 本次**新增**的 ``skill_id`` 元组（已存在的描述体不重复注册）。
 
@@ -66,6 +71,9 @@ def install_builtins(
     :param runner: ``SkillRunner``（注册执行器）
     :param context: 注入给执行器工厂的依赖（键须覆盖各条种子的 ``requires``）
     :param primitives: 种子序列；``None`` 即用 :data:`BUILTIN_PRIMITIVES`
+    :param permissions: 可选 ``SkillPermissionBook``——给了则把内置声明的批准态
+        落账（首次声明即批准，**已拒绝的保留**；见 :func:`_seed_approvals`）。
+        不给则只注册、不碰批准账本（单测与更早里程碑的装配路径）。
 
     :raises BuiltinRegistrationError: 种子重复 / 同 id 与既有非内置能力冲突 /
         ``requires`` 依赖缺失 / 权限声明或 id 形态非法
@@ -99,7 +107,28 @@ def install_builtins(
         else:
             added.append(descriptor.skill_id)
         runner.register_executor(skill_id, seed.executor(view))
+        if permissions is not None:
+            _seed_approvals(permissions, seed.base, seed.permissions)
     return tuple(added)
+
+
+def _seed_approvals(book: Any, base: str, permissions: Sequence[str]) -> None:
+    """把**产品自带**内置原语的声明落进批准账本并置 ``approved``。
+
+    内置原语随产品出厂、不可编辑 / 不可版本化 / 不可导出（D-139），其声明是产品
+    自身的行为边界，没有第三方「安装时用户逐项批准」的环节；用户的可控面是
+    L6 风险分级（写类每步确认）与逐 Skill 禁用。故安装期即登记为已批准，但
+    **已在账本里被拒绝的声明保持拒绝**（用户撤销仍能拦住，01 §10 的拦截口径不变）。
+
+    幂等：声明集合未变且无 ``pending`` 时不写盘（重复装配零写）。
+    """
+    existing = {a.permission: a.decision for a in book.approvals(base)}
+    if set(existing) != set(permissions):
+        book.declare(base, tuple(permissions))
+        existing = {a.permission: a.decision for a in book.approvals(base)}
+    for declaration in permissions:
+        if existing.get(declaration) == "pending":
+            book.approve(base, declaration)
 
 
 def _validate_seeds(

@@ -76,8 +76,10 @@ class TestSharedSemantics:
 
         assert mcp_models.PermissionApproval is PermissionApproval
 
-    def test_three_permission_kinds_are_worded(self):
-        assert set(PERMISSION_KINDS) == {"local_read", "net_access", "exec_command"}
+    def test_four_permission_kinds_are_worded(self):
+        assert set(PERMISSION_KINDS) == {
+            "local_read", "local_write", "net_access", "exec_command",
+        }
 
     def test_base_pattern_mirrors_skill_id_group(self):
         """`SKILL_BASE_PATTERN` 与 `SKILL_ID_PATTERN` 第 1 组同源（不许各自漂移）。"""

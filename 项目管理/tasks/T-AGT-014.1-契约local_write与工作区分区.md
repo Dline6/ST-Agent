@@ -8,9 +8,9 @@ arch_link: "[01 §10](../../docs/技术架构-v2/01-平台共享契约.md)"
 priority: P1
 milestone: M9
 depends_on: [T-AGT-008.1]
-status: todo
+status: done
 decisions: [D-137]
-verify:
+verify: 四动作解析 / 八分区 / 五分区备份全绿；见执行日志 [T-AGT-014.1]（commit 69b6d3b）
 ---
 
 # T-AGT-014.1 · 契约：local_write 与工作区分区
@@ -24,15 +24,21 @@ verify:
 - GWT-3：Given 存量三类权限，Then 行为逐字节不变。
 
 ## 接口面
-<④ 对齐时实填（`doing` 起不可留占位），见 [工作流](../工作流.md) 第 ④ 步>
 - 输入（消费的前置接口）：
+  - [01 §10](../../docs/技术架构-v2/01-平台共享契约.md) 的 `parse_permission` / `validate_permissions`（`contracts/registry_types.py`）。
+  - `SkillSandbox` 的会话核对面（`l1/sandbox/sandbox.py`）与批准账本 `SkillPermissionBook`。
+  - [02 §2.1](../../docs/技术架构-v2/02-L0-本地优先基座.md) 的 `PARTITIONS` 封闭注册表与 [02 §8.1](../../docs/技术架构-v2/02-L0-本地优先基座.md) 的 `BACKUP_PARTITIONS`。
 - 输出（本任务交付的公共 API / 落盘位置）：
+  - `PermissionAction` 增 `local_write`；`PERMISSION_KINDS` 增对应中性说明；`SkillSandbox` 增 `check_write` / `write_file`。
+  - `Partition("workspace", ...)`（第 8 个）；`BACKUP_PARTITIONS` 增 `workspace`；落盘 `<存储根>/workspace/`，随存储加密 / 备份 / 清空。
 
 ## 可关闭的遗留
-<④ 对齐时实填：扫 [遗留问题](../遗留问题/README.md) 各层册的未闭区，逐条列「归属＝本任务」或「解封条件＝本任务 `done`」的条目（册内 id + 处置）；无命中写 `无`。>
+无（六册未闭区逐册核过，无归属＝本任务的条目）。
 
 ## 假设与前提
-<④ 对齐时实填；每条 `A<n>` 含 前提内容 / 若错的影响 / 验证方式；确认无假设写 `无（<原因>）`>
+- **A1** 存量三类权限行为逐字节不变（正则只扩一个动作分支）。若错的影响：既有 Skill / MCP 的权限解析回归。验证方式：`tests/contracts/test_capability_registry.py` 的四动作解析 + 既有套件。
+- **A2** 新分区可独立导出 / 清空，且备份默认包含它。若错的影响：备份恢复与存储页分区列表。验证方式：`tests/l0/test_storage.py` / `test_backup.py` / 设置页集成用例。
+- **A3** `local_write` 与 `local_read` 共用同一套路径作用域语义（`path_in_scope`）。若错的影响：写侧判界与读侧不一致。验证方式：`tests/l1/test_sandbox.py::TestLocalWriteBoundary`。
 
 ## 涉及契约
 - [01 §10](../../docs/技术架构-v2/01-平台共享契约.md) —— 四类权限动作

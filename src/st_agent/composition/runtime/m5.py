@@ -20,6 +20,7 @@ from st_agent.l1.runtime import (
     L1Runtime,
     open_runtime,
 )
+from st_agent.l1.skills.ids import base_of
 from st_agent.l1.studio import (
     DraftAcceptError,
     DraftIntake,
@@ -423,6 +424,9 @@ def build_m5_runtime(
             authorization=l6_stack.agent_authorization,
             sessions=SessionStore(runtime.store),
             reader=l2.reader,
+            permissions=lambda skill_id: runtime.skill_permissions.approved_permissions(
+                base_of(skill_id)
+            ),
         )
         holder.append(port)
         return port

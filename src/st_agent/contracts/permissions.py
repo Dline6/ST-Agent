@@ -39,10 +39,11 @@ PermissionDecision = Literal["pending", "approved", "rejected"]
 
 PERMISSION_KINDS: dict[str, str] = {
     "local_read": "读取声明范围内的本地文件",
+    "local_write": "写入声明范围内的本地文件",
     "net_access": "访问声明的远程主机",
     "exec_command": "在本机执行命令（最高风险）",
 }
-"""01 §10 三项权限的中性说明（「这个能力想做什么」的措辞来源）。"""
+"""01 §10 四项权限的中性说明（「这个能力想做什么」的措辞来源）。"""
 
 DECISION_LABELS: dict[str, str] = {
     "pending": "待批准",

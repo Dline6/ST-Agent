@@ -8,9 +8,9 @@ arch_link: "[01 §10](../../docs/技术架构-v2/01-平台共享契约.md)"
 priority: P1
 milestone: M9
 depends_on: [T-AGT-014.2]
-status: todo
+status: done
 decisions: [D-137]
-verify:
+verify: 写入 workspace + 未批准拦截 + 并发串行全绿；见执行日志 [T-AGT-014.3]（commit 69b6d3b）
 ---
 
 # T-AGT-014.3 · 文件写原语
@@ -24,15 +24,23 @@ verify:
 - GWT-3：Given 并发写同一文件，Then 串行化或显式拒绝。
 
 ## 接口面
-<④ 对齐时实填（`doing` 起不可留占位），见 [工作流](../工作流.md) 第 ④ 步>
 - 输入（消费的前置接口）：
+  - `T-AGT-014.2`——`FileWorkspace` 与读原语。
+  - `T-AGT-014.1`——`local_write:<workspace/**>` 与 `workspace` 分区。
+  - L6 出厂风险清单 `DEFAULT_RISK_GRADING`（`l6/authorization.py`）。
+  - L3 循环的 `approved_permissions` 入参（`l3/runtime/loop.py`）与组合根 `_AgentInvestigator`。
 - 输出（本任务交付的公共 API / 落盘位置）：
+  - `sk_file_write`（声明 `local_write:<workspace/**>`）；落盘 `workspace` 分区（`Store.put`，02 §2.4 分区锁串行化）。
+  - `install_builtins(..., permissions=SkillPermissionBook)` 的内置声明批准初态；`resolve_approved` 支持的三种批准供给形态。
 
 ## 可关闭的遗留
-<④ 对齐时实填：扫 [遗留问题](../遗留问题/README.md) 各层册的未闭区，逐条列「归属＝本任务」或「解封条件＝本任务 `done`」的条目（册内 id + 处置）；无命中写 `无`。>
+无（六册未闭区逐册核过，无归属＝本任务的条目）。
 
 ## 假设与前提
-<④ 对齐时实填；每条 `A<n>` 含 前提内容 / 若错的影响 / 验证方式；确认无假设写 `无（<原因>）`>
+- **A1** 写只落 `workspace`，收件目录与任意路径拒写。若错的影响：写穿出工作区。验证方式：`test_builtin_files` 的 inbox / 绝对路径用例。
+- **A2** 未声明或未批准 `local_write` 时拦截且不写盘。若错的影响：越权写。验证方式：未批准写用例 + `TestLocalWriteBoundary`。
+- **A3** 并发写同一文件由 `Store` 分区锁串行化（不丢清单条目）。若错的影响：并发写损坏分区。验证方式：并发写用例。
+- **A4** 内置原语安装期批准，拒绝态保留；用户对写类动作的逐次确认由 L6 分级（`collaborative-required`）承担。若错的影响：写操作被静默自动执行或永远不可用。验证方式：批准播种用例 + L6 分类用例。
 
 ## 涉及契约
 - [01 §10](../../docs/技术架构-v2/01-平台共享契约.md) —— `local_write`

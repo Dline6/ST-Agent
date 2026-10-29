@@ -1,6 +1,6 @@
 """存储分区模型（02 §2.1 存储分区）。
 
-七个逻辑分区，物理组织为「存储根下每分区一个目录」（④ 对齐确认；
+八个逻辑分区，物理组织为「存储根下每分区一个目录」（④ 对齐确认；
 §2.1 允许实现自定物理组织，约束是**可独立导出、独立清空**）。
 """
 
@@ -17,7 +17,7 @@ __all__ = [
 ]
 
 PartitionName = str
-"""逻辑分区名（02 §2.1 表的 ``memory`` 等七个）。"""
+"""逻辑分区名（02 §2.1 表的 ``memory`` 等八个）。"""
 
 
 class Partition(NamedTuple):
@@ -38,6 +38,7 @@ PARTITIONS: tuple[Partition, ...] = (
     Partition("execution_log", "L1 / L5 / L6"),
     Partition("reflection", "L6"),
     Partition("data_cache", "全部 Skill"),
+    Partition("workspace", "L1 Agent 原语 / 用户"),
     Partition("secrets", "L0 内部", secrets_isolated=True),
 )
 
@@ -45,7 +46,7 @@ PARTITION_NAMES: tuple[str, ...] = tuple(p.name for p in PARTITIONS)
 
 
 def validate_partition_name(name: str) -> PartitionName:
-    """分区名合法性（防路径注入——只允许注册过的七个）。"""
+    """分区名合法性（防路径注入——只允许注册过的八个）。"""
     if name not in PARTITION_NAMES:
         raise ValueError(
             f"未知分区 {name!r}；合法分区 = {list(PARTITION_NAMES)}（02 §2.1）"

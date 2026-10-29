@@ -26,7 +26,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
@@ -69,8 +69,20 @@ __all__ = [
     "GateVerdict",
     "LoopOutcome",
     "TerminationReason",
+    "resolve_approved",
     "run_agent_loop",
 ]
+
+ApprovedPermissions = (
+    Sequence[str] | Mapping[str, Sequence[str]] | Callable[[str], Sequence[str]]
+)
+"""「已批准权限」的供给形态（T-AGT-014.3）。
+
+- **序列**：全局同意（缺省；既有调用方的形态，行为不变）；
+- **映射**：``{skill_id: 声明序列}``；
+- **可调用**：``(skill_id) -> 声明序列``——组合根接 `SkillPermissionBook`，
+  按**实际执行的 Skill** 取批准态，避免把 A 的批准借给 B。
+"""
 
 DEFAULT_MAX_STEPS = 8
 """**步数**上界缺省值（可注入覆盖）。
@@ -214,6 +226,17 @@ class LoopOutcome(BaseModel):
         return self.termination == "finished"
 
 
+def resolve_approved(source: ApprovedPermissions, skill_id: str) -> tuple[str, ...]:
+    """按供给形态取出该 Skill 本次的已批准权限集（空即空，不猜）。"""
+    if source is None:
+        return ()
+    if callable(source):
+        return tuple(source(skill_id) or ())
+    if isinstance(source, Mapping):
+        return tuple(source.get(skill_id) or ())
+    return tuple(source)
+
+
 def run_agent_loop(
     *,
     task: str,
@@ -222,7 +245,7 @@ def run_agent_loop(
     runner: Any,
     tools: Sequence[Any],
     gate: Any = None,
-    approved_permissions: Sequence[str] = (),
+    approved_permissions: ApprovedPermissions = (),
     initiator: str = DEFAULT_TURN_INITIATOR,
     purpose: str = DEFAULT_TURN_PURPOSE,
     max_steps: int = DEFAULT_MAX_STEPS,
@@ -250,7 +273,9 @@ def run_agent_loop(
     :param gate: 注入的**授权端口**（鸭子类型 ``authorize(…)``，如
         [`T-AGT-005`](../../../项目管理/tasks/T-AGT-005-动作闸门接入.md) 的闸门）；
         **缺省 ``None`` 即 fail-closed**——一步都不执行（GWT-3）
-    :param approved_permissions: 用户已批准的权限声明集合（转交 L1 逐项核对）
+    :param approved_permissions: 用户已批准的权限声明（转交 L1 逐项核对）。
+        可为序列（全局）、映射或可调用 ``(skill_id) -> 声明序列``——后者由组合根
+        按实际执行的 Skill 取批准态（T-AGT-014.3）
     :param max_steps: **步数**上界（可注入；到界即终止并如实标注）
     :param max_llm_calls: **LLM 调用次数**上界（可注入；同上）
     :param trace: 调用方传入的推理链（``None`` 即新建一条）
@@ -435,7 +460,7 @@ def run_agent_loop(
             values,
             inputs=object_inputs,
             trace=chain,
-            approved_permissions=tuple(approved_permissions),
+            approved_permissions=resolve_approved(approved_permissions, entry.skill_id),
             initiator=initiator,
             purpose=purpose,
         )

@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from st_agent.contracts.result_envelope import ResultEnvelope
+from st_agent.l0.file_workspace import FileWorkspace
 from st_agent.l0.info.docs import LocalDocSource
 from st_agent.l0.market.db import MarketDb
 from st_agent.l0.storage import Store
@@ -52,6 +53,7 @@ def runner(store: Store, db: MarketDb) -> SkillRunner:
             "market": db,
             "docs": LocalDocSource(db, store),
             "sync": SyncPort(),
+            "files": FileWorkspace(store),
         },
     )
     return pipeline
@@ -196,6 +198,7 @@ class TestLocalSql:
                 "market": MarketDb(store),
                 "docs": LocalDocSource(MarketDb(store), store),
                 "sync": SyncPort(),
+                "files": FileWorkspace(store),
             },
         )
         out = _run(pipeline, LOCAL_SQL, {"sql": "SELECT 1"})
@@ -258,6 +261,7 @@ class TestDataStatus:
                 "market": MarketDb(store),
                 "docs": LocalDocSource(MarketDb(store), store),
                 "sync": SyncPort(),
+                "files": FileWorkspace(store),
             },
         )
         out = _run(pipeline, DATA_STATUS)
@@ -273,10 +277,11 @@ class TestDataStatus:
 # ───────────────────────── 安装面 ─────────────────────────
 
 
-def test_seed_table_contains_the_data_and_control_primitives():
+def test_seed_table_contains_the_data_control_and_file_primitives():
     assert [seed.base for seed in BUILTIN_PRIMITIVES] == [
         "sk_local_sql", "sk_data_status", "sk_data_sync", "sk_data_fetch",
         "sk_docs", "sk_plan_update", "sk_ask_user",
+        "sk_file_read", "sk_file_glob", "sk_file_grep", "sk_file_write",
     ]
 
 

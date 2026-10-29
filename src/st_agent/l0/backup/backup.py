@@ -104,7 +104,7 @@ WIPE_CONFIRM_TOKENS: tuple[str, str, str] = ("WIPE-1", "WIPE-2", "WIPE-3")
 """完全清空的三枚有序确认令牌（须按序集齐，缺一即拒；A5）。"""
 
 _ARCHIVEABLE = frozenset([*BACKUP_PARTITIONS, "data_cache"])
-"""允许出现在归档中的分区（四分区 + 可选 data_cache；其余一律拒收）。"""
+"""允许出现在归档中的分区（五分区 + 可选 data_cache；其余一律拒收）。"""
 
 _KEYFILE = "keyfile.json"
 

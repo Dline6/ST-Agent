@@ -3,16 +3,16 @@
 暴露会话，并补齐 LLM 出网路径（``SandboxedGateway.llm_transport`` 结构性 API +
 ``provider → host`` 映射按 01 §7 条目形态落盘）。
 
-Skill 执行在受限环境内进行：文件访问限于声明的 ``local_read`` 范围、
-网络限于声明的 ``net_access`` 模式、命令执行需 ``exec_command`` 审批；
+Skill 执行在受限环境内进行：文件访问限于声明的 ``local_read`` / ``local_write``
+范围、网络限于声明的 ``net_access`` 模式、命令执行需 ``exec_command`` 审批；
 运行时行为越界 → 拦截 + ``BehaviorViolation`` 事件（01 §11）+ 警示
 「这个 Skill 行为异常」+ 提供禁用选项。
 
 设计要点（④ 对齐 A3 / A7）：
 
 - **进程内声明式 enforcement**：``SkillSandbox.session(descriptor, approved,
-  trace_id)`` 携带本次执行「已声明 + 已批准」的权限集；三类出口
-  （文件 / 网络 / 命令）统一核对，非 OS 级隔离。
+  trace_id)`` 携带本次执行「已声明 + 已批准」的权限集；四类出口
+  （读文件 / 写文件 / 网络 / 命令）统一核对，非 OS 级隔离。
 - **声明与批准双重要求**：越界的两种形态都拦截——① 未声明（Skill 行为
   超出自身声明）；② 已声明但未获用户批准（§10 逐项批准）。拦截一律返回
   ``ResultEnvelope.validation_failed``（不抛裸异常），流式出口例外。
@@ -245,6 +245,21 @@ class SandboxSession:
         if not verdict.allowed:
             return self._blocked_envelope(verdict)
         return _wrap(reader(path), "读取结果为空")
+
+    # ───────────────────────── 写出口（GWT-S1 / 01 §10） ─────────────────────────
+
+    def check_write(self, path: str) -> GuardVerdict:
+        """核对一次文件写入是否在声明 ``local_write`` 范围且已获批准。"""
+        if self._sandbox.is_disabled(self._descriptor.skill_id):
+            return self._deny("local_write", "该 Skill 已被禁用，拒绝一切文件写入")
+        return self._check("local_write", path, path_in_scope, "路径")
+
+    def write_file(self, path: str, writer: Callable[[str], Any]) -> ResultEnvelope:
+        """受限写入：放行才调用 ``writer``，越界则拦截且**不执行**原操作。"""
+        verdict = self.check_write(path)
+        if not verdict.allowed:
+            return self._blocked_envelope(verdict)
+        return _wrap(writer(path), "写入完成")
 
     # ───────────────────────── 网络出口（GWT-S2） ─────────────────────────
 
