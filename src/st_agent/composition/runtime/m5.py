@@ -439,6 +439,9 @@ def build_m5_runtime(
             memory.codes("holdings") + memory.codes("watchlist")
         ),
     )
+    # 同步执行面是**单例**：表现层的数据同步视图与循环的 data_sync / data_fetch 原语
+    # 必须用同一实例，否则各自的单飞锁互不可见、「同一时刻只允许一个批次」会被绕过。
+    m4.m1.runtime.bind_data_sync(data_sync)
     # 与 open_runtime 的取值口径一致：显式路径优先，缺省 `<cwd>/.env`（[T-L1-011]）。
     resolved_dotenv = Path(dotenv_path) if dotenv_path is not None else Path.cwd() / DOTENV_NAME
     return M5Runtime(

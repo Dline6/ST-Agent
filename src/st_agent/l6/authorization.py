@@ -98,6 +98,13 @@ DEFAULT_RISK_GRADING: tuple[EvolutionRiskRule, ...] = (
     EvolutionRiskRule(prefix="skill.sk_data_status", risk_class="autonomous-ok"),
     EvolutionRiskRule(prefix="skill.sk_plan_update", risk_class="autonomous-ok"),
     EvolutionRiskRule(prefix="skill.sk_ask_user", risk_class="autonomous-ok"),
+    # 可自主——**只读的文档取数**（T-AGT-013.3 / [D-145]）：经 L0 文档取数面读本地缓存，
+    # 不直读文件、不出网；审计只报损坏 / 孤儿，不删除。
+    EvolutionRiskRule(prefix="skill.sk_docs", risk_class="autonomous-ok"),
+    # 必须协作——**取数 / 同步**（T-AGT-013.1 / .2 / [D-145]）：写缓存、出网。显式登记
+    # （与 `skill.` 通则同判）是把口径写死在清单里，不靠「未被单独列出」兜底。
+    EvolutionRiskRule(prefix="skill.sk_data_sync", risk_class="collaborative-required"),
+    EvolutionRiskRule(prefix="skill.sk_data_fetch", risk_class="collaborative-required"),
     # 必须协作——[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md) 原文「Skill 参数、注意力预算、视角阵容必须协作」
     EvolutionRiskRule(prefix="skill.", risk_class="collaborative-required"),
     EvolutionRiskRule(prefix="workflow.", risk_class="collaborative-required"),

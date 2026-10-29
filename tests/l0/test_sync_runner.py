@@ -10,6 +10,7 @@ import pytest
 
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.l0.market import BaoStockSync, MarketDb
+from st_agent.l0.market.errors import MarketValidationError
 from st_agent.l0.sync_runner import DataSyncRunner, SyncBusyError, SyncJobError
 
 
@@ -427,3 +428,50 @@ def test_clear_market_refuses_while_a_batch_is_running(store, gateway, market_db
         runner.clear_market()
     release.set()
     _wait(runner)
+
+
+def test_fetch_items_runs_synchronously_and_reports_as_of(store, gateway, market_db):
+    market = FakeMarketSync()
+    runner = _runner(store, gateway, market=market)
+
+    snapshot = runner.fetch_items(
+        [{
+            "target": "custom",
+            "dataset": "k_daily",
+            "time": {"kind": "date_range", "mode": "custom",
+                     "start": "2026-09-01", "end": "2026-09-25"},
+        }],
+        custom_text="sh.600000",
+    )
+
+    assert snapshot["state"] == "done"
+    assert market.calls[-1] == "bs_k_daily"
+    assert market.args["bs_k_daily"]["codes"] == ["sh.600000"]
+    assert market.args["bs_k_daily"]["start"] == "2026-09-01"
+    assert snapshot["results"]["g1:bs_k_daily"]["status"] == "ok"
+    assert snapshot["as_of"] == str(market_db.last_updated_at())
+    assert runner.job()["state"] == "done"
+
+
+def test_fetch_items_refuses_while_a_batch_is_running(store, gateway, market_db):
+    release = threading.Event()
+
+    class BlockingMarket(FakeMarketSync):
+        def run_task(self, task_key, **kwargs):
+            release.wait(3)
+            return super().run_task(task_key, **kwargs)
+
+    runner = _runner(store, gateway, market=BlockingMarket())
+    runner.start(["bs_calendar"])
+
+    with pytest.raises(SyncBusyError):
+        runner.fetch_items([{"target": "other", "dataset": "calendar"}])
+
+    release.set()
+    _wait(runner)
+
+
+def test_fetch_items_rejects_unknown_dataset(store, gateway):
+    runner = _runner(store, gateway)
+    with pytest.raises(MarketValidationError):
+        runner.fetch_items([{"target": "other", "dataset": "no-such-dataset"}])

@@ -146,6 +146,8 @@ class DocSource(Protocol):
     def search_docs(self, query: str, *, domain: str | None = None,
                     limit: int = 50) -> ResultEnvelope: ...
 
+    def consistency(self, domain: str | None = None) -> ResultEnvelope: ...
+
 
 class LocalDocSource:
     """本地实现：元数据经 ``MarketDb.query`` 读，正文经 :class:`DocStore` 读。
@@ -156,6 +158,7 @@ class LocalDocSource:
 
     def __init__(self, db, store) -> None:
         self._db = db
+        self._store = store
         self._docs = DocStore(store)
 
     # ───────────────────────── 取数面三件 ─────────────────────────
@@ -247,6 +250,55 @@ class LocalDocSource:
             {"columns": ["domain", "doc_id", "code", "doc_date", "file_path",
                          "source_id"],
              "rows": rows[:limit]},
+            as_of=self._as_of(),
+        )
+
+    def consistency(self, domain: str | None = None) -> ResultEnvelope:
+        """核对「表行引用的路径」与「盘上文件」两段（只读；不删除）。
+
+        两种不一致都显式列出、不静默合并：**表在而文件缺** → 损坏（不可读）；
+        **文件在而表缺** → 孤儿（可回收的残留，`recyclable=True`）。回收动作不在本面
+        ——删除是写操作，由维护面 / 专门工具承担（D-145）。
+        """
+        if not self._db.exists():
+            now = _now()
+            return ResultEnvelope.unavailable(
+                "本地市场数据库尚未建立（首次同步未完成）",
+                last_updated_at=now, as_of=now,
+            )
+        try:
+            domains = self._resolve_domains(domain)
+        except InfoValidationError as exc:
+            return ResultEnvelope.validation_failed(str(exc))
+        referenced: set[str] = set()
+        for name in domains:
+            table, _, _ = DOC_TEXT_DOMAINS[name]
+            env = self._db.query(f"SELECT file_path FROM {table}")
+            if env.status == "unavailable":
+                return env
+            if env.status == "ok":
+                referenced.update(
+                    str(row["file_path"]) for row in env.data["rows"]
+                    if row.get("file_path")
+                )
+        result = audit_docs(self._store, referenced, domain)
+        missing = list(result.missing_file)
+        orphans = list(result.orphan_file)
+        return ResultEnvelope.ok(
+            {
+                "domains": list(domains),
+                "referenced_count": len(referenced),
+                "on_disk_count": len(referenced) + len(orphans) - len(missing),
+                "consistent": result.is_consistent,
+                "missing_file": [
+                    {"path": path, "kind": "corrupt", "recyclable": False}
+                    for path in missing
+                ],
+                "orphan_file": [
+                    {"path": path, "kind": "orphan", "recyclable": True}
+                    for path in orphans
+                ],
+            },
             as_of=self._as_of(),
         )
 

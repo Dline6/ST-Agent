@@ -8,9 +8,9 @@ arch_link: "[02 §5](../../docs/技术架构-v2/02-L0-本地优先基座.md)"
 priority: P1
 milestone: M9
 depends_on: [T-AGT-010.2]
-status: todo
-decisions: [D-137]
-verify:
+status: done
+decisions: [D-137, D-145]
+verify: "全量 4723 passed / 16 deselected / 2 errors（两例 test_shell 环境性）；新增 tests/l1/test_builtin_m9.py::TestDataSync、tests/integration/test_m5_autonomy.py 绑定用例；见 执行日志 [T-AGT-013.1]"
 ---
 
 # T-AGT-013.1 · data_sync（同步触发原语）
@@ -24,15 +24,25 @@ verify:
 - GWT-3：Given 已有运行中的批次，When 再次触发，Then 显式拒绝而非并发。
 
 ## 接口面
-<④ 对齐时实填（`doing` 起不可留占位），见 [工作流](../工作流.md) 第 ④ 步>
 - 输入（消费的前置接口）：
+  - `T-AGT-008.2` / `T-AGT-008.3`：`st_agent.l1.builtin.install_builtins(context=…)` 的注入点与 `BuiltinPrimitive`（标量走 `parameters`、对象走 `input_schema`）。
+  - `T-AGT-012.1`：运行期授权判据 `RuntimeAuthorization.decide("skill.<base>")`；本原语**不登记**为 `autonomous-ok`，由 `skill.` 通则判必须协作。
+  - `T-AGT-010.2`：`data_status` 产出的逐任务行（`task_key` / 数据域 / 最后成功时间）是模型选择同步目标的依据。
+  - L0 `st_agent.l0.sync_runner.DataSyncRunner.start_items(items, custom_text=…)` / `job()` / `cancel()`；批次状态与结果读面不变。
+  - `T-AGT-013.2` 共用的数据集参数映射（`dataset` / `scope` / `codes` / 时间 / `force_refresh`）。
+  - M5 组合根 `build_m5_runtime` 造出的 `DataSyncRunner` **单例**；经 `L1Runtime.bind_data_sync(runner)` 注入。
 - 输出（本任务交付的公共 API / 落盘位置）：
+  - 新原语 `sk_data_sync`（`sk_data_sync_v1.0`，`source="builtin"`）：参数 `dataset`、`scope`、`codes`（对象输入）、`start` / `end`、`quarters`、`force_refresh`、`wait_seconds`；产出 `job_id` / `state` / `order` / `auto_added` / `estimate` / `results` / `as_of`。
+  - `L1Runtime.bind_data_sync(runner)` 鸭子端口（未绑定 → 原语 `unavailable`，不臆造运行态）。
+  - 留痕沿用 L1 `skill_run` 与 L0 `sync_state`；不新增落盘格式。
 
 ## 可关闭的遗留
-<④ 对齐时实填：扫 [遗留问题](../遗留问题/README.md) 各层册的未闭区，逐条列「归属＝本任务」或「解封条件＝本任务 `done`」的条目（册内 id + 处置）；无命中写 `无`。>
+无（逐册核过未闭区：L0 余 `C3`/`C5`/`D1–D3` 均人决、L5 余 `A1` 属人，其余册 0 条；无归属或解封条件指向本任务者）。
 
 ## 假设与前提
-<④ 对齐时实填；每条 `A<n>` 含 前提内容 / 若错的影响 / 验证方式；确认无假设写 `无（<原因>）`>
+- **A1（域词汇）**：同步目标以数据集 id 表达（[`DATASET_IDS`](../../src/st_agent/l0/market/datasets.py) 的 32 项）；逐码数据集缺省 `scope="watchlist"`，显式 `all_a` 才全市场。若错 ⇒ 模型与工具词汇不一致、可能误触发全市场长跑；验证：单测断言未知数据集 → `unavailable` 点名，逐码缺省解析为关注池。
+- **A2（风险类）**：同步是写动作，必须协作——缺省清单不登记 `skill.sk_data_sync` 为可自主；验证：L6 用例断言 `classify("skill.sk_data_sync") == "collaborative-required"`，L3 闸门在 `autonomous` 档回 `needs-confirmation`。
+- **A3（等待策略）**：缺省不等待，返回 `running` + `job_id`；`wait_seconds > 0` 时最多等该秒数，超时仍如实回运行态（不伪装完成）。若错 ⇒ 循环多一轮或阻塞过久；验证：单测覆盖不等待、等待至完成、等待超时三态。
 
 ## 涉及契约
 - [02 §5](../../docs/技术架构-v2/02-L0-本地优先基座.md) —— 同步批次

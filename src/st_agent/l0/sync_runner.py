@@ -651,19 +651,78 @@ class DataSyncRunner:
         }
 
     def start_items(self, items: Any, *, custom_text: str = "") -> dict[str, Any]:
-        """按 target × dataset × groups × time 发起批次。"""
+        """按 target × dataset × groups × time 发起批次（后台线程；单飞）。"""
         preflight = self.preflight_items(items, custom_text=custom_text)
         if preflight["errors"]:
             raise SyncJobError("；".join(preflight["errors"]))
+        execution = self._execution_of(preflight, custom_text=custom_text)
+        with self._lock:
+            self._refuse_if_running()
+            self._cancel.clear()
+            job = self._new_job(preflight)
+            self._job = job
+            thread = threading.Thread(
+                target=self._run, args=(job, execution),
+                name="st-agent-data-sync", daemon=True,
+            )
+            self._thread = thread
+            thread.start()
+        return {
+            "job_id": job["job_id"],
+            "order": job["order"],
+            "auto_added": job["auto_added"],
+            "groups": preflight["plan"],
+            "targets": preflight["targets"],
+            "overlap": preflight["overlap"],
+            "estimate": preflight["estimate"],
+        }
+
+    def fetch_items(self, items: Any, *, custom_text: str = "") -> dict[str, Any]:
+        """**同步**执行一次批次并返回终态快照（不另起线程；与后台批次共用单飞锁）。
+
+        与 :meth:`start_items` 走同一套预检、前置自动补齐、落库与水位回写，差别只在
+        调用线程内跑完——供循环的 ``data_fetch`` 原语「取完再答」。已有批次运行中即
+        :class:`SyncBusyError`（整库工作副本不可并发覆盖，02 §5）。
+
+        :returns: 批次快照（``state`` / ``results`` / ``order`` / ``auto_added`` /
+            ``estimate`` / ``finished_at``）＋ ``as_of``（落库后的最后更新时间）。
+        """
+        preflight = self.preflight_items(items, custom_text=custom_text)
+        if preflight["errors"]:
+            raise SyncJobError("；".join(preflight["errors"]))
+        execution = self._execution_of(preflight, custom_text=custom_text)
+        with self._lock:
+            self._refuse_if_running()
+            self._cancel.clear()
+            job = self._new_job(preflight)
+            self._job = job
+            self._thread = None
+        self._run(job, execution)
+        snapshot = dict(job)
+        snapshot["results"] = dict(job["results"])
+        snapshot["as_of"] = self._as_of_text()
+        with self._lock:
+            job["as_of"] = snapshot["as_of"]
+        return snapshot
+
+    def _refuse_if_running(self) -> None:
+        """单飞判据（调用方持锁）。"""
+        if self._job is not None and self._job["state"] == "running":
+            raise SyncBusyError(
+                f"已有同步批次在跑（{self._job['job_id']}）；请等它结束或取消"
+            )
+
+    def _execution_of(
+        self, preflight: Mapping[str, Any], *, custom_text: str = ""
+    ) -> list[dict[str, Any]]:
+        """预检结果 → 逐任务执行项（行情 / 信息面各自带范围与时间）。"""
         normalized = preflight["items"]
         targets = resolve_targets(
             MarketDb(self._store), watchlist=self._watch, custom_text=custom_text
         )
         groups, _, _ = self._group_items(normalized, targets)
-        order = preflight["order"]
-        auto = preflight["auto_added"]
         execution: list[dict[str, Any]] = []
-        for key in order:
+        for key in preflight["order"]:
             matched = [
                 group for group in groups
                 if key in get_dataset(group["dataset"]).task_keys
@@ -698,51 +757,41 @@ class DataSyncRunner:
                         "key": key, "kind": "info", "result_key": result_key,
                         "group_id": group["group_id"],
                     })
-        with self._lock:
-            if self._job is not None and self._job["state"] == "running":
-                raise SyncBusyError(
-                    f"已有同步批次在跑（{self._job['job_id']}）；请等它结束或取消"
-                )
-            self._cancel.clear()
-            job = {
-                "job_id": uuid.uuid4().hex[:12],
-                "state": "running",
-                "items": normalized,
-                "groups": preflight["plan"],
-                "order": order,
-                "auto_added": auto,
-                "targets": preflight["targets"],
-                "overlap": preflight["overlap"],
-                "estimate": preflight["estimate"],
-                "results": {},
-                "current": None,
-                "phase": "preparing",
-                "progress": {
-                    "group_index": 0, "group_total": len(groups),
-                    "unit_done": 0, "unit_total": None,
-                    "requests": 0, "rows": 0, "eta_seconds": None,
-                },
-                "cancel_requested": False,
-                "started_at": _now_text(),
-                "finished_at": None,
-                "error": "",
-            }
-            self._job = job
-            thread = threading.Thread(
-                target=self._run, args=(job, execution),
-                name="st-agent-data-sync", daemon=True,
-            )
-            self._thread = thread
-            thread.start()
+        return execution
+
+    def _new_job(self, preflight: Mapping[str, Any]) -> dict[str, Any]:
+        """批次快照初值（调用方持锁写入 ``self._job``）。"""
         return {
-            "job_id": job["job_id"],
-            "order": order,
-            "auto_added": auto,
+            "job_id": uuid.uuid4().hex[:12],
+            "state": "running",
+            "items": preflight["items"],
             "groups": preflight["plan"],
+            "order": preflight["order"],
+            "auto_added": preflight["auto_added"],
             "targets": preflight["targets"],
             "overlap": preflight["overlap"],
             "estimate": preflight["estimate"],
+            "results": {},
+            "current": None,
+            "phase": "preparing",
+            "progress": {
+                "group_index": 0, "group_total": len(preflight["plan"]),
+                "unit_done": 0, "unit_total": None,
+                "requests": 0, "rows": 0, "eta_seconds": None,
+            },
+            "cancel_requested": False,
+            "started_at": _now_text(),
+            "finished_at": None,
+            "error": "",
         }
+
+    def _as_of_text(self) -> str | None:
+        """落库后的最后更新时间（库不存在 → ``None``）。"""
+        db = MarketDb(self._store)
+        if not db.exists():
+            return None
+        stamp = db.last_updated_at()
+        return str(stamp) if stamp else None
 
     def preflight(
         self,

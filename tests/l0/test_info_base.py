@@ -181,6 +181,44 @@ class TestGwt3DocSourceDoesNotBypassStore:
     def test_unknown_doc_is_empty(self, db, store):
         assert LocalDocSource(db, store).read_doc("ann_nope").status == "empty"
 
+    def test_consistency_reports_corrupt_and_recyclable_orphan(self, db, store):
+        """缺文件列损坏、孤儿列可回收；核对**只判不收**（文件仍在）。"""
+        _register_cninfo(db)
+        docs = DocStore(store)
+        kept = docs.write("announcement", "sh.600000", "2026-09-20", "ann_ok", "正文")
+        orphan = docs.write("announcement", "sh.600000", "2026-09-21",
+                            "ann_orphan", "孤儿")
+        missing = "info/announcement/sh.600000/2026-09-20/ann_missing.txt"
+        with db.transact() as con:
+            con.execute(
+                "INSERT INTO announcement(announcement_id, code, title, pub_date,"
+                " file_path, coverage, source_id) VALUES"
+                " ('ann_ok', 'sh.600000', '标题', '2026-09-20', ?, 'all', 'cninfo')",
+                (kept,))
+            con.execute(
+                "INSERT INTO announcement(announcement_id, code, title, pub_date,"
+                " file_path, coverage, source_id) VALUES"
+                " ('ann_missing', 'sh.600000', '标题', '2026-09-20', ?, 'all', 'cninfo')",
+                (missing,))
+            con.commit()
+
+        env = LocalDocSource(db, store).consistency()
+
+        assert env.status == "ok"
+        data = env.data
+        assert data["consistent"] is False
+        assert [item["path"] for item in data["missing_file"]] == [missing]
+        assert data["missing_file"][0]["kind"] == "corrupt"
+        assert data["missing_file"][0]["recyclable"] is False
+        assert [item["path"] for item in data["orphan_file"]] == [orphan]
+        assert data["orphan_file"][0]["kind"] == "orphan"
+        assert data["orphan_file"][0]["recyclable"] is True
+        assert docs.exists(orphan)  # 核对只判不收
+
+    def test_consistency_rejects_unknown_domain(self, db, store):
+        env = LocalDocSource(db, store).consistency("no-such-domain")
+        assert env.status == "validation_failed"
+
 
 class TestGwt4PrefilterDoesNotBlowUpBatch:
     def test_unmapped_filtered_with_visible_count(self, db, sync_factory):
