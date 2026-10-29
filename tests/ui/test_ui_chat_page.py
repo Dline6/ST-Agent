@@ -165,3 +165,46 @@ def test_chat_forwards_the_clarification_round(http_post, auth) -> None:
     assert payload["status"] == "ok"
     assert payload["needs_confirmation"] is True
     assert payload["clarification"] == round_
+
+
+# ── `agent_continuation` 透传（T-AGT-011.3 的线面） ──────────────────────────
+def test_chat_forwards_the_agent_continuation(http_post) -> None:
+    """`POST /api/chat` 把门面返回的可续跑载荷原样带出（续跑入口据此渲染）。"""
+    from st_agent.contracts.result_envelope import ResultEnvelope
+    from st_agent.ui.security import TOKEN_HEADER
+    from st_agent.ui.server import serve
+
+    continuation = {
+        "agent_run_id": "agr_0123456789abcdef0123",
+        "kind": "pending_step",
+        "task": "查证 sh.600000",
+        "plan": [{"title": "查同步水位", "status": "done"}],
+        "pending": {"tool_name": "sk_stock_watch", "arguments": {"code": "sh.600000"}},
+        "questions": [],
+        "directions": [],
+        "ask_note": "",
+        "stale": False,
+    }
+
+    def _turn(body):  # noqa: ANN001, ANN202（鸭子面）
+        assert body["action"] == "resume"
+        return {
+            "reply": ResultEnvelope.ok([]),
+            "session_id": "sess_1",
+            "needs_confirmation": False,
+            "description": None,
+            "clarification": None,
+            "traces": [],
+            "agent_continuation": continuation,
+        }
+
+    with serve(dev=False, chat=SimpleNamespace(turn=_turn)) as running:
+        payload = http_post(
+            running, "/api/chat",
+            {"action": "resume", "agent_run_id": continuation["agent_run_id"],
+             "decision": "approve"},
+            headers={TOKEN_HEADER: running.token},
+        ).json()
+
+    assert payload["status"] == "ok"
+    assert payload["agent_continuation"] == continuation

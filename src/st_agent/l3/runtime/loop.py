@@ -35,6 +35,8 @@ from st_agent.contracts.identifiers import TraceId
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.trace import Trace
 from st_agent.l0.llm import ToolCall
+from st_agent.l1.builtin.ask_user import ASK_USER, normalize_questions
+from st_agent.l1.builtin.plan_update import PLAN_UPDATE, normalize_plan
 from st_agent.l1.skills.tool_catalog import split_arguments
 from st_agent.l2.memory.reader import MemorySlice
 from st_agent.l3.chat.session import ChatMessage
@@ -42,6 +44,8 @@ from st_agent.l3.errors import AgentRuntimeValidationError
 from st_agent.l3.runtime.context import (
     DEFAULT_WORK_CONTEXT_BUDGET,
     RESULT_TRUNCATE_CHARS,
+    AskQuestion,
+    PlanStep,
     WorkContext,
     WorkStep,
     assemble_work_context,
@@ -55,10 +59,12 @@ from st_agent.l3.runtime.protocol import (
 
 __all__ = [
     "AGENT_GATE_METHOD",
+    "ASK_USER_TOOL",
     "BOUND_REASONS",
     "DEFAULT_MAX_LLM_CALLS",
     "DEFAULT_MAX_STEPS",
     "GATE_VERDICTS",
+    "PLAN_UPDATE_TOOL",
     "GateDecision",
     "GateVerdict",
     "LoopOutcome",
@@ -93,6 +99,20 @@ GATE_VERDICTS: tuple[str, ...] = ("autonomous-ok", "needs-confirmation", "denied
 """闸门结论三态（[01 §7](../../../../docs/技术架构-v2/01-平台共享契约.md) 的运行期授权条目）：
 仅 ``autonomous-ok`` 自主执行；``needs-confirmation`` 终止并**交还用户**；``denied`` 终止。"""
 
+PLAN_UPDATE_TOOL = PLAN_UPDATE.base
+"""计划原语的工具名（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+
+循环按**工具名**识别这一条控制原语：它的效果是改工作上下文里的计划，**不经 L1 执行面**
+（不产 ``skill_run`` 记录、不产 Trace 步，[01 §4](../../../../docs/技术架构-v2/01-平台共享契约.md)）。
+登记进工具目录的目的是让模型看得见、让闸门照常问——**不是**第二条执行路径。
+"""
+
+ASK_USER_TOOL = ASK_USER.base
+"""提问原语的工具名（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+
+循环按工具名识别：它的效果是**终止并交还结构化问项**，同样不经 L1 执行面。
+"""
+
 GateVerdict = Literal["autonomous-ok", "needs-confirmation", "denied"]
 
 TerminationReason = Literal[
@@ -101,6 +121,7 @@ TerminationReason = Literal[
     "llm_call_limit",
     "gate_absent",
     "needs_confirmation",
+    "needs_user_input",
     "denied",
     "endpoint_unavailable",
     "llm_failed",
@@ -156,6 +177,18 @@ class LoopOutcome(BaseModel):
     """被闸门拦下、**未执行**的那一步（``needs_confirmation`` / ``denied`` 时给出，供交还）。"""
     gate_reason: str = ""
     """闸门给出的原因（交还时一并告知；无闸门/无拦下时为空）。"""
+    plan: tuple[PlanStep, ...] = ()
+    """模型当前给出的计划（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的计划原语）。"""
+    plan_updated: bool = False
+    """模型是否给过计划更新（含清空）——区分「尚未给出」与「已显式清空」。"""
+    plan_error: str = ""
+    """最后一次计划更新未被采用的原因（非法形态不终止循环，留给下一轮纠正）。"""
+    questions: tuple[AskQuestion, ...] = ()
+    """交还的结构化问项（``needs_user_input`` 时给出；其余终止为空）。"""
+    directions: tuple[str, ...] = ()
+    """交还时给的方向候选（[05 §3.2](../../../../docs/技术架构-v2/05-L3-对话主入口.md)：不强行猜）。"""
+    ask_note: str = ""
+    """提问交还的说明（如问项超预算被截断的显式记录；无则空）。"""
     max_steps: int = DEFAULT_MAX_STEPS
     """本次生效的步数上界（留痕用；取值可注入，故如实记录实际生效值）。"""
     max_llm_calls: int = DEFAULT_MAX_LLM_CALLS
@@ -200,6 +233,10 @@ def run_agent_loop(
     session_id: str | None = None,
     history: Sequence[ChatMessage] = (),
     memory: Sequence[MemorySlice] = (),
+    prior_steps: Sequence[WorkStep] = (),
+    plan: Sequence[PlanStep] = (),
+    plan_updated: bool = False,
+    user_inputs: dict[str, Any] | None = None,
 ) -> LoopOutcome:
     """驱动自主查证循环（四段一轮，直至模型给出「结束」或触界）。
 
@@ -221,6 +258,11 @@ def run_agent_loop(
         ``None`` ⇒ 无历史的单次查证（本叶只透传与留痕，取历史归 `.2`）
     :param history: 近端会话历史（组合根预取后注入——循环本体**不读存储**，保持可单测）
     :param memory: 记忆切片（同上；受 ``budget_chars`` 约束，超限时先被舍）
+    :param prior_steps: **续跑承接的前序步骤**（已执行过、不再重跑；只进工作上下文与留痕，
+        **不计入**本次新循环的步数上界——[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的续跑口径）
+    :param plan: 续跑承接的计划（同 ``prior_steps``）
+    :param plan_updated: 续跑前的计划是否已给出过（区分「尚未给出」与「已清空」）
+    :param user_inputs: 续跑时用户补充的答案（一问一参；进工作上下文，恒保留）
     :returns: :class:`LoopOutcome`——终止原因、已执行步骤、链、以及被拦下未执行的那一步
 
     入参非法（上界非正 / 任务为空 / 目录形态坏）抛
@@ -236,115 +278,152 @@ def run_agent_loop(
         raise AgentRuntimeValidationError("循环需要执行面（L1 SkillRunner；组合根注入）")
 
     chain = trace if trace is not None else Trace(trace_id=TraceId.generate())
-    steps: list[WorkStep] = []
+    steps: list[WorkStep] = list(prior_steps)
+    executed = 0
+    """**本次新执行**的步数（续跑承接的前序步骤不计入上界）。"""
     llm_calls = 0
     dropped: tuple[str, ...] = ()
+    current_plan: tuple[PlanStep, ...] = tuple(plan)
+    plan_given = bool(plan_updated)
+    plan_error = ""
     by_name = {entry.name: entry for entry in tools}
 
-    if not protocol.tool_calls_supported():
+    def finish(
+        termination: TerminationReason,
+        *,
+        reason: str = "",
+        answer: str = "",
+        pending: ToolCall | None = None,
+        gate_reason: str = "",
+        failure: ResultEnvelope | None = None,
+        questions: Sequence[AskQuestion] = (),
+        directions: Sequence[str] = (),
+        ask_note: str = "",
+    ) -> LoopOutcome:
+        """装配终止产出——**计划与上下文状态随每次终止照实带走**。"""
         return _outcome(
-            task, endpoint_id, "endpoint_unavailable", chain, steps, llm_calls,
+            task, endpoint_id, termination, chain, steps, llm_calls,
+            reason=reason, answer=answer, pending=pending, gate_reason=gate_reason,
+            failure=failure,
+            max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
+            dropped=dropped, budget_chars=budget_chars,
+            plan=current_plan, plan_updated=plan_given, plan_error=plan_error,
+            questions=tuple(questions), directions=tuple(directions), ask_note=ask_note,
+        )
+
+    if not protocol.tool_calls_supported():
+        return finish(
+            "endpoint_unavailable",
             reason=(
                 f"端点 {endpoint_id!r} 未声明支持工具调用，自主查证循环无法运行"
                 "（02 §4 能力诚实性：缺省不得假定为真）"
             ),
-            max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
-            dropped=dropped, budget_chars=budget_chars,
         )
 
     while True:
         # ── 上界（LLM 调用次数）：问之前判 ──
         if llm_calls >= max_llm_calls:
-            return _outcome(
-                task, endpoint_id, "llm_call_limit", chain, steps, llm_calls,
+            return finish(
+                "llm_call_limit",
                 reason=f"已达到 LLM 调用次数上界（{max_llm_calls}），终止",
-                max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
-                dropped=dropped, budget_chars=budget_chars,
             )
 
-        # ── ① 出动作（工作上下文每轮重装：任务 + 目录 + 已执行动作与结果） ──
+        # ── ① 出动作（工作上下文每轮重装：任务 + 计划 + 目录 + 已执行动作与结果） ──
         assembled = assemble_work_context(
             task, tuple(tools), steps,
             history=history, memory=memory,
+            plan=current_plan, plan_updated=plan_given, plan_error=plan_error,
+            user_inputs=user_inputs,
             budget_chars=budget_chars, max_result_chars=max_result_chars,
         )
         if assembled.status != "ok":
-            return _outcome(
-                task, endpoint_id, "catalog_empty", chain, steps, llm_calls,
-                reason=assembled.reason or "",
-                max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
-                dropped=dropped, budget_chars=budget_chars,
-            )
+            return finish("catalog_empty", reason=assembled.reason or "")
         context: WorkContext = assembled.data
         dropped = context.dropped
         turn = protocol.invoke_turn(context, initiator=initiator, purpose=purpose)
         llm_calls += 1
         if turn.envelope is not None:
-            return _outcome(
-                task, endpoint_id, "llm_failed", chain, steps, llm_calls,
+            return finish(
+                "llm_failed",
                 reason=turn.envelope.reason or "LLM 调用失败",
-                max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
-                dropped=dropped, budget_chars=budget_chars,
                 failure=turn.envelope,
             )
 
         # 模型给出「结束」：本轮文本是交付物的来源（中间轮次的文本不在此列）
         if not turn.tool_calls:
-            return _outcome(
-                task, endpoint_id, "finished", chain, steps, llm_calls,
-                answer=turn.text,
-                max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
-                dropped=dropped, budget_chars=budget_chars,
-            )
+            return finish("finished", answer=turn.text)
 
         # ── 上界（步数）：有动作要执行才判 —— 恰在第 N 步给出「结束」不算触界（GWT-5） ──
-        if len(steps) >= max_steps:
-            return _outcome(
-                task, endpoint_id, "step_limit", chain, steps, llm_calls,
+        if executed >= max_steps:
+            return finish(
+                "step_limit",
                 reason=f"已达到步数上界（{max_steps}），终止",
-                max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
-                dropped=dropped, budget_chars=budget_chars,
             )
 
         # 顺序驱动（并行工具调用不在本期，D-090 冻结范围）：一轮只认第一个调用
         call = turn.tool_calls[0]
         entry = by_name.get(call.name)
         if entry is None:
-            return _outcome(
-                task, endpoint_id, "unknown_tool", chain, steps, llm_calls,
+            return finish(
+                "unknown_tool",
                 reason=(
                     f"模型请求的工具 {call.name!r} 不在工具目录内，无法执行"
                     "（目录是 01 §2 描述体的投影，循环不臆造能力）"
                 ),
-                max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
-                dropped=dropped, budget_chars=budget_chars,
             )
 
-        # ── ② 过闸门（缺省 fail-closed：一步都不执行） ──
+        # ── ② 过闸门（缺省 fail-closed：一步都不执行；控制原语同样过闸门） ──
         decision = _gate_decision(gate, entry, call)
         if decision is None:
-            return _outcome(
-                task, endpoint_id, "gate_absent", chain, steps, llm_calls,
+            return finish(
+                "gate_absent",
                 reason=(
                     "未注入授权端口，按 fail-closed 拒绝执行任何动作"
                     "（闸门缺省不得放行；见 05 §10 授权闸门与交还）"
                 ),
-                max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
-                dropped=dropped, budget_chars=budget_chars,
             )
         if decision.verdict != "autonomous-ok":
             termination: TerminationReason = (
                 "needs_confirmation" if decision.verdict == "needs-confirmation" else "denied"
             )
-            return _outcome(
-                task, endpoint_id, termination, chain, steps, llm_calls,
+            return finish(
+                termination,
                 reason=(
                     f"下一步（调用 {call.name}）未获自主执行授权（{decision.verdict}），"
                     "终止并把该步交还用户确认"
                 ),
-                max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
-                dropped=dropped, budget_chars=budget_chars,
                 pending=call, gate_reason=decision.reason,
+            )
+
+        # ── 控制原语：计划 ──
+        # 只改工作上下文里的计划（决策，不产 Trace 步 / skill_run，01 §4）；形态非法时
+        # 写入 plan_error 让模型下一轮纠正，不终止循环、不静默丢弃。
+        if call.name == PLAN_UPDATE_TOOL:
+            normalized, error = normalize_plan(dict(call.arguments).get("plan"))
+            if error:
+                plan_error = error
+            else:
+                plan_error = ""
+                plan_given = True
+                current_plan = tuple(
+                    PlanStep(title=item["title"], status=item["status"])
+                    for item in normalized
+                )
+            continue
+
+        # ── 控制原语：提问（终止并交还结构化问项） ──
+        if call.name == ASK_USER_TOOL:
+            arguments = dict(call.arguments)
+            ask = normalize_questions(
+                arguments.get("questions"), arguments.get("directions"),
+            )
+            questions = tuple(AskQuestion(**item) for item in ask.questions)
+            return finish(
+                "needs_user_input",
+                reason=ask.error or "模型请求用户补充信息，循环终止并交还结构化问项",
+                questions=questions,
+                directions=ask.directions,
+                ask_note=ask.note or ask.error,
             )
 
         # ── ③ 执行（经 L1 既有流水线；参数/权限/沙箱/留痕全在那边判） ──
@@ -370,6 +449,7 @@ def run_agent_loop(
             envelope=run.envelope,
         ))
         chain = run.trace
+        executed += 1
 
 
 # ───────────────────────── 内部 ─────────────────────────
@@ -414,6 +494,12 @@ def _outcome(
     context_note: str = "",
     dropped: tuple[str, ...] = (),
     budget_chars: int = DEFAULT_WORK_CONTEXT_BUDGET,
+    plan: Sequence[PlanStep] = (),
+    plan_updated: bool = False,
+    plan_error: str = "",
+    questions: Sequence[AskQuestion] = (),
+    directions: Sequence[str] = (),
+    ask_note: str = "",
 ) -> LoopOutcome:
     """装配一次循环的产出（``failure`` 即端点侧给的原信封，产出装配原样透出）。"""
     return LoopOutcome(
@@ -423,4 +509,6 @@ def _outcome(
         max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
         context_note=context_note, dropped=dropped, budget_chars=budget_chars,
         failure=failure,
+        plan=tuple(plan), plan_updated=plan_updated, plan_error=plan_error,
+        questions=tuple(questions), directions=tuple(directions), ask_note=ask_note,
     )

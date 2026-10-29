@@ -7,14 +7,22 @@ from dataclasses import dataclass, field
 from typing import Any
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.trace import Trace
-from st_agent.l3.errors import SessionNotFoundError, SessionValidationError
+from st_agent.l3.errors import (
+    AgentRunNotFoundError,
+    AgentRuntimeValidationError,
+    SessionNotFoundError,
+    SessionValidationError,
+)
 from st_agent.l3.runtime import (
     ActionGate,
     AgentRunReport,
     LoopBounds,
     NativeToolCallProtocol,
+    ResumeOutcome,
     conclude_agent_run,
     investigate_family,
+    load_agent_run,
+    resume_agent_run,
     run_agent_loop,
 )
 
@@ -145,6 +153,53 @@ class _AgentInvestigator:
             session_id=session, context_note=note,
         )
 
+    def resume(
+        self,
+        agent_run_id: str,
+        *,
+        decision: str,
+        answers: Any = None,
+        now: Any = None,
+        session_id: str | None = None,
+    ) -> ResumeOutcome:
+        """接回一次交还（[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md) 的续跑）。
+
+        先按留痕取回任务与上下文（任务取自**旧留痕**，不要求调用方重述），再把注入的
+        执行面 / 闸门 / 判据面 / 双上界原样交给 :func:`resume_agent_run`——续跑与首次运行
+        **同一条流水线**，不另造执行路径。留痕取不到、或 `decision` 不认识时回显式信封，
+        不抛裸异常到对话面。
+        """
+        session = (session_id or "").strip() or None
+        try:
+            record = load_agent_run(self._store, str(agent_run_id or ""))
+        except (AgentRunNotFoundError, AgentRuntimeValidationError) as exc:
+            return ResumeOutcome(envelope=ResultEnvelope.validation_failed(str(exc)))
+        history, memory, note = self._context_inputs(session, record.task)
+        try:
+            result = resume_agent_run(
+                self._store,
+                record.agent_run_id,
+                decision=decision,  # type: ignore[arg-type]
+                answers=answers,
+                endpoint_id=self._endpoint_id,
+                protocol=self._protocol,
+                runner=self._runner,
+                tools=self._skills.tool_catalog(),
+                gate=ActionGate(self._authorization),
+                max_steps=self._bounds.steps(),
+                max_llm_calls=self._bounds.llm_calls(),
+                budget_chars=self._bounds.budget_chars(),
+                session_id=session,
+                history=history,
+                memory=memory,
+                now=now,
+            )
+        except AgentRuntimeValidationError as exc:
+            return ResumeOutcome(envelope=ResultEnvelope.validation_failed(str(exc)))
+        if note:
+            result = result.model_copy(update={"note": _join(result.note, note)})
+        return result
+
     def _context_inputs(self, session_id: str | None, task: str) -> tuple[Any, Any, str]:
         """取近端历史与记忆切片（[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)）。
 
@@ -165,3 +220,7 @@ class _AgentInvestigator:
         except (SessionNotFoundError, SessionValidationError):
             return (), (), SESSION_INVALID_NOTE
         return tuple(context.messages), tuple(context.memory.slices), ""
+
+
+def _join(*parts: str) -> str:
+    return "；".join(part for part in parts if part)

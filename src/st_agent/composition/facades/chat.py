@@ -420,21 +420,89 @@ class DialogFacade:
                 description = described.data if described.status == "ok" else None
             return {"reply": outcome.envelope, "session_id": sid,
                     "needs_confirmation": False, "description": description,
-                    "clarification": None, "traces": traces}
+                    "clarification": None, "traces": traces,
+                    "agent_continuation": self._continuation_payload(
+                        outcome.investigation)}
+        if action == "resume":
+            outcome = self._bus.resume(
+                str(body.get("agent_run_id") or ""),
+                decision=str(body.get("decision") or ""),
+                answers=body.get("answers"),
+                session_id=sid,
+            )
+            return {"reply": outcome.envelope, "session_id": sid,
+                    "needs_confirmation": False, "description": None,
+                    "clarification": None, "traces": [],
+                    "agent_continuation": self._continuation_payload(
+                        outcome.investigation)}
         # 默认：输入 → 理解 → 澄清 → 确认卡
         result = self.post(str(body.get("text") or ""), session_id=sid or None)
         if result.envelope is not None:  # 理解失败：会话已建，标识照样回给调用方
             return {"reply": result.envelope, "session_id": result.session_id,
                     "needs_confirmation": False, "description": None,
-                    "clarification": None, "traces": []}
+                    "clarification": None, "traces": [], "agent_continuation": None}
         clarification = _clarification_payload(result.clarification)
         if result.confirmation is None:  # 未收敛——回方向候选（clarification 的 empty 信封）
             return {"reply": result.clarification.envelope, "session_id": result.session_id,
                     "needs_confirmation": False, "description": None,
-                    "clarification": clarification, "traces": []}
+                    "clarification": clarification, "traces": [],
+                    "agent_continuation": None}
         return {"reply": result.confirmation.envelope, "session_id": result.session_id,
                 "needs_confirmation": True, "description": None,
-                "clarification": clarification, "traces": []}
+                "clarification": clarification, "traces": [],
+                "agent_continuation": None}
+
+    @staticmethod
+    def _continuation_payload(investigation: Any) -> dict[str, Any] | None:
+        """交还的可续跑载荷（[05 §10](../../../docs/技术架构-v2/05-L3-对话主入口.md) 的续跑）。
+
+        只有 **待确认 / 待用户输入** 两种终止才给；其余（含已续跑完成）返回 ``None``——
+        渲染面据此决定是否出「确认并继续 / 提交答案 / 重跑」入口。载荷只取留痕里的
+        客观字段，不含任何渲染文案。
+        """
+        report = getattr(investigation, "report", None)
+        if report is None:
+            stale = bool(getattr(investigation, "stale", False))
+            source = str(getattr(investigation, "source_run_id", "") or "")
+            if stale and source:
+                # 依据过期：没有新留痕，但仍给「重跑」入口（GWT-3 的「允许重跑」）
+                return {
+                    "agent_run_id": source, "kind": "stale", "task": "", "plan": [],
+                    "pending": None, "questions": [], "directions": [],
+                    "ask_note": str(getattr(investigation, "note", "") or ""),
+                    "stale": True,
+                }
+            return None
+        record = getattr(report, "record", None)
+        termination = getattr(record, "termination", "")
+        if termination not in ("needs_confirmation", "needs_user_input"):
+            return None
+        pending = getattr(record, "pending", None)
+        return {
+            "agent_run_id": getattr(report, "agent_run_id", ""),
+            "kind": "pending_step" if termination == "needs_confirmation" else "user_input",
+            "task": getattr(record, "task", ""),
+            "plan": [
+                {"title": step.title, "status": step.status}
+                for step in tuple(getattr(record, "plan", ()) or ())
+            ],
+            "pending": (
+                {"tool_name": pending.tool_name, "arguments": dict(pending.arguments)}
+                if pending is not None else None
+            ),
+            "questions": [
+                {
+                    "parameter": question.parameter,
+                    "prompt": question.prompt,
+                    "choices": list(question.choices),
+                    "default": question.default,
+                }
+                for question in tuple(getattr(record, "questions", ()) or ())
+            ],
+            "directions": [str(item) for item in tuple(getattr(record, "directions", ()) or ())],
+            "ask_note": getattr(record, "ask_note", "") or "",
+            "stale": bool(getattr(investigation, "stale", False)),
+        }
 
     def _analysis_traces(self, analysis: Any) -> list[dict[str, Any]]:
         """各视角推理链 → 描述（[06 §5](../../docs/技术架构-v2/06-L4-多视角推理.md) 追问接口的取值面）。

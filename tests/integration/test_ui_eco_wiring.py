@@ -113,7 +113,10 @@ def test_the_memory_export_round_trip(running, rig) -> None:
 
 def test_the_skill_export_round_trip_and_the_already_installed_refusal(running, rig) -> None:
     """`.stskill` 的导出 → 收件 → 校验 → 安装：同 id 已装着 ⇒ **显式拒**（不静默覆盖）。"""
-    descriptor = rig.m4.m1.runtime.skills.list_all()[0]
+    descriptor = next(
+        item for item in rig.m4.m1.runtime.skills.list_all()
+        if item.source == "official"
+    )
     _, exported = _call(
         running, "POST", "/api/eco/export",
         {"kind": "skill", "ref": descriptor.skill_id, "author": "本机用户"},
@@ -144,7 +147,10 @@ def test_a_shared_skill_needs_each_permission_approved(running, rig) -> None:
     """带权限声明的 `.stskill`：**未全部批准即拒安装**；逐项批准后才装得上（01 §10）。"""
     from st_agent.eco import ShareContainer
 
-    descriptor = rig.m4.m1.runtime.skills.list_all()[0].model_copy(
+    descriptor = next(
+        item for item in rig.m4.m1.runtime.skills.list_all()
+        if item.source == "official"
+    ).model_copy(
         update={"skill_id": "sk_sharedma_v1.0", "permissions": (PERMISSION,)}
     )
     container = ShareContainer.pack(

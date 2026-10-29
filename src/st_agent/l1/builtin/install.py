@@ -24,19 +24,25 @@ from typing import Any
 
 from st_agent.contracts.capability_types import Provenance
 from st_agent.contracts.registry_types import validate_permissions
+from st_agent.l1.builtin.ask_user import ASK_USER
 from st_agent.l1.builtin.data_status import DATA_STATUS
 from st_agent.l1.builtin.errors import BuiltinRegistrationError
 from st_agent.l1.builtin.local_sql import LOCAL_SQL
 from st_agent.l1.builtin.models import BuiltinPrimitive
+from st_agent.l1.builtin.plan_update import PLAN_UPDATE
 from st_agent.l1.skills.errors import SkillExistsError, SkillValidationError
 from st_agent.l1.skills.ids import skill_id_for
 
 __all__ = ["BUILTIN_PRIMITIVES", "install_builtins"]
 
-BUILTIN_PRIMITIVES: tuple[BuiltinPrimitive, ...] = (LOCAL_SQL, DATA_STATUS)
-"""内置原语种子表（当前为本地数据面两条；后续原语叶按 :class:`BuiltinPrimitive` 追加）。
+BUILTIN_PRIMITIVES: tuple[BuiltinPrimitive, ...] = (
+    LOCAL_SQL, DATA_STATUS, PLAN_UPDATE, ASK_USER,
+)
+"""内置原语种子表（本地数据面两条 + 循环控制面两条；后续原语叶按 ``BuiltinPrimitive`` 追加）。
 
 一行一条能力。权限必须逐条显式给出（见 ``models.BuiltinPrimitive.permissions``）。
+循环控制面两条（``sk_plan_update`` / ``sk_ask_user``）在循环内由 L3 拦截执行，
+登记的目的是让它们进入**同一个**工具目录（注册面＝可见面），不是第二条执行路径。
 """
 
 _SOURCE = "builtin"

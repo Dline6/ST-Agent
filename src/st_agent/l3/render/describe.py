@@ -215,6 +215,7 @@ AGENT_TERMINATION_LABELS: dict[str, str] = {
     "llm_call_limit": "达到 LLM 调用次数上界",
     "gate_absent": "未注入授权闸门（按 fail-closed 未执行）",
     "needs_confirmation": "下一步待用户确认",
+    "needs_user_input": "待用户输入",
     "denied": "下一步未获自主执行授权",
     "endpoint_unavailable": "端点未声明支持工具调用",
     "llm_failed": "LLM 调用失败",
@@ -289,6 +290,23 @@ def describe_agent_run(
                 {"tool_name": pending.name, "arguments": dict(pending.arguments)}
                 if pending is not None else None
             ),
+            "plan": [
+                {"title": step.title, "status": step.status}
+                for step in tuple(getattr(view, "plan", ()) or ())
+            ],
+            "plan_updated": bool(getattr(view, "plan_updated", False)),
+            "questions": [
+                {
+                    "parameter": question.parameter,
+                    "prompt": question.prompt,
+                    "choices": list(question.choices),
+                    "default": question.default,
+                }
+                for question in tuple(getattr(view, "questions", ()) or ())
+            ],
+            "directions": [str(item) for item in tuple(getattr(view, "directions", ()) or ())],
+            "ask_note": getattr(view, "ask_note", "") or "",
+            "resumed_from": getattr(view, "resumed_from", "") or "",
             "answer": getattr(view, "answer", "") or "",
             "llm_calls": int(getattr(view, "llm_calls", 0)),
             "max_steps": int(getattr(view, "max_steps", 0)),
@@ -305,6 +323,12 @@ def describe_agent_run(
             "rows": "data",
             "step_notes": "generated",
             "pending": "data",
+            "plan": "data",
+            "plan_updated": "data",
+            "questions": "data",
+            "directions": "generated",
+            "ask_note": "generated",
+            "resumed_from": "data",
             "answer": "generated",
             "llm_calls": "data",
             "max_steps": "data",

@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Sequence
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -47,6 +47,8 @@ __all__ = [
     "DEFAULT_WORK_CONTEXT_BUDGET",
     "RESULT_TRUNCATE_CHARS",
     "TRUNCATED_PREVIEW_CHARS",
+    "AskQuestion",
+    "PlanStep",
     "TruncatedResult",
     "WorkContext",
     "WorkStep",
@@ -55,12 +57,19 @@ __all__ = [
     "new_work_step",
 ]
 
-DEFAULT_WORK_CONTEXT_BUDGET = 4000
+DEFAULT_WORK_CONTEXT_BUDGET = 6000
 """工作上下文的默认规模预算（**字符数**近似）。
 
-取与 [`:data:`DEFAULT_CONTEXT_BUDGET <../chat/session.py>`] 同一口径（§1 未定默认值，
-4000 是既有装配件的缺省）——两处**共用口径**而**不共用装配逻辑**
-（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。取值属实现口径，可经参数覆盖。
+取与 [`:data:`DEFAULT_CONTEXT_BUDGET <../chat/session.py>`] 同一量级（§1 未定默认值）
+——两处**共用口径**而**不共用装配逻辑**（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+取值属实现口径，可经参数覆盖。
+
+2026-10-29 由 4000 提到 6000（[D-144](../../../项目管理/决策日志.md)）：出厂工具目录增至
+**14 个能力**（12 官方 Skill + `local_sql` / `data_status` + `plan_update` / `ask_user`），
+其模型可见形态实测约 **3.54k 字符**——4000 的余量不足 500，历史与记忆在出厂配置下会被
+整条舍弃，与 [05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)「近端历史与记忆
+并入工作上下文」的目标相抵。6000 留出约 2.4k 给两者；仍远低于 `investigate.context_budget`
+的 32000 上限。
 """
 
 RESULT_TRUNCATE_CHARS = 1200
@@ -159,6 +168,34 @@ def new_work_step(
     )
 
 
+class PlanStep(BaseModel):
+    """计划里的一步（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的计划原语）。
+
+    状态词与任务账本同序但**不复用**其字面量（``pending`` / ``active`` / ``done``）——
+    计划是运行期决策，不是持久化的任务状态。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    title: str = Field(min_length=1)
+    status: Literal["pending", "active", "done"] = "pending"
+
+
+class AskQuestion(BaseModel):
+    """循环内提问的一问（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的提问原语）。
+
+    与 [05 §3.2](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的澄清问项同形（一问一参、
+    取值域明确），但**不复用** ``ClarificationQuestion``：那个属派发前澄清，本型属循环交还。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    parameter: str = Field(min_length=1)
+    prompt: str = Field(min_length=1)
+    choices: tuple[str, ...] = ()
+    default: Any = None
+
+
 class WorkContext(BaseModel):
     """循环工作上下文（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)：任务 + 工具目录 + 已执行动作与结果）。
 
@@ -185,6 +222,16 @@ class WorkContext(BaseModel):
     dropped: tuple[str, ...] = ()
     """**被预算舍弃的项**（``memory:<node_id>`` / ``history:<message_id>``）——如实标注，
     不静默丢；用于空态区分「本来没有」与「有但装不下」。"""
+    plan: tuple[PlanStep, ...] = ()
+    """**当前计划**（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的计划原语；
+    空元组的含义由 ``plan_updated`` 区分「尚未给出」与「显式清空」）。"""
+    plan_updated: bool = False
+    """模型是否已给过计划更新（含清空）——**区分两态**，不把「清空」渲染成「没给过」。"""
+    plan_error: str = ""
+    """上一次计划更新**未被采用**的原因（非法形态留给模型下一轮纠正，不终止循环）。"""
+    user_inputs: dict[str, Any] = Field(default_factory=dict)
+    """**续跑时用户补充的答案**（一问一参的 ``parameter → 值``；无续跑即空）。
+    与历史 / 记忆不同，它是本次任务的新输入，故**恒保留**、不参与预算取舍。"""
     budget_chars: int = Field(ge=1)
     """本次装配的规模预算（字符数）。"""
     size_chars: int = Field(ge=0)
@@ -210,6 +257,11 @@ class WorkContext(BaseModel):
         """
         lines: list[str] = [f"任务：{self.task}"]
         lines.append("")
+        lines.extend(self._render_plan_lines())
+        lines.append("")
+        if self.user_inputs:
+            lines.append("用户补充（续跑，一问一参）：" + _json(self.user_inputs))
+            lines.append("")
         lines.extend(self._render_history_lines())
         if include_tools:
             lines.append("")
@@ -233,6 +285,22 @@ class WorkContext(BaseModel):
         lines.append("")
         lines.extend(self._render_memory_lines())
         return "\n".join(lines)
+
+    def _render_plan_lines(self) -> list[str]:
+        """计划段（三态显式：有 / 已清空 / 尚未给出；另有「上次未采用」的原因）。"""
+        out: list[str] = []
+        if self.plan_error:
+            out.append(f"上次计划更新未采用：{self.plan_error}")
+        if self.plan:
+            out.append(f"当前计划（{len(self.plan)} 步）：")
+            for index, step in enumerate(self.plan, start=1):
+                out.append(f"{index}. [{step.status}] {step.title}")
+            return out
+        if self.plan_updated:
+            out.append("当前计划：无（模型已显式清空）")
+        else:
+            out.append("当前计划：无（尚未给出计划）")
+        return out
 
     def _render_history_lines(self) -> list[str]:
         """会话历史段（**空态显式**，且区分「本来没有」与「被预算舍弃」）。"""
@@ -271,6 +339,10 @@ def assemble_work_context(
     *,
     history: Sequence[ChatMessage] = (),
     memory: Sequence[MemorySlice] = (),
+    plan: Sequence[PlanStep] = (),
+    plan_updated: bool = False,
+    plan_error: str = "",
+    user_inputs: dict[str, Any] | None = None,
     budget_chars: int = DEFAULT_WORK_CONTEXT_BUDGET,
     max_result_chars: int = RESULT_TRUNCATE_CHARS,
 ) -> ResultEnvelope:
@@ -282,6 +354,10 @@ def assemble_work_context(
     :param steps: 已执行的动作与结果（按发生顺序；逐条过截断，GWT-3 / GWT-4）
     :param history: 近端会话历史（按时间序；取自 ``assemble_context`` 的 ``messages``）
     :param memory: 记忆切片（取自 ``assemble_context`` 的 ``memory.slices``）
+    :param plan: 当前计划（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的计划原语）
+    :param plan_updated: 模型是否已给过计划更新（含清空）——区分「尚未给出」与「已清空」
+    :param plan_error: 上一次计划更新未被采用的原因（非法形态留给模型纠正）
+    :param user_inputs: 续跑时用户补充的答案（一问一参）
     :param budget_chars: 规模预算（字符数）
     :param max_result_chars: 单条结果的截断阈值（字符数）
     :returns: ``ok``（载荷为 :class:`WorkContext`）或 ``empty``（目录为空）；入参非法抛
@@ -312,6 +388,10 @@ def assemble_work_context(
         steps=tuple(_apply_truncation(step, max_result_chars) for step in ordered),
         history=_checked_history(history),
         memory=_checked_memory(memory),
+        plan=_checked_plan(plan),
+        plan_updated=bool(plan_updated),
+        plan_error=str(plan_error or ""),
+        user_inputs=dict(user_inputs or {}),
         budget_chars=budget_chars,
     )
     return ResultEnvelope.ok(
@@ -326,11 +406,16 @@ def _fit_budget(
     steps: tuple[WorkStep, ...],
     history: tuple[ChatMessage, ...],
     memory: tuple[MemorySlice, ...],
+    plan: tuple[PlanStep, ...],
+    plan_updated: bool,
+    plan_error: str,
+    user_inputs: dict[str, Any],
     budget_chars: int,
 ) -> tuple[WorkContext, int]:
     """按声明顺序取舍直至装下（或无可再舍），返回上下文与最终规模。
 
-    取舍顺序＝**记忆 → 历史（旧→新）**；步骤 / 任务 / 工具目录恒保留（[05 §10]）。
+    取舍顺序＝**记忆 → 历史（旧→新）**；步骤 / 任务 / 工具目录 / 计划 / 用户补充恒保留
+    （[05 §10]）。计划与用户补充是本次任务的结构性输入，不参与取舍。
     """
     kept_history = list(history)
     kept_memory = list(memory)
@@ -340,6 +425,8 @@ def _fit_budget(
         return WorkContext(
             task=task, tools=tools, steps=steps,
             history=tuple(kept_history), memory=tuple(kept_memory),
+            plan=plan, plan_updated=plan_updated, plan_error=plan_error,
+            user_inputs=dict(user_inputs),
             dropped=tuple(dropped), budget_chars=budget_chars, size_chars=0,
         )
 
@@ -409,6 +496,18 @@ def _checked_memory(memory: Iterable[MemorySlice]) -> tuple[MemorySlice, ...]:
                 "（切片取自 assemble_context 的 memory.slices 产出）"
             )
         out.append(item)
+    return tuple(out)
+
+
+def _checked_plan(plan: Iterable[PlanStep]) -> tuple[PlanStep, ...]:
+    """计划的形态自检（不静默跳过坏步骤——半份计划比没有计划更误导）。"""
+    out: list[PlanStep] = []
+    for step in plan:
+        if not isinstance(step, PlanStep):
+            raise AgentRuntimeValidationError(
+                f"计划的步骤须为 PlanStep，得到 {type(step).__name__}"
+            )
+        out.append(step)
     return tuple(out)
 
 
