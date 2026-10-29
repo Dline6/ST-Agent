@@ -391,6 +391,14 @@ def test_m9_builtin_data_ports_are_bound_in_the_production_root(rig):
     assert l1.skill_permissions.approved_permissions("sk_file_write") == (
         "local_write:<workspace/**>",
     )
+    # 开放网络两条原语在生产组合根可见，声明同样已落批准账本（T-AGT-015）
+    assert {"sk_web_search", "sk_web_fetch"} <= names
+    assert l1.skill_permissions.approved_permissions("sk_web_search") == (
+        "net_access:<api.search.brave.com>", "net_access:<api.tavily.com>",
+    )
+    assert l1.skill_permissions.approved_permissions("sk_web_fetch") == (
+        "net_access:<*>",
+    )
 
 
 # ───────────────────────────── 内部 ─────────────────────────────

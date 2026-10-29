@@ -38,6 +38,8 @@ DEFAULT_CAPABILITIES: tuple[tuple[str, str, str, str], ...] = (
         "数据停留在最后一次成功快照并标注过期时间，不再拉取新数据",
     ),
     ("live-fetch", "新数据抓取（公告 / 行情 / 舆情等）", "none", ""),
+    ("net-search", "联网搜索", "none", ""),
+    ("web-fetch", "网页抓取", "none", ""),
     ("remote-mcp", "远程 MCP Server", "none", ""),
     ("cloud-channel", "云端渠道投递（邮件 / IM Webhook）", "none", ""),
 )

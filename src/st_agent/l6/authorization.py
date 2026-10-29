@@ -112,6 +112,10 @@ DEFAULT_RISK_GRADING: tuple[EvolutionRiskRule, ...] = (
     EvolutionRiskRule(prefix="skill.sk_data_fetch", risk_class="collaborative-required"),
     # 必须协作——**写文件**（T-AGT-014.3 / [D-146]）：改用户工作区，逐次确认后再写。
     EvolutionRiskRule(prefix="skill.sk_file_write", risk_class="collaborative-required"),
+    # 必须协作——**开放网络**（T-AGT-015 批）：出网（搜索 / 抓取），逐次确认；
+    # 显式登记是把口径写死在清单里，不靠「未被单独列出」兜底。
+    EvolutionRiskRule(prefix="skill.sk_web_search", risk_class="collaborative-required"),
+    EvolutionRiskRule(prefix="skill.sk_web_fetch", risk_class="collaborative-required"),
     # 必须协作——[08 §5](../../../docs/技术架构-v2/08-L6-反思演进.md) 原文「Skill 参数、注意力预算、视角阵容必须协作」
     EvolutionRiskRule(prefix="skill.", risk_class="collaborative-required"),
     EvolutionRiskRule(prefix="workflow.", risk_class="collaborative-required"),

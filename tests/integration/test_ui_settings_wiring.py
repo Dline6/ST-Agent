@@ -154,7 +154,60 @@ def test_privacy_page_mixes_retention_and_audit_and_coerces_form_values(m5) -> N
         assert on["status"] == "ok" and runtime.settings.gateway.audit_enabled is True
 
 
-def test_network_panel_distinguishes_audit_off_from_no_requests(m5) -> None:
+def test_web_page_exposes_the_egress_switch_and_masks_the_search_key(m5) -> None:
+    """开放网络页：开关 / 名单 / 提供方经统一落值面生效；密钥只落凭据库、页面只出掩码。"""
+    from st_agent.l0.net.web_config import (
+        get_allowed_hosts,
+        get_egress_enabled,
+        get_search_provider,
+    )
+
+    runtime = m5.m5
+    settings = runtime.settings
+    with serve(dev=False, settings=settings) as running:
+        payload = _get(running, "/api/settings/web")
+        assert payload["panel"]["status"] == "ok"
+        entries = {e["config_id"]: e for e in payload["panel"]["data"]["slots"]["entries"]}
+        assert set(entries) == {
+            "web-egress/enabled", "web-egress/allowed-hosts", "search.provider",
+        }
+        assert entries["web-egress/enabled"]["current"] == "已关闭", "出厂默认关（D-137）"
+
+        on = _post(running, "/api/settings/apply", {
+            "config_id": "web-egress/enabled", "action": "enable",
+        })
+        assert on["status"] == "ok", on.get("reason")
+        assert on["data"]["changed"] is True and on["data"]["change_id"]
+        assert get_egress_enabled(settings.store) is True
+
+        hosts = _post(running, "/api/settings/apply", {
+            "config_id": "web-egress/allowed-hosts", "action": "set",
+            "value": "*.example.com",
+        })
+        assert hosts["status"] == "ok", hosts.get("reason")
+        assert get_allowed_hosts(settings.store) == "*.example.com"
+
+        provider = _post(running, "/api/settings/apply", {
+            "config_id": "search.provider", "action": "set", "value": "brave",
+        })
+        assert provider["status"] == "ok", provider.get("reason")
+        assert get_search_provider(settings.store) == "brave"
+
+        # 密钥经配置条目落值，但**明文只进凭据库**；页面只出掩码。
+        key = _post(running, "/api/settings/apply", {
+            "config_id": "search.key", "action": "set", "value": "sk-live-secret-123",
+        })
+        assert key["status"] == "ok", key.get("reason")
+        assert key["data"]["changed"] is True
+        after = _get(running, "/api/settings/web")
+        credential = after["credential"]
+        assert credential["status"] == "ok"
+        rows = credential["data"]["slots"]["rows"]
+        assert rows and rows[0]["credential_id"] == "search-api-key"
+        assert "sk-live-secret-123" not in json.dumps(after, ensure_ascii=False)
+
+
+
     """GWT：三态互不混同——出厂（审计默认关）走 **unavailable**，不得呈现为空表。"""
     runtime = m5.m5
     with serve(dev=False, settings=runtime.settings) as running:

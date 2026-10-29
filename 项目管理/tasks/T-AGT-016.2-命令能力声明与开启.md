@@ -41,4 +41,4 @@ verify:
 - `l0/net/capabilities.py`（`DEFAULT_CAPABILITIES`）
 
 ## 备注
-`local-exec` 与 `net-search` 是本批新增的两条出厂声明。
+`local-exec` 与 `net-search` 是本批新增的两条出厂声明；其中 `net-search` 与 `web-fetch` 已由 [`T-AGT-015`](T-AGT-015-开放网络.md) 先期登记（`l0/net/capabilities.py`），本叶只补 `local-exec` 与命令开关。
