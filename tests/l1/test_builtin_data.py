@@ -17,9 +17,10 @@ from pathlib import Path
 import pytest
 
 from st_agent.contracts.result_envelope import ResultEnvelope
+from st_agent.l0.info.docs import LocalDocSource
 from st_agent.l0.market.db import MarketDb
 from st_agent.l0.storage import Store
-from st_agent.l1.builtin import BUILTIN_PRIMITIVES, install_builtins
+from st_agent.l1.builtin import BUILTIN_PRIMITIVES, SyncPort, install_builtins
 from st_agent.l1.runner import RUN_PREFIX, SkillRunner
 from st_agent.l1.runner.models import SkillRun
 from st_agent.l1.skills import SkillRegistry
@@ -45,7 +46,14 @@ def db(store: Store) -> MarketDb:
 def runner(store: Store, db: MarketDb) -> SkillRunner:
     registry = SkillRegistry(store)
     pipeline = SkillRunner(store, registry)
-    install_builtins(registry, pipeline, context={"market": db})
+    install_builtins(
+        registry, pipeline,
+        context={
+            "market": db,
+            "docs": LocalDocSource(db, store),
+            "sync": SyncPort(),
+        },
+    )
     return pipeline
 
 
@@ -182,7 +190,14 @@ class TestLocalSql:
     def test_missing_database_is_unavailable(self, store):
         registry = SkillRegistry(store)
         pipeline = SkillRunner(store, registry)
-        install_builtins(registry, pipeline, context={"market": MarketDb(store)})
+        install_builtins(
+            registry, pipeline,
+            context={
+                "market": MarketDb(store),
+                "docs": LocalDocSource(MarketDb(store), store),
+                "sync": SyncPort(),
+            },
+        )
         out = _run(pipeline, LOCAL_SQL, {"sql": "SELECT 1"})
         assert out.envelope.status == "unavailable"
         assert "首次同步未完成" in (out.envelope.reason or "")
@@ -237,7 +252,14 @@ class TestDataStatus:
     def test_missing_database_is_unavailable(self, store):
         registry = SkillRegistry(store)
         pipeline = SkillRunner(store, registry)
-        install_builtins(registry, pipeline, context={"market": MarketDb(store)})
+        install_builtins(
+            registry, pipeline,
+            context={
+                "market": MarketDb(store),
+                "docs": LocalDocSource(MarketDb(store), store),
+                "sync": SyncPort(),
+            },
+        )
         out = _run(pipeline, DATA_STATUS)
         assert out.envelope.status == "unavailable"
         assert "首次同步未完成" in (out.envelope.reason or "")
@@ -253,7 +275,8 @@ class TestDataStatus:
 
 def test_seed_table_contains_the_data_and_control_primitives():
     assert [seed.base for seed in BUILTIN_PRIMITIVES] == [
-        "sk_local_sql", "sk_data_status", "sk_plan_update", "sk_ask_user",
+        "sk_local_sql", "sk_data_status", "sk_data_sync", "sk_data_fetch",
+        "sk_docs", "sk_plan_update", "sk_ask_user",
     ]
 
 
@@ -262,6 +285,8 @@ def test_runtime_installs_builtins_with_the_official_pack(store, db):
 
     runtime = build_l1_runtime(store, market_query=db)
     names = {entry.name for entry in runtime.skills.tool_catalog()}
-    assert {"sk_local_sql", "sk_data_status"} <= names
+    assert {
+        "sk_local_sql", "sk_data_status", "sk_data_sync", "sk_data_fetch", "sk_docs",
+    } <= names
     assert runtime.skills.get(LOCAL_SQL).source == "builtin"
     assert runtime.skills.get(DATA_STATUS).source == "builtin"

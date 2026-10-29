@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from st_agent.l0.bootstrap.dotenv import read_dotenv
+from st_agent.l0.info.docs import LocalDocSource
 from st_agent.l0.llm.boot_config import load_boot_config
 from st_agent.l0.llm.client import LlmClient
 from st_agent.l0.llm.errors import LlmNotFoundError
@@ -41,12 +42,13 @@ from st_agent.l0.llm.http_transport import (
 )
 from st_agent.l0.llm.models import ToolSpec
 from st_agent.l0.llm.registry import EndpointRegistry
+from st_agent.l0.market.db import MarketDb
 from st_agent.l0.net.capabilities import seed_default_capabilities
 from st_agent.l0.net.gateway import EgressGateway
 from st_agent.l0.secrets.errors import CredentialNotFoundError
 from st_agent.l0.secrets.vault import CredentialVault
 from st_agent.l0.storage.store import Store
-from st_agent.l1.builtin import install_builtins
+from st_agent.l1.builtin import SyncPort, install_builtins
 from st_agent.l1.mcp.lifecycle import McpHubStateMachine
 from st_agent.l1.mcp.mapping import McpSkillMapper
 from st_agent.l1.mcp.permissions import McpPermissionBook
@@ -253,6 +255,18 @@ class L1Runtime:
     决策 [D-067](../../../项目管理/决策日志.md)）。跨层消费方（L3 对话即配置）经它
     取登记项与落值；L2 侧 ``memory-policy`` 族由 app 组合根追加注入。"""
 
+    builtin_sync: SyncPort
+    """同步执行面的**后置绑定**容器（[D-145](../../../项目管理/决策日志.md)）。
+
+    ``DataSyncRunner`` 依赖 M5 的关注池回调，晚于本运行时装配，故本字段在构造时是
+    **未绑定**的空容器；`build_m5_runtime` 造好 runner 后调 :meth:`bind_data_sync`
+    绑定。未绑定期间 ``sk_data_sync`` / ``sk_data_fetch`` 显式回 ``unavailable`` 并
+    点名未接线——不臆造运行态、不做假取数。"""
+
+    def bind_data_sync(self, runner: Any) -> None:
+        """把组合根造好的 ``DataSyncRunner`` 绑进内置原语的同步执行面（幂等）。"""
+        self.builtin_sync.bind(runner)
+
     def remove_mcp_server(self, server_id: str, *, trace_id: str | None = None) -> None:
         """移除一台 MCP Server（03 §5.2 的完整序列）。
 
@@ -431,7 +445,15 @@ def build_l1_runtime(
     )
     workflows = WorkflowStore(store, skills)
     install_official_pack(skills, runner, market_query=market_query)
-    install_builtins(skills, runner, context={"market": market_query})
+    # 内置原语的三个执行面：本地只读查询（market）、文档取数（L0 LocalDocSource）与
+    # 同步执行（DataSyncRunner 由组合根后置造出——M5 的 build_m5_runtime 调
+    # `L1Runtime.bind_data_sync` 绑定；未绑定时原语显式 unavailable）。
+    builtin_sync = SyncPort()
+    docs_source = LocalDocSource(MarketDb(store), store)
+    install_builtins(
+        skills, runner,
+        context={"market": market_query, "docs": docs_source, "sync": builtin_sync},
+    )
 
     machine: McpHubStateMachine | None = None
     mapper: McpSkillMapper | None = None
@@ -499,6 +521,7 @@ def build_l1_runtime(
         skill_permissions=skill_permissions,
         scheduler=scheduler,
         config_registry=config_registry,
+        builtin_sync=builtin_sync,
     )
 
 

@@ -45,6 +45,7 @@ FLOW_ID = "wf_m0_gate_v1.0"
 OFFICIAL_BASE_COUNT = 12
 BUILTIN_BASES = (
     "sk_data_status", "sk_local_sql", "sk_plan_update", "sk_ask_user",
+    "sk_data_sync", "sk_data_fetch", "sk_docs",
 )
 BASE_COUNT = OFFICIAL_BASE_COUNT + len(BUILTIN_BASES)
 

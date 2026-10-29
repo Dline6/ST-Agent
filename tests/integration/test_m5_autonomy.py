@@ -374,8 +374,18 @@ class TestGwt7ProductionEntry:
         assert "未声明支持工具调用" in outcome.envelope.reason
 
 
-# ───────────────────────────── 内部 ─────────────────────────────
+def test_m9_builtin_data_ports_are_bound_in_the_production_root(rig):
+    """M9 取数原语的执行面：生产组合根把**同一个** DataSyncRunner 绑进 L1。"""
+    runtime = rig.m5
+    l1 = runtime.m1.runtime
 
+    assert l1.builtin_sync.bound is True
+    assert l1.builtin_sync.get() is runtime.data_sync
+    names = {entry.name for entry in l1.skills.tool_catalog()}
+    assert {"sk_data_sync", "sk_data_fetch", "sk_docs"} <= names
+
+
+# ───────────────────────────── 内部 ─────────────────────────────
 
 def _imports_of(path: Path):
     """产出 ``(模块名, 行号)``（同 `tests/test_layering.py` 的口径）。"""
