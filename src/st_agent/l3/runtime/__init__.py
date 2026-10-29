@@ -14,6 +14,7 @@
 | [`gate`](gate.py) | **逐步授权闸门**（动作标识派生 + 判据经鸭子端口取用 + fail-closed）——[`T-AGT-005.2`](../../../项目管理/tasks/T-AGT-005.2-逐步闸门与终止交还.md) |
 | [`report`](report.py) | **产出装配 + 留痕 + 失败与降级 + 终止交还**——[`T-AGT-004.3`](../../../项目管理/tasks/T-AGT-004.3-产出接入、留痕与失败语义.md) · [`T-AGT-005.2`](../../../项目管理/tasks/T-AGT-005.2-逐步闸门与终止交还.md) |
 | [`bounds`](bounds.py) | **双上界的 01 §7 配置项**（owner + 条目）——[`T-AGT-007`](../../../项目管理/tasks/T-AGT-007-循环上界开放为配置项.md) |
+| [`continuation`](continuation.py) | **交还的一键续跑**（前序证据重建 + 过期判定 + 重跑）——[`T-AGT-011.3`](../../../项目管理/tasks/T-AGT-011.3-待确认与待输入步骤的一键续跑.md) |
 | [`registry_adapter`](registry_adapter.py) | **``investigate.*`` 族的门面适配器**（组合根注入 L1 门面）——[`T-AGT-007`](../../../项目管理/tasks/T-AGT-007-循环上界开放为配置项.md) |
 
 **本包不接线**：把循环接到 `investigate` 意图上是 [`T-AGT-006`](../../../项目管理/tasks/T-AGT-006-第七类意图investigate与派发去向接线.md)
@@ -37,12 +38,22 @@ from st_agent.l3.runtime.context import (
     DEFAULT_WORK_CONTEXT_BUDGET,
     RESULT_TRUNCATE_CHARS,
     TRUNCATED_PREVIEW_CHARS,
+    AskQuestion,
+    PlanStep,
     TruncatedResult,
     WorkContext,
     WorkStep,
     assemble_work_context,
     log_ref_of,
     new_work_step,
+)
+from st_agent.l3.runtime.continuation import (
+    CONTINUATION_TTL,
+    RESUMABLE_TERMINATIONS,
+    ResumeDecision,
+    ResumeOutcome,
+    load_continuation,
+    resume_agent_run,
 )
 from st_agent.l3.runtime.gate import (
     AGENT_DECISION_METHOD,
@@ -52,10 +63,12 @@ from st_agent.l3.runtime.gate import (
 )
 from st_agent.l3.runtime.loop import (
     AGENT_GATE_METHOD,
+    ASK_USER_TOOL,
     BOUND_REASONS,
     DEFAULT_MAX_LLM_CALLS,
     DEFAULT_MAX_STEPS,
     GATE_VERDICTS,
+    PLAN_UPDATE_TOOL,
     GateDecision,
     GateVerdict,
     LoopOutcome,
@@ -72,6 +85,7 @@ from st_agent.l3.runtime.protocol import (
 from st_agent.l3.runtime.report import (
     AGENT_RUN_PREFIX,
     AGENT_UNAVAILABLE_NOTICE,
+    AgentPendingStep,
     AgentRunRecord,
     AgentRunReport,
     AgentRunStepRef,
@@ -89,10 +103,12 @@ __all__ = [
     "AGENT_GATE_METHOD",
     "AGENT_RUN_PREFIX",
     "AGENT_UNAVAILABLE_NOTICE",
+    "ASK_USER_TOOL",
     "BOUND_REASONS",
     "CATALOG_EMPTY_REASON",
     "CONTEXT_BUDGET_CEILING",
     "CONTEXT_BUDGET_CONFIG_ID",
+    "CONTINUATION_TTL",
     "DEFAULT_MAX_LLM_CALLS",
     "DEFAULT_MAX_STEPS",
     "DEFAULT_TURN_INITIATOR",
@@ -104,19 +120,26 @@ __all__ = [
     "MAX_LLM_CALLS_CONFIG_ID",
     "MAX_STEPS_CEILING",
     "MAX_STEPS_CONFIG_ID",
+    "PLAN_UPDATE_TOOL",
     "RESULT_TRUNCATE_CHARS",
+    "RESUMABLE_TERMINATIONS",
     "SKILL_ACTION_PREFIX",
     "TRUNCATED_PREVIEW_CHARS",
     "ActionGate",
+    "AgentPendingStep",
     "AgentRunRecord",
     "AgentRunReport",
     "AgentRunStepRef",
+    "AskQuestion",
     "GateDecision",
     "GateVerdict",
     "InvestigateFamily",
     "LoopBounds",
     "LoopOutcome",
     "NativeToolCallProtocol",
+    "PlanStep",
+    "ResumeDecision",
+    "ResumeOutcome",
     "TerminationReason",
     "ToolCallProtocol",
     "TruncatedResult",
@@ -130,10 +153,12 @@ __all__ = [
     "conclude_agent_run",
     "investigate_family",
     "load_agent_run",
+    "load_continuation",
     "log_ref_of",
     "loop_bounds_config_entries",
     "new_agent_run_id",
     "new_work_step",
     "record_agent_run",
+    "resume_agent_run",
     "run_agent_loop",
 ]

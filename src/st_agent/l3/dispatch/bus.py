@@ -69,6 +69,7 @@ __all__ = [
     "DISPATCH_PURPOSE",
     "INVESTIGATE_ABSENT_REASON",
     "LLM_DEGRADED_NOTICE",
+    "RESUME_ABSENT_REASON",
     "ROUTE_BY_INTENT",
     "ROUTE_SPECS",
     "TRAIN_ABSENT_REASON",
@@ -93,9 +94,16 @@ INVESTIGATE_ABSENT_REASON = (
 """``investigate`` 去向的缺省 fail-closed 原因。
 
 与 :data:`ANALYZE_ABSENT_REASON` / :data:`TRAIN_ABSENT_REASON` **同口径**（未注入即
-`unavailable`、不伪造执行），差别在**点名装配归属方**——该去向**已接入**（`wired=True`，
-`owner=None` 同其余六类），缺的只是组合根里的**循环装配**（[05 §4](../../../../docs/技术架构-v2/05-L3-对话主入口.md)：
-「循环的装配归 M5 集成关卡」），故把归属写进文案而非 `owner` 字段。"""
+`unavailable`、不伪造执行），差别在**点名装配归属方**——该去向**已接入**
+（`wired=True`，`owner=None` 同其余六类），缺的只是组合根里的**循环装配**
+（[05 §4](../../../../docs/技术架构-v2/05-L3-对话主入口.md)：「循环的装配归 M5 集成关卡」），
+故把归属写进文案而非 `owner` 字段。"""
+
+RESUME_ABSENT_REASON = (
+    "注入的自主查证循环端口未实现续跑（resume），无法接回待确认 / 待输入的交还"
+    "（05 §10；续跑端口的装配归属 T-AGT-011.3）"
+)
+"""续跑端口的缺省 fail-closed 原因（鸭子端口：有 ``resume`` 即用，无则显式点名）。"""
 
 LLM_DEGRADED_NOTICE = (
     "云端 LLM 端点暂不可用；可改用本地推理模式（能力受限），或稍后重试。"
@@ -686,6 +694,53 @@ class DispatchBus:
             envelope=envelope, trace_id=chain.trace_id.value,
             intent=confirmation.intent, route=confirmation.intent,
             wired=spec.wired, investigation=payload, trace=chain,
+        )
+
+    def resume(
+        self,
+        agent_run_id: str,
+        *,
+        decision: str,
+        answers: Mapping[str, Any] | None = None,
+        now: datetime | None = None,
+        session_id: str | None = None,
+    ) -> DispatchOutcome:
+        """接回一次「待确认 / 待用户输入」的交还（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的续跑）。
+
+        端口的 ``resume`` 是**鸭子面**：注入的循环端口实现了它就转过去，未实现即
+        ``unavailable`` + 点名归属（`T-AGT-011.3`），**不伪造续跑**；端口返回的载荷
+        只核其 ``envelope`` 为 ``ResultEnvelope``（形状不合即 ``dependency_failed``），
+        其余字段原样承载给渲染与后续轮次。链为**空链**——续跑的新动作步由 L1 追加。
+        """
+        moment = now if now is not None else _now()
+        session = _session_id_or_none(session_id)
+        spec = ROUTE_BY_INTENT["investigate"]
+        chain = Trace(trace_id=TraceId.generate())
+        resume = getattr(self._investigations, "resume", None) if self._investigations else None
+        if resume is None:
+            return self._outcome(
+                ResultEnvelope.unavailable(RESUME_ABSENT_REASON, last_updated_at=moment),
+                chain, spec,
+            )
+        port_kwargs: dict[str, Any] = {
+            "decision": decision, "answers": answers, "now": moment,
+        }
+        if session is not None:
+            port_kwargs["session_id"] = session
+        payload = resume(str(agent_run_id or ""), **port_kwargs)
+        envelope = getattr(payload, "envelope", None)
+        if not isinstance(envelope, ResultEnvelope):
+            return self._outcome(
+                ResultEnvelope.dependency_failed(
+                    "循环续跑端口返回非法结构（须含 envelope: ResultEnvelope）："
+                    f"{type(payload).__name__}"
+                ),
+                chain, spec,
+            )
+        return DispatchOutcome(
+            envelope=envelope, trace_id=chain.trace_id.value,
+            intent="investigate", route="investigate", wired=spec.wired,
+            investigation=payload, session_id=session, trace=chain,
         )
 
     def _pending(self, spec: RouteSpec, moment: datetime) -> DispatchOutcome:

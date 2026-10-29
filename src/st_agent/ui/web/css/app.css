@@ -840,6 +840,12 @@ body {
 .chat__directions { margin: var(--space-1) 0; padding-left: var(--space-5); }
 .chat__direction { margin: var(--space-1) 0; }
 
+.chat__continuation { margin: var(--space-2) 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-surface); }
+.chat__continuation-title { margin: var(--space-1) 0; color: var(--fg-muted); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
+.chat__continuation-sub { margin: var(--space-2) 0 var(--space-1); font-weight: 600; }
+.chat__plan { margin: var(--space-1) 0; padding-left: var(--space-5); }
+.chat__plan-step { margin: var(--space-1) 0; }
+
 .chat__confirm { margin: var(--space-2) 0; padding: var(--space-2) var(--space-3); border: 1px solid var(--line); border-radius: var(--radius-surface); }
 .chat__confirm-title { margin: var(--space-1) 0 var(--space-1); color: var(--fg-muted); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
 .chat__confirm-items { margin: 0 0 var(--space-2); padding-left: var(--space-5); }

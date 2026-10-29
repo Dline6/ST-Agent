@@ -314,6 +314,7 @@ NO_STEP_STATUS = {
     "unknown_tool": "failed",
     "llm_failed": "failed",
     "needs_confirmation": "empty",
+    "needs_user_input": "ok",
     "denied": "empty",
     "step_limit": "empty",
     "llm_call_limit": "empty",
@@ -324,6 +325,7 @@ WITH_STEP_STATUS = {
     "step_limit": "ok",
     "llm_call_limit": "ok",
     "needs_confirmation": "ok",
+    "needs_user_input": "ok",
     "denied": "ok",
     "unknown_tool": "ok",
     "catalog_empty": "ok",
@@ -341,7 +343,8 @@ def test_termination_literal_is_fully_mapped():
     assert set(AGENT_TERMINATION_LABELS) == reasons      # 描述件的标签表同样穷尽
     assert reasons == {
         "finished", "step_limit", "llm_call_limit", "gate_absent", "needs_confirmation",
-        "denied", "endpoint_unavailable", "llm_failed", "unknown_tool", "catalog_empty",
+        "needs_user_input", "denied", "endpoint_unavailable", "llm_failed", "unknown_tool",
+        "catalog_empty",
     }
 
 

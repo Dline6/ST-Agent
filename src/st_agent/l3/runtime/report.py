@@ -38,11 +38,13 @@ from st_agent.contracts.identifiers import AgentRunId
 from st_agent.contracts.result_envelope import EvidenceRef, ResultEnvelope
 from st_agent.l3.errors import AgentRunNotFoundError, AgentRuntimeValidationError
 from st_agent.l3.render.describe import describe_agent_run
+from st_agent.l3.runtime.context import AskQuestion, PlanStep
 from st_agent.l3.runtime.loop import LoopOutcome, TerminationReason
 
 __all__ = [
     "AGENT_RUN_PREFIX",
     "AGENT_UNAVAILABLE_NOTICE",
+    "AgentPendingStep",
     "AgentRunRecord",
     "AgentRunReport",
     "AgentRunStepRef",
@@ -98,6 +100,19 @@ class AgentRunStepRef(BaseModel):
     log_ref: str = Field(min_length=1)
 
 
+class AgentPendingStep(BaseModel):
+    """被闸门拦下、**未执行**的那一步（续跑据此重放）。
+
+    只记模型给出的工具名与参数——执行目标（``skill_id``）在续跑时按**当时的工具目录**
+    重新解析，故能力升版后仍取到当下的版本，不把旧版本号冻进留痕。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    tool_name: str = Field(min_length=1)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
 class AgentRunRecord(BaseModel):
     """一次循环的留痕（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)：步数 / 终止原因 / 上界）。
 
@@ -121,6 +136,22 @@ class AgentRunRecord(BaseModel):
     at_bound: bool = False
     """是否因达到上界而终止（[D-090](../../../项目管理/决策日志.md) ⑥ 的如实标注）。"""
     steps: tuple[AgentRunStepRef, ...] = ()
+    plan: tuple[PlanStep, ...] = ()
+    """循环结束时的计划（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的计划原语）。
+    计划是**决策**，不产 Trace 步 / ``skill_run``（[01 §4](../../../../docs/技术架构-v2/01-平台共享契约.md)），
+    故在此留痕。"""
+    plan_updated: bool = False
+    """模型是否给过计划更新（含清空）——区分「尚未给出」与「已显式清空」。"""
+    pending: AgentPendingStep | None = None
+    """被闸门拦下、未执行的那一步（``needs_confirmation`` / ``denied``）；续跑据此重放。"""
+    questions: tuple[AskQuestion, ...] = ()
+    """交还的结构化问项（``needs_user_input``）。"""
+    directions: tuple[str, ...] = ()
+    """交还时给的方向候选（问项超预算 / 无法收敛时显式给出，不强行猜）。"""
+    ask_note: str = ""
+    """提问交还的说明（如问项超预算被截断的显式记录）。"""
+    resumed_from: str = ""
+    """本次循环承接的旧 ``agent_run_id``（续跑时非空；空即独立运行）。"""
     llm_calls: int = Field(default=0, ge=0)
     max_steps: int = Field(ge=1)
     """本次生效的**步数上界**（取值可注入，故记实际生效值而非缺省值）。"""
@@ -161,10 +192,12 @@ def _now() -> datetime:
 
 def record_agent_run(
     store: Any, outcome: LoopOutcome, *, agent_run_id: str, now: datetime | None = None,
+    resumed_from: str = "",
 ) -> AgentRunRecord:
     """把一次循环落成留痕（``execution_log`` 分区；只写不读）。
 
     :param agent_run_id: 本次循环的标识（由 :func:`new_agent_run_id` 或调用方铸）
+    :param resumed_from: 续跑时指向被承接的旧 ``agent_run_id``（独立运行留空）
     """
     if not isinstance(agent_run_id, str) or not agent_run_id.strip():
         raise AgentRuntimeValidationError("留痕需要 agent_run_id（不得为空）")
@@ -187,6 +220,19 @@ def record_agent_run(
             )
             for step in outcome.steps
         ),
+        plan=tuple(outcome.plan),
+        plan_updated=outcome.plan_updated,
+        pending=(
+            AgentPendingStep(
+                tool_name=outcome.pending.name,
+                arguments=dict(outcome.pending.arguments),
+            )
+            if outcome.pending is not None else None
+        ),
+        questions=tuple(outcome.questions),
+        directions=tuple(outcome.directions),
+        ask_note=outcome.ask_note,
+        resumed_from=str(resumed_from or ""),
         llm_calls=outcome.llm_calls,
         max_steps=outcome.max_steps,
         max_llm_calls=outcome.max_llm_calls,
@@ -222,6 +268,7 @@ def build_agent_output(
     | 终止原因 | 产出 |
     | --- | --- |
     | ``finished`` | ``ok``（证据包；无步亦可——模型直接作答是合法结果） |
+    | ``needs_user_input`` | ``ok``（结构化问项；零步也照出——问项本身就是交付物） |
     | ``step_limit`` / ``llm_call_limit`` / ``needs_confirmation`` / ``denied`` | 有步 → ``ok`` + 终止标注；无步 → ``empty`` + 原因（后两者无步时按 :func:`_handback_reason` **显式交还**） |
     | ``unknown_tool`` / ``gate_absent`` | 有步 → ``ok``；无步 → ``failed`` + 留痕指针 |
     | ``endpoint_unavailable`` | ``unavailable`` + 中性降级告知（fail-closed，GWT-6） |
@@ -238,7 +285,7 @@ def build_agent_output(
     log_ref = agent_log_ref_of(agent_run_id)
     if outcome.termination == "llm_failed" and outcome.failure is not None:
         return outcome.failure
-    if not outcome.steps and not outcome.finished:
+    if not outcome.steps and not outcome.finished and outcome.termination != "needs_user_input":
         return _without_steps(outcome, log_ref, moment)
     description = describe_agent_run(outcome, agent_run_id=agent_run_id, now=now)
     if description.status != "ok":
@@ -250,6 +297,7 @@ def build_agent_output(
 
 def conclude_agent_run(
     store: Any, outcome: LoopOutcome, *, now: datetime | None = None,
+    resumed_from: str = "",
 ) -> AgentRunReport:
     """收口一次循环：铸标识 → 落留痕 → 装产出（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
 
@@ -257,7 +305,9 @@ def conclude_agent_run(
     （「指针指向真实存在的记录」不靠事后补写）。
     """
     agent_run_id = new_agent_run_id()
-    record = record_agent_run(store, outcome, agent_run_id=agent_run_id, now=now)
+    record = record_agent_run(
+        store, outcome, agent_run_id=agent_run_id, now=now, resumed_from=resumed_from,
+    )
     envelope = build_agent_output(outcome, agent_run_id=agent_run_id, now=now)
     return AgentRunReport(agent_run_id=agent_run_id, record=record, envelope=envelope)
 

@@ -24,6 +24,12 @@ def _chat_reply_text(payload: dict[str, Any]) -> str:
     """
     if payload.get("needs_confirmation"):
         return "意图确认卡"
+    continuation = payload.get("agent_continuation")
+    if isinstance(continuation, dict):
+        if continuation.get("kind") == "user_input":
+            count = len(continuation.get("questions") or [])
+            return f"查证待用户输入（{count} 问）"
+        return "查证待确认（可一键续跑）"
     clarification = payload.get("clarification")
     if isinstance(clarification, dict):
         questions = clarification.get("questions")
@@ -88,6 +94,7 @@ class ChatSurface(SurfaceBase):
         payload["session_id"] = result.get("session_id")
         payload["needs_confirmation"] = bool(result.get("needs_confirmation"))
         payload["clarification"] = result.get("clarification")
+        payload["agent_continuation"] = result.get("agent_continuation")
         description = result.get("description")
         if description is not None:
             described = envelope_payload(ResultEnvelope.ok(description))

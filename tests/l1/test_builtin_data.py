@@ -251,8 +251,10 @@ class TestDataStatus:
 # ───────────────────────── 安装面 ─────────────────────────
 
 
-def test_seed_table_contains_the_two_data_primitives():
-    assert [seed.base for seed in BUILTIN_PRIMITIVES] == ["sk_local_sql", "sk_data_status"]
+def test_seed_table_contains_the_data_and_control_primitives():
+    assert [seed.base for seed in BUILTIN_PRIMITIVES] == [
+        "sk_local_sql", "sk_data_status", "sk_plan_update", "sk_ask_user",
+    ]
 
 
 def test_runtime_installs_builtins_with_the_official_pack(store, db):

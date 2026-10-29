@@ -210,6 +210,34 @@ async function dispatch(body) {
   }
 }
 
+/** 续跑：与发送 / 派发同一套等待与失败口径；重试沿用同一续跑体。 */
+async function resume(cont, body) {
+  if (state.sending || !cont || !cont.agent_run_id) return;
+  state.sending = true;
+  const pending = { role: 'agent', pending: true, note: '正在续跑…' };
+  state.messages.push(pending);
+  notify();
+  const request = {
+    action: 'resume',
+    agent_run_id: cont.agent_run_id,
+    session_id: state.sessionId,
+    ...body,
+  };
+  try {
+    const payload = await chatRequest(request);
+    adoptSession(payload);
+    replaceMessage(pending, { role: 'agent', payload });
+  } catch (error) {
+    replaceMessage(pending, {
+      role: 'agent', failed: true, reason: error.message,
+      retryContinuation: { cont, body },
+    });
+  } finally {
+    state.sending = false;
+    notify();
+  }
+}
+
 function retryFailed(message) {
   const index = state.messages.indexOf(message);
   if (index >= 0) state.messages.splice(index, 1);
@@ -217,6 +245,10 @@ function retryFailed(message) {
     const previous = state.messages[index - 1];
     if (previous && previous.role === 'user') state.messages.splice(index - 1, 1);
     send(message.retryText);
+    return;
+  }
+  if (message.retryContinuation) {
+    resume(message.retryContinuation.cont, message.retryContinuation.body);
     return;
   }
   if (message.retryBody) {
@@ -275,7 +307,113 @@ function agentTurn(payload) {
   if (payload.clarification) node.append(clarificationNode(payload.clarification));
   if (payload.needs_confirmation) node.append(confirmationNode(payload.data, node));
   if (payload.description) node.append(descriptionNode(payload.description, payload.traces));
+  if (payload.agent_continuation) {
+    node.append(continuationNode(payload.agent_continuation));
+  }
   return node;
+}
+
+/** 查证交还的续跑块（[05 §10]：待确认 / 待用户输入 → 一键续跑）。 */
+function continuationNode(cont) {
+  const box = el('div', 'chat__continuation');
+  const title = cont.stale
+    ? '查证续跑依据已过期'
+    : cont.kind === 'user_input'
+      ? '查证待用户输入（可一键续跑）'
+      : '查证待确认（可一键续跑）';
+  box.append(el('p', 'chat__continuation-title', title));
+  if (cont.stale) {
+    box.append(el('p', 'state state--delayed',
+      '续跑依据已过期：旧证据可能不再代表当前状态，可选择重跑。'));
+  }
+  if (Array.isArray(cont.plan) && cont.plan.length) {
+    box.append(el('p', 'chat__continuation-sub', '当前计划'));
+    const plan = el('ol', 'chat__plan');
+    for (const step of cont.plan) {
+      plan.append(el('li', 'chat__plan-step', `[${step.status}] ${step.title}`));
+    }
+    box.append(plan);
+  }
+  if (cont.ask_note) box.append(el('p', 'meta', cont.ask_note));
+  if (cont.kind === 'pending_step' && cont.pending) {
+    box.append(el('p', 'chat__continuation-sub',
+      `待执行：${cont.pending.tool_name}`));
+    const pre = el('pre', 'payload', JSON.stringify(cont.pending.arguments || {}, null, 2));
+    box.append(pre);
+  }
+  if (cont.kind === 'user_input') {
+    const questions = Array.isArray(cont.questions) ? cont.questions : [];
+    for (const question of questions) {
+      const row = el('label', 'chat__question');
+      row.dataset.name = question.parameter;
+      row.append(el('span', 'chat__question-prompt', question.prompt));
+      if (Array.isArray(question.choices) && question.choices.length) {
+        const select = document.createElement('select');
+        select.className = 'chat__answer';
+        const blank = document.createElement('option');
+        blank.value = '';
+        blank.textContent = '（未选择）';
+        select.append(blank);
+        for (const choice of question.choices) {
+          const option = document.createElement('option');
+          option.value = String(choice);
+          option.textContent = String(choice);
+          select.append(option);
+        }
+        row.append(select);
+      } else {
+        const input = el('input', 'chat__answer');
+        input.type = 'text';
+        input.setAttribute('placeholder',
+          question.default === null || question.default === undefined
+            ? '留空即跳过'
+            : `留空即跳过（默认 ${question.default}）`);
+        row.append(input);
+      }
+      box.append(row);
+    }
+    const directions = Array.isArray(cont.directions) ? cont.directions : [];
+    if (directions.length) {
+      box.append(el('p', 'chat__continuation-sub', '方向候选（不代为选择）'));
+      const list = el('ul', 'chat__directions');
+      for (const direction of directions) {
+        list.append(el('li', 'chat__direction', String(direction)));
+      }
+      box.append(list);
+    }
+  }
+
+  const bar = el('div', 'chat__actions');
+  if (!cont.stale) {
+    if (cont.kind === 'pending_step') {
+      const approve = el('button', 'chat__action', '确认并继续');
+      approve.type = 'button';
+      approve.addEventListener('click', () => resume(cont, { decision: 'approve' }));
+      bar.append(approve);
+    } else {
+      const submit = el('button', 'chat__action', '提交答案并继续');
+      submit.type = 'button';
+      submit.addEventListener('click', () => {
+        const answers = {};
+        for (const row of box.querySelectorAll('.chat__question')) {
+          const value = row.querySelector('.chat__answer').value.trim();
+          if (value) answers[row.dataset.name] = value;
+        }
+        resume(cont, { decision: 'answer', answers });
+      });
+      bar.append(submit);
+    }
+  }
+  const rerun = el('button', 'chat__action', '重跑');
+  rerun.type = 'button';
+  rerun.addEventListener('click', () => resume(cont, { decision: 'rerun' }));
+  bar.append(rerun);
+  const cancel = el('button', 'chat__action', '放弃续跑');
+  cancel.type = 'button';
+  cancel.addEventListener('click', () => resume(cont, { decision: 'cancel' }));
+  bar.append(cancel);
+  box.append(bar);
+  return box;
 }
 
 /** 澄清追问块（≤3 问、每问可跳过）——问句取自后端 `ClarificationQuestion`。 */
