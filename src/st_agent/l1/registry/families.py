@@ -41,6 +41,29 @@ from st_agent.l0.net.audit_config import (
     net_audit_config_entries,
     set_audit_policy,
 )
+from st_agent.l0.net.web_config import (
+    ALLOWED_HOSTS_CONFIG_ID,
+    EGRESS_ENABLED_CONFIG_ID,
+    KEY_CONFIG_ID,
+    PROVIDER_CONFIG_ID,
+    SEARCH_CREDENTIAL_ID,
+    SEARCH_PROVIDERS,
+    get_allowed_hosts,
+    get_egress_enabled,
+    get_search_provider,
+    set_allowed_hosts,
+    set_egress_enabled,
+    set_search_provider,
+    validate_host_patterns,
+    web_config_entries,
+)
+from st_agent.l0.secrets import CredentialVault
+from st_agent.l0.secrets.errors import (
+    CredentialError,
+    CredentialExistsError,
+    CredentialNotFoundError,
+)
+from st_agent.l0.storage.errors import StorageSecretsLockedError
 from st_agent.l1.mcp.lifecycle import (
     INTERVAL_CONFIG_ID,
     MAX_RETRIES_CONFIG_ID,
@@ -58,6 +81,8 @@ __all__ = [
     "ProviderHostFamily",
     "RetentionFamily",
     "SchedulerPolicyFamily",
+    "SearchFamily",
+    "WebEgressFamily",
 ]
 
 _RETENTION_FIELDS: dict[str, str] = {
@@ -406,3 +431,191 @@ def _source_of(config_id: str, *, strict: bool = True) -> str | None:
             raise RegistryValidationError(f"未注册的数据源开关条目：{config_id!r}")
         return None
     return config_id[len(SOURCE_SWITCH_PREFIX):]
+
+
+class SearchFamily:
+    """联网搜索的两条 L0 条目（``search.provider`` / ``search.key``；T-AGT-015.1）。
+
+    ``search.provider`` 落 ``config`` 分区；``search.key`` 的**明文只落加密凭据库**
+    （``secrets`` 分区，标识 :data:`SEARCH_CREDENTIAL_ID`），本族只向门面暴露
+    「已配置 / 未配置」状态与掩码视图。配置变更由本族补落 ``ChangeRecord``
+    （前缀 ``search-change/``），与 ``net-audit`` 同款。
+
+    :param store: ``Store`` 句柄
+    :param vault: ``CredentialVault``；缺省 ``None`` 时密钥条目不可落值（显式拒）
+    :param now: 取时函数（测试注入固定时钟；缺省本机当前时刻）
+    """
+
+    config_prefix = "search."
+    scope: ConfigScope = "global"
+    change_prefix = "search-change/"
+
+    def __init__(self, store, *, vault: CredentialVault | None = None,
+                 now: Callable[[], datetime] | None = None) -> None:
+        self._store = store
+        self._vault = vault
+        self._now = _system_now if now is None else now
+
+    def entries(self) -> tuple[ConfigEntry, ...]:
+        configured = "已配置" if self._key_configured() else ""
+        defaults = {
+            PROVIDER_CONFIG_ID: get_search_provider(self._store),
+            KEY_CONFIG_ID: configured,
+        }
+        return tuple(
+            entry.model_copy(update={"default": defaults[entry.config_id]})
+            for entry in web_config_entries()
+            if entry.config_id in defaults
+        )
+
+    def entry(self, config_id: str) -> ConfigEntry | None:
+        for entry in self.entries():
+            if entry.config_id == config_id:
+                return entry
+        return None
+
+    def apply(
+        self, config_id: str, value: object, *, trace_id: str | None = None
+    ) -> ChangeRecord | None:
+        if config_id == PROVIDER_CONFIG_ID:
+            if not isinstance(value, str) or value not in ("", *SEARCH_PROVIDERS):
+                raise RegistryValidationError(
+                    f"{config_id} 取值须为 {('', *SEARCH_PROVIDERS)} 之一：{value!r}"
+                )
+            old = get_search_provider(self._store)
+            if old == value:
+                return None
+            set_search_provider(self._store, value)
+            return self._record(config_id, old, value, trace_id)
+
+        if config_id == KEY_CONFIG_ID:
+            if not isinstance(value, str) or not value.strip():
+                raise RegistryValidationError("搜索密钥须为非空字符串")
+            if len(value) > 8192:
+                raise RegistryValidationError("搜索密钥过长（上限 8192 字符）")
+            if self._vault is None:
+                raise RegistryValidationError(
+                    "搜索密钥需要凭据库句柄（组合根未注入 CredentialVault）"
+                )
+            existed = self._key_configured()
+            try:
+                if existed:
+                    self._vault.rotate(SEARCH_CREDENTIAL_ID, value)
+                else:
+                    self._vault.add(SEARCH_CREDENTIAL_ID, "search_api_key", value)
+            except CredentialExistsError:
+                self._vault.rotate(SEARCH_CREDENTIAL_ID, value)
+            except (StorageSecretsLockedError, CredentialError) as exc:
+                raise RegistryValidationError(
+                    f"搜索密钥写入失败（凭据分区未解锁或凭据库不可用）：{exc}"
+                ) from exc
+            # 明文不进 ChangeRecord：只记状态变化。
+            return self._record(
+                config_id, "已配置" if existed else "未配置", "已配置", trace_id
+            )
+
+        raise RegistryValidationError(f"{config_id!r} 不属本族（search.provider / search.key）")
+
+    def _key_configured(self) -> bool:
+        if self._vault is None:
+            return False
+        try:
+            self._vault.get_view(SEARCH_CREDENTIAL_ID)
+        except (CredentialError, StorageSecretsLockedError):
+            return False
+        return True
+
+    def _record(
+        self, config_id: str, old: object, new: object, trace_id: str | None
+    ) -> ChangeRecord:
+        change = ChangeRecord(
+            change_id=new_change_id(), config_id=config_id,
+            old_value=old, new_value=new, applied_at=self._now().isoformat(),
+            trace_ref=trace_id,
+        )
+        self._store.put(
+            CHANGE_PARTITION, f"{self.change_prefix}{change.change_id}.json",
+            change.model_dump_json().encode("utf-8"),
+        )
+        return change
+
+
+class WebEgressFamily:
+    """开放网络开关与域名名单（``web-egress/*``；T-AGT-015.3）。
+
+    两条均为 L0 owner 的标量条目：开关落 ``web-egress/enabled.json``，名单落
+    ``web-egress/allowed-hosts.json``；变更由本族补落 ``ChangeRecord``（前缀
+    ``web-egress-change/``）。关闭态与名单拦截的**消费方**是两条原语，它们在
+    每次调用时现读，故落值即对下一次调用生效。
+
+    :param store: ``Store`` 句柄
+    :param now: 取时函数（测试注入固定时钟；缺省本机当前时刻）
+    """
+
+    config_prefix = "web-egress/"
+    scope: ConfigScope = "global"
+    change_prefix = "web-egress-change/"
+
+    def __init__(self, store, *, now: Callable[[], datetime] | None = None) -> None:
+        self._store = store
+        self._now = _system_now if now is None else now
+
+    def entries(self) -> tuple[ConfigEntry, ...]:
+        defaults = {
+            EGRESS_ENABLED_CONFIG_ID: get_egress_enabled(self._store),
+            ALLOWED_HOSTS_CONFIG_ID: get_allowed_hosts(self._store),
+        }
+        return tuple(
+            entry.model_copy(update={"default": defaults[entry.config_id]})
+            for entry in web_config_entries()
+            if entry.config_id in defaults
+        )
+
+    def entry(self, config_id: str) -> ConfigEntry | None:
+        for entry in self.entries():
+            if entry.config_id == config_id:
+                return entry
+        return None
+
+    def apply(
+        self, config_id: str, value: object, *, trace_id: str | None = None
+    ) -> ChangeRecord | None:
+        if config_id == EGRESS_ENABLED_CONFIG_ID:
+            if not isinstance(value, bool):
+                raise RegistryValidationError(f"{config_id} 的取值须为布尔：{value!r}")
+            old = get_egress_enabled(self._store)
+            if old == value:
+                return None
+            set_egress_enabled(self._store, value)
+            return self._record(config_id, old, value, trace_id)
+
+        if config_id == ALLOWED_HOSTS_CONFIG_ID:
+            if not isinstance(value, str):
+                raise RegistryValidationError(f"{config_id} 的取值须为字符串：{value!r}")
+            try:
+                validate_host_patterns(value)
+            except Exception as exc:  # noqa: BLE001 —— 统一为本层失败形态
+                raise RegistryValidationError(str(exc)) from exc
+            old = get_allowed_hosts(self._store)
+            if old == value:
+                return None
+            set_allowed_hosts(self._store, value)
+            return self._record(config_id, old, value, trace_id)
+
+        raise RegistryValidationError(
+            f"{config_id!r} 不属本族（web-egress/enabled / web-egress/allowed-hosts）"
+        )
+
+    def _record(
+        self, config_id: str, old: object, new: object, trace_id: str | None
+    ) -> ChangeRecord:
+        change = ChangeRecord(
+            change_id=new_change_id(), config_id=config_id,
+            old_value=old, new_value=new, applied_at=self._now().isoformat(),
+            trace_ref=trace_id,
+        )
+        self._store.put(
+            CHANGE_PARTITION, f"{self.change_prefix}{change.change_id}.json",
+            change.model_dump_json().encode("utf-8"),
+        )
+        return change

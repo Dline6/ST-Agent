@@ -49,7 +49,7 @@ from st_agent.l0.net.gateway import EgressGateway
 from st_agent.l0.secrets.errors import CredentialNotFoundError
 from st_agent.l0.secrets.vault import CredentialVault
 from st_agent.l0.storage.store import Store
-from st_agent.l1.builtin import SyncPort, install_builtins
+from st_agent.l1.builtin import SyncPort, WebAccess, install_builtins
 from st_agent.l1.mcp.lifecycle import McpHubStateMachine
 from st_agent.l1.mcp.mapping import McpSkillMapper
 from st_agent.l1.mcp.permissions import McpPermissionBook
@@ -64,6 +64,8 @@ from st_agent.l1.registry.families import (
     ProviderHostFamily,
     RetentionFamily,
     SchedulerPolicyFamily,
+    SearchFamily,
+    WebEgressFamily,
 )
 from st_agent.l1.runner.runner import SkillRunner
 from st_agent.l1.sandbox.provider_hosts import ProviderHostRegistry
@@ -370,6 +372,7 @@ def build_l1_runtime(
     permissions: Any | None = None,
     online: bool = True,
     audit: bool | None = None,
+    web_http: Any | None = None,
 ) -> L1Runtime:
     """装配 L1 运行时（L0 面 + L1 能力面 + MCP 面；调度接线见 ``.4``）。
 
@@ -409,6 +412,8 @@ def build_l1_runtime(
     :param audit: 出网审计开关的覆盖入口；缺省 ``None`` ⇒ 取 01 §7 条目
         ``net-audit/enabled`` 的口径（**缺省关**，02 §6 / D-073）。变更走配置注册表
         门面（``net-audit/*`` 族）即热切换本网关
+    :param web_http: 开放网络原语的 HTTP 发送口（缺省 ``None`` ⇒ ``urllib``）；
+        测试注入替身即可离线覆盖搜索 / 抓取的分支
     """
     gateway = EgressGateway(store, sender=sender, online=online, audit=audit)
     seed_default_capabilities(gateway)
@@ -453,11 +458,12 @@ def build_l1_runtime(
     builtin_sync = SyncPort()
     docs_source = LocalDocSource(MarketDb(store), store)
     files = FileWorkspace(store)
+    web = WebAccess(store, vault, http=web_http)
     install_builtins(
         skills, runner,
         context={
             "market": market_query, "docs": docs_source, "sync": builtin_sync,
-            "files": files,
+            "files": files, "web": web,
         },
         permissions=skill_permissions,
     )
@@ -507,6 +513,7 @@ def build_l1_runtime(
     config_registry = _build_config_registry(
         store, skills=skills, scheduler_policy=scheduler_policy,
         mcp_config=machine.config, provider_hosts=provider_hosts, gateway=gateway,
+        vault=vault,
     )
 
     return L1Runtime(
@@ -540,6 +547,7 @@ def _build_config_registry(
     mcp_config,
     provider_hosts: ProviderHostRegistry,
     gateway: EgressGateway,
+    vault: Any,
 ) -> ConfigRegistryFacade:
     """装配统一配置注册表门面 + L0 / L1 侧各族（[01 §7]；决策 [D-067]）。
 
@@ -560,6 +568,8 @@ def _build_config_registry(
     facade.register_family(McpHubPolicyFamily(mcp_config))
     facade.register_family(ProviderHostFamily(provider_hosts, store))
     facade.register_family(NetAuditFamily(store, gateway=gateway))
+    facade.register_family(SearchFamily(store, vault=vault))
+    facade.register_family(WebEgressFamily(store))
     facade.register_family(DataSourceSwitchFamily(store))
     return facade
 

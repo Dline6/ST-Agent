@@ -48,6 +48,7 @@ _KIND_LABELS = {
     "cloud": "云端", "local": "本地推理",
     "llm": "LLM 调用", "market_fetch": "行情抓取", "info_fetch": "信息面抓取",
     "channel_delivery": "渠道投递", "mcp_remote": "远程 MCP", "index_browse": "官方索引浏览",
+    "web_search": "联网搜索", "web_fetch": "网页抓取",
     "cancelled": "已取消",
 }
 """两份取值面共用一张表：端点 `kind`（cloud / local）与出网请求类目（`NetworkRequestKind`）。"""
@@ -244,6 +245,55 @@ def _privacy_entries(registry: Any) -> list[dict[str, Any]]:
             "description": audit.panel_form_spec.help_text,
             "note": "关闭时仍有旧记录可查；「待补发」一类查询走显式不可用，不静默返回空集",
         })
+    return out
+
+
+def _web_entries(registry: Any) -> list[dict[str, Any]]:
+    """开放网络页的三条可改条目（开关 / 域名名单 / 搜索提供方）。
+
+    搜索密钥**不进本表**：它由凭据 chrome 增改吊销，页面只显示掩码
+    （``search.key`` 条目的写面同样落凭据库；此处不摆明文输入框）。
+    """
+    out: list[dict[str, Any]] = []
+    enabled = registry.entry("web-egress/enabled")
+    if enabled is not None:
+        out.append({
+            "config_id": enabled.config_id,
+            "params": {"config_id": enabled.config_id},
+            "identifier": enabled.display_name,
+            "current": "已开启" if bool(enabled.default) else "已关闭",
+            "options": [],
+            "actions": ["enable", "disable"],
+            "description": enabled.panel_form_spec.help_text,
+        })
+    for config_id in ("web-egress/allowed-hosts", "search.provider"):
+        entry = registry.entry(config_id)
+        if entry is None:
+            continue
+        if config_id == "search.provider":
+            choices = entry.panel_form_spec.choices or ()
+            current = str(entry.default or "")
+            out.append({
+                "config_id": entry.config_id,
+                "params": {"config_id": entry.config_id},
+                "identifier": entry.display_name,
+                "current": current,
+                "options": [{"value": value} for value in choices],
+                "actions": ["set"],
+                "description": entry.panel_form_spec.help_text,
+                "note": "密钥在下方凭据动作区按标识 search-api-key 配置",
+            })
+        else:
+            out.append({
+                "config_id": entry.config_id,
+                "params": {"config_id": entry.config_id},
+                "identifier": entry.display_name,
+                "current": str(entry.default or ""),
+                "options": [],
+                "input": "text",
+                "actions": ["set"],
+                "description": entry.panel_form_spec.help_text,
+            })
     return out
 
 

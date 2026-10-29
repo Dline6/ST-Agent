@@ -19,6 +19,7 @@ __all__ = [
     "NetAuditConfigError",
     "NetError",
     "NetValidationError",
+    "NetWebConfigError",
 ]
 
 
@@ -32,6 +33,10 @@ class NetValidationError(NetError, ValueError):
 
 class NetAuditConfigError(NetError):
     """审计开关（01 §7 条目）取值非法或落盘损坏——显式抛，不静默回退默认值。"""
+
+
+class NetWebConfigError(NetError):
+    """开放网络配置（01 §7 条目）取值非法或落盘损坏——显式抛，不静默回退默认值。"""
 
 
 class CapabilityExistsError(NetError):

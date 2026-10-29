@@ -688,7 +688,7 @@ class EgressGateway:
         timeout_ms: int,
     ) -> NetworkRequestKind:
         valid = ("data_fetch", "llm_call", "channel_delivery", "remote_mcp",
-                 "index_browse")
+                 "index_browse", "web_search", "web_fetch")
         if kind not in valid:
             raise NetValidationError(f"非法出网类型 {kind!r}；合法类型 = {list(valid)}")
         if not initiator or not initiator.strip():

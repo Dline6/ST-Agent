@@ -21,9 +21,10 @@ import pytest
 from st_agent.l0.file_workspace import FileWorkspace
 from st_agent.l0.info.docs import DocStore, LocalDocSource
 from st_agent.l0.market.db import MarketDb
+from st_agent.l0.secrets import CredentialVault
 from st_agent.l0.storage import Store
 from st_agent.l0.sync_runner import SyncBusyError
-from st_agent.l1.builtin import SyncPort, install_builtins
+from st_agent.l1.builtin import SyncPort, WebAccess, install_builtins
 from st_agent.l1.runner import SkillRunner
 from st_agent.l1.skills import SkillRegistry
 
@@ -95,6 +96,7 @@ def _pipeline(store: Store, db: MarketDb, sync: object) -> SkillRunner:
         context={
             "market": db, "docs": LocalDocSource(db, store), "sync": sync,
             "files": FileWorkspace(store),
+            "web": WebAccess(store, CredentialVault(store)),
         },
     )
     return runner

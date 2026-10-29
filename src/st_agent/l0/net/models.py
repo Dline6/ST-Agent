@@ -32,8 +32,13 @@ __all__ = [
 
 NetworkRequestKind = Literal[
     "data_fetch", "llm_call", "channel_delivery", "remote_mcp", "index_browse",
+    "web_search", "web_fetch",
 ]
-"""五类出网需求（02 §6「包括」清单的机器可读副本）。"""
+"""七类出网需求（02 §6「包括」清单的机器可读副本）。
+
+前五类为既有类目；``web_search`` / ``web_fetch`` 由开放网络原语
+（T-AGT-015）新增，语义分别对应第三方搜索与网页抓取。
+"""
 
 NetworkStatus = Literal["ok", "unavailable", "failed", "cancelled"]
 """出网执行结果（``failed`` 含超时；取消单独列支供面板过滤）。"""
