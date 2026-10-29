@@ -10,7 +10,7 @@ milestone: M9
 depends_on: [T-AGT-008.3]
 status: done
 decisions: [D-137, D-147]
-verify: web_search 经网关返回带来源 / 时间提示的结果、未配置显式不可用、审计不含查询词；见执行日志 [T-AGT-015.1]（commit 待回填）
+verify: web_search 经网关返回带来源 / 时间提示的结果、未配置显式不可用、审计不含查询词；见执行日志 [T-AGT-015.1]（commit d1e4659）
 ---
 
 # T-AGT-015.1 · web_search（联网搜索原语）

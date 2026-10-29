@@ -10,7 +10,7 @@ milestone: M9
 depends_on: [T-AGT-015.1]
 status: done
 decisions: [D-137, D-147]
-verify: 出网开关默认关、关闭零请求、开启留痕可回滚；设置页展示出境范围与搜索凭据掩码；见执行日志 [T-AGT-015.3]（commit 待回填）
+verify: 出网开关默认关、关闭零请求、开启留痕可回滚；设置页展示出境范围与搜索凭据掩码；见执行日志 [T-AGT-015.3]（commit d1e4659）
 ---
 
 # T-AGT-015.3 · 首次告知与出网开关

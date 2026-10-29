@@ -10,7 +10,7 @@ milestone: M9
 depends_on: [T-AGT-015.1]
 status: done
 decisions: [D-137, D-147]
-verify: web_fetch 仅名单内主机、正文抽文本、非文本 / 重定向显式拒绝；见执行日志 [T-AGT-015.2]（commit 待回填）
+verify: web_fetch 仅名单内主机、正文抽文本、非文本 / 重定向显式拒绝；见执行日志 [T-AGT-015.2]（commit d1e4659）
 ---
 
 # T-AGT-015.2 · web_fetch（网页抓取原语）

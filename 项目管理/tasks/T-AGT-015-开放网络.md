@@ -10,7 +10,7 @@ milestone: M9
 depends_on: [T-AGT-008.3]
 status: done
 decisions: [D-137, D-147]
-verify: 三叶合成验收：搜索 / 抓取经唯一网关、默认关且关闭零请求、域名名单与搜索密钥掩码；见执行日志 [T-AGT-015.1]–[.3]（commit 待回填）
+verify: 三叶合成验收：搜索 / 抓取经唯一网关、默认关且关闭零请求、域名名单与搜索密钥掩码；见执行日志 [T-AGT-015.1]–[.3]（commit d1e4659）
 ---
 
 # T-AGT-015 · 开放网络
