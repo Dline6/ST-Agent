@@ -10,7 +10,7 @@ milestone: M9
 depends_on: [T-AGT-008.1]
 status: done
 decisions: [D-137]
-verify: 四动作解析 / 八分区 / 五分区备份全绿；见执行日志 [T-AGT-014.1]
+verify: 四动作解析 / 八分区 / 五分区备份全绿；见执行日志 [T-AGT-014.1]（commit 69b6d3b）
 ---
 
 # T-AGT-014.1 · 契约：local_write 与工作区分区

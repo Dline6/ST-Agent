@@ -10,7 +10,7 @@ milestone: M9
 depends_on: [T-AGT-014.2]
 status: done
 decisions: [D-137]
-verify: 写入 workspace + 未批准拦截 + 并发串行全绿；见执行日志 [T-AGT-014.3]
+verify: 写入 workspace + 未批准拦截 + 并发串行全绿；见执行日志 [T-AGT-014.3]（commit 69b6d3b）
 ---
 
 # T-AGT-014.3 · 文件写原语

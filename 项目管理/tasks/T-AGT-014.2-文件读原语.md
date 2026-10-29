@@ -10,7 +10,7 @@ milestone: M9
 depends_on: [T-AGT-014.1, T-AGT-008.3]
 status: done
 decisions: [D-137]
-verify: 三条只读原语 + 截断指针 + 收件目录边界全绿；见执行日志 [T-AGT-014.2]
+verify: 三条只读原语 + 截断指针 + 收件目录边界全绿；见执行日志 [T-AGT-014.2]（commit 69b6d3b）
 ---
 
 # T-AGT-014.2 · 文件读原语

@@ -10,7 +10,7 @@ milestone: M9
 depends_on: [T-AGT-008.1, T-AGT-008.3]
 status: done
 decisions: [D-137]
-verify: 三叶合成验收：文件原语可读写 workspace、写类需确认、越界/未批准拦截；见执行日志 [T-AGT-014.1]–[.3]
+verify: 三叶合成验收：文件原语可读写 workspace、写类需确认、越界/未批准拦截；见执行日志 [T-AGT-014.1]–[.3]（commit 69b6d3b）
 ---
 
 # T-AGT-014 · 文件读写原语
