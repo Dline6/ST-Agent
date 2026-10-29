@@ -9,8 +9,9 @@
 次版本变更 = 兼容性增强。升级导致契约变化时下游自动标「待检查」，
 用户确认后才升级——禁止自动破坏下游。
 
-§10 契约要点：三项权限（local_read:<path-scope> / net_access:<host-pattern> /
-exec_command），能力安装时声明、用户逐项批准；运行时越界即拦截。
+§10 契约要点：四项权限（local_read:<path-scope> / local_write:<path-scope> /
+net_access:<host-pattern> / exec_command），能力安装时声明、用户逐项批准；
+运行时越界即拦截。
 """
 
 from __future__ import annotations
@@ -160,11 +161,14 @@ class SemVer(BaseModel):
 
 # ───────────────────────── §10 权限声明模型 ─────────────────────────
 
-PermissionAction = Literal["local_read", "net_access", "exec_command"]
-"""§10 三项权限。"""
+PermissionAction = Literal["local_read", "local_write", "net_access", "exec_command"]
+"""§10 四项权限。"""
 
-_PERM_RE = re.compile(r"^(local_read):(<.+>)$|^(net_access):(<.+>)$|^(exec_command)$")
-"""权限串语法：local_read:<path-scope> / net_access:<host-pattern> / exec_command。"""
+_PERM_RE = re.compile(
+    r"^(local_read|local_write):(<.+>)$|^(net_access):(<.+>)$|^(exec_command)$"
+)
+"""权限串语法：local_read:<path-scope> / local_write:<path-scope> /
+net_access:<host-pattern> / exec_command。"""
 
 
 def parse_permission(decl: str) -> tuple[PermissionAction, str]:
@@ -173,7 +177,7 @@ def parse_permission(decl: str) -> tuple[PermissionAction, str]:
     if not m:
         raise ContractViolation(
             f"权限声明语法非法: {decl!r}（合法形式 local_read:<path-scope> / "
-            "net_access:<host-pattern> / exec_command）"
+            "local_write:<path-scope> / net_access:<host-pattern> / exec_command）"
         )
     groups = m.groups()
     if groups[4] == "exec_command":          # 无 scope 权限

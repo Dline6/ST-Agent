@@ -8,9 +8,9 @@ arch_link: "[01 §10](../../docs/技术架构-v2/01-平台共享契约.md)"
 priority: P1
 milestone: M9
 depends_on: [T-AGT-014.1, T-AGT-008.3]
-status: todo
+status: done
 decisions: [D-137]
-verify:
+verify: 三条只读原语 + 截断指针 + 收件目录边界全绿；见执行日志 [T-AGT-014.2]
 ---
 
 # T-AGT-014.2 · 文件读原语
@@ -24,15 +24,23 @@ verify:
 - GWT-3：Given 超大文件，Then 截断并给指针。
 
 ## 接口面
-<④ 对齐时实填（`doing` 起不可留占位），见 [工作流](../工作流.md) 第 ④ 步>
 - 输入（消费的前置接口）：
+  - `T-AGT-014.1`——`local_read` 作用域语义与 `workspace` 分区。
+  - `T-AGT-008.3`——内置原语注册面与实参双通道（`ctx.inputs`）。
+  - [09 §6](../../docs/技术架构-v2/09-生态与分享.md) 的收件目录（`<存储根>/inbox`）。
+  - L1 沙箱的 `SandboxSession.read_file`（`l1/sandbox/sandbox.py`）。
 - 输出（本任务交付的公共 API / 落盘位置）：
+  - `sk_file_read` / `sk_file_glob` / `sk_file_grep`（声明 `local_read:<workspace/**>` 与 `local_read:<inbox/**>`）。
+  - L0 `FileWorkspace`（`src/st_agent/l0/file_workspace.py`）：`split` / `read` / `read_text` / `list_files`。
 
 ## 可关闭的遗留
-<④ 对齐时实填：扫 [遗留问题](../遗留问题/README.md) 各层册的未闭区，逐条列「归属＝本任务」或「解封条件＝本任务 `done`」的条目（册内 id + 处置）；无命中写 `无`。>
+无（六册未闭区逐册核过，无归属＝本任务的条目）。
 
 ## 假设与前提
-<④ 对齐时实填；每条 `A<n>` 含 前提内容 / 若错的影响 / 验证方式；确认无假设写 `无（<原因>）`>
+- **A1** 读取只列 / 读普通文本文件，二进制与超大文件如实跳过或回 `unavailable`，不冒充。若错的影响：模型把空文本当文件内容。验证方式：`tests/l1/test_builtin_files.py` 的二进制与截断用例。
+- **A2** 越界 / 未批准由沙箱拦截且不执行读取。若错的影响：越权读取。验证方式：未批准用例与 `FileWorkspace.split` 边界用例。
+- **A3** 大文件以 `max_chars` 截断并回 `next_offset`。若错的影响：长文件被静默截断。验证方式：截断续读用例。
+- **A4** 收件目录只读、按 realpath 判界。若错的影响：符号链接越界读。验证方式：`test_file_workspace` 的 `TestInbox` / `TestPathBoundary`。
 
 ## 涉及契约
 - [01 §10](../../docs/技术架构-v2/01-平台共享契约.md) —— `local_read` 的作用域

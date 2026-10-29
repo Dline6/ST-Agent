@@ -56,7 +56,7 @@ PIN_PARTITION = "config"
 """钉住物的落盘分区——取 L0 **既有**分区。
 
 新增分区须同批改 [`l0/storage/partition.py`](../l0/storage/partition.py) 的
-:data:`PARTITIONS` 与 `tests/l0/test_storage.py` 的七分区断言，属契约面扩张；而钉住物是
+:data:`PARTITIONS` 与 `tests/l0/test_storage.py` 的分区断言，属契约面扩张；而钉住物是
 **小的键值记录**（与 `l2/memory/config_store` 同规模），不值得——故复用 ``config``。
 """
 

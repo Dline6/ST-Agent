@@ -1,7 +1,7 @@
 """T-L0-001 测试：02-L0 §2 存储分区 · 落盘加密 · 损坏恢复。
 
 GWT 对照（任务文件 5 条）：
-- GWT-1 分区独立：七分区各占目录、独立导出、独立清空
+- GWT-1 分区独立：八分区各占目录、独立导出、独立清空
 - GWT-2 落盘加密+密码校验：PBKDF2 派生、AES-256-GCM、secrets 隔离、
   错密码拒绝且不破坏数据、无产品方恢复通道
 - GWT-3 读写闭环：写入读回一致、校验和通过
@@ -45,11 +45,11 @@ def root_of(store: Store) -> Path:
 
 
 class TestGwt1Partitions:
-    def test_seven_partitions_registered(self):
+    def test_eight_partitions_registered(self):
         names = [p.name for p in PARTITIONS]
         assert names == [
             "memory", "config", "chat_history", "execution_log",
-            "reflection", "data_cache", "secrets",
+            "reflection", "data_cache", "workspace", "secrets",
         ]
         assert PARTITION_NAMES == tuple(names)
 

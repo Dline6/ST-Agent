@@ -43,10 +43,18 @@ class TestGwt1OfficialPackNeedsNoApproval:
         assert len(OFFICIAL_PACK) == 12
         assert [s["base"] for s in OFFICIAL_PACK if s["permissions"]] == []
 
-    def test_ledger_stays_empty_after_seeding(self, runtime: L1Runtime, store: Store):
-        """播种**不**写批准记录（无声明即无待批事项）。"""
-        assert [n for n in store.list_files("config")
-                if n.startswith("skill-permissions/")] == []
+    def test_ledger_stays_empty_for_the_official_pack_after_seeding(
+        self, runtime: L1Runtime, store: Store,
+    ):
+        """官方 Pack 播种**不**写批准记录（无声明即无待批事项）。
+
+        内置原语的文件面声明由安装期落账（T-AGT-014 / [D-146]）——那批属于
+        **产品自带能力**，不是官方 Pack；此处只核官方 12 个 base 无账本条目。
+        """
+        entries = {n for n in store.list_files("config")
+                   if n.startswith("skill-permissions/")}
+        official = {f"skill-permissions/{s['base']}.json" for s in OFFICIAL_PACK}
+        assert not (entries & official)
 
     def test_scheduled_official_skill_runs_without_approval(self, runtime: L1Runtime):
         """`sk_stock_watch` 曾声明 `net_access`，清空后不再被硬门拦住。"""

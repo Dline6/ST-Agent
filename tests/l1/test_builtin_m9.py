@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from st_agent.l0.file_workspace import FileWorkspace
 from st_agent.l0.info.docs import DocStore, LocalDocSource
 from st_agent.l0.market.db import MarketDb
 from st_agent.l0.storage import Store
@@ -91,7 +92,10 @@ def _pipeline(store: Store, db: MarketDb, sync: object) -> SkillRunner:
     runner = SkillRunner(store, registry)
     install_builtins(
         registry, runner,
-        context={"market": db, "docs": LocalDocSource(db, store), "sync": sync},
+        context={
+            "market": db, "docs": LocalDocSource(db, store), "sync": sync,
+            "files": FileWorkspace(store),
+        },
     )
     return runner
 

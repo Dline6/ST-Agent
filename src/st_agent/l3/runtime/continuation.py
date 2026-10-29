@@ -40,7 +40,9 @@ from st_agent.l3.runtime.loop import (
     DEFAULT_MAX_LLM_CALLS,
     DEFAULT_MAX_STEPS,
     PLAN_UPDATE_TOOL,
+    ApprovedPermissions,
     LoopOutcome,
+    resolve_approved,
     run_agent_loop,
 )
 from st_agent.l3.runtime.protocol import (
@@ -120,7 +122,7 @@ def resume_agent_run(
     runner: Any,
     tools: Sequence[Any],
     gate: Any = None,
-    approved_permissions: Sequence[str] = (),
+    approved_permissions: ApprovedPermissions = (),
     initiator: str = DEFAULT_TURN_INITIATOR,
     purpose: str = DEFAULT_TURN_PURPOSE,
     max_steps: int = DEFAULT_MAX_STEPS,
@@ -241,7 +243,7 @@ def resume_agent_run(
         runner=runner,
         tools=tuple(tools),
         gate=gate,
-        approved_permissions=tuple(approved_permissions),
+        approved_permissions=approved_permissions,
         initiator=initiator,
         purpose=purpose,
         max_steps=max_steps,
@@ -327,7 +329,7 @@ def _execute_pending(
     *,
     runner: Any,
     tools: Sequence[Any],
-    approved_permissions: Sequence[str],
+    approved_permissions: ApprovedPermissions,
     initiator: str,
     purpose: str,
 ) -> tuple[tuple[WorkStep, ...], Trace]:
@@ -349,7 +351,9 @@ def _execute_pending(
         values,
         inputs=object_inputs,
         trace=Trace(trace_id=TraceId.generate()),
-        approved_permissions=tuple(approved_permissions),
+        approved_permissions=resolve_approved(
+            approved_permissions, entry.skill_id
+        ),
         initiator=initiator,
         purpose=purpose,
     )

@@ -51,7 +51,7 @@ def test_real_chain_smoke(tmp_path) -> None:
 
     root = tmp_path / "root"
     t0 = time.perf_counter()
-    store = Store.create(root, passphrase)          # 真实 PBKDF2 600k + 七分区
+    store = Store.create(root, passphrase)          # 真实 PBKDF2 600k + 八分区
     keyfile_cost = round(time.perf_counter() - t0, 2)
 
     db = MarketDb(store)

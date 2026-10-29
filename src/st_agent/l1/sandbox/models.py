@@ -32,8 +32,8 @@ VIOLATION_PREFIX = "sandbox-violation/"
 DISABLED_PREFIX = "sandbox-disabled/"
 """``config`` 分区内「已禁用 Skill」标记的目录前缀（03 §1.5 禁用选项）。"""
 
-ViolationKind = Literal["local_read", "net_access", "exec_command"]
-"""越界类别（与 §10 三项权限同名）。"""
+ViolationKind = Literal["local_read", "local_write", "net_access", "exec_command"]
+"""越界类别（与 §10 四项权限同名）。"""
 
 
 def check_violation_id(value: str) -> str:

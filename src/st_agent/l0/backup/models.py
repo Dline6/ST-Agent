@@ -37,8 +37,14 @@ __all__ = [
 BACKUP_FORMAT_VERSION = 1
 """归档格式主版本（v1；恢复时主版本不一致即拒——A3）。"""
 
-BACKUP_PARTITIONS: tuple[str, ...] = ("memory", "config", "chat_history", "reflection")
-"""02 §8.1 备份分区表：四分区必含，``data_cache`` 可选，余者永不进归档（A1）。"""
+BACKUP_PARTITIONS: tuple[str, ...] = (
+    "memory", "config", "chat_history", "reflection", "workspace",
+)
+"""02 §8.1 备份分区表：五分区必含，``data_cache`` 可选，余者永不进归档（A1）。
+
+``workspace`` 收 Agent 产出与用户交给 Agent 处理的文件——它们是用户可见的
+交付物，与 memory / config 同属「一键备份须带走」的范围（[D-146]）。
+"""
 
 DEFAULT_CHAT_HISTORY_DAYS = 365
 DEFAULT_EXECUTION_LOG_DAYS = 90

@@ -3,7 +3,7 @@
 与 `tests/ui/test_ui_settings.py`（替身钉形状与失败态）分工：本组用真
 [`build_m5_runtime`](../../src/st_agent/app.py) 造出的 [`SettingsFacade`] 走一遍真链路——
 
-1. **存储页**出真 `Store` 的位置 / 格式 / 分区用量（七分区齐、`bytes` 取自真清单）；
+1. **存储页**出真 `Store` 的位置 / 格式 / 分区用量（八分区齐、`bytes` 取自真清单）；
 2. **数据源页**出真注册表的 8 个源，落值经 [01 §7] 门面**真写进 `config` 分区**；
 3. **隐私页**出留存两旋钮 + 出网审计开关（三族混一面的落值走同一条 apply）；
 4. **LLM 提供方页**出真端点表 + 提供方主机映射；凭据分区在真口令下已解锁；
@@ -31,7 +31,7 @@ from st_agent.ui.server import serve
 RULES: list[tuple[str, object]] = []
 ARCHIVE_PASS = "a-strong-archive-passphrase"
 
-PARTITION_COUNT = 7
+PARTITION_COUNT = 8
 
 
 def _request(running, method: str, path: str, body: dict | None = None) -> dict:
@@ -62,7 +62,7 @@ def m5(tmp_path):
 
 
 def test_storage_page_names_the_real_root_and_every_partition(m5) -> None:
-    """GWT-1：存储页出真位置 / 真格式 / 七分区用量（`bytes` 取自真清单）。"""
+    """GWT-1：存储页出真位置 / 真格式 / 八分区用量（`bytes` 取自真清单）。"""
     runtime = m5.m5
     with serve(dev=False, settings=runtime.settings) as running:
         payload = _get(running, "/api/settings/storage")
@@ -79,7 +79,7 @@ def test_storage_page_names_the_real_root_and_every_partition(m5) -> None:
         assert len(rows) == PARTITION_COUNT
         assert {row["partition"] for row in rows} == {
             "memory", "config", "chat_history", "execution_log",
-            "reflection", "data_cache", "secrets",
+            "reflection", "data_cache", "workspace", "secrets",
         }
         seeded = next(row for row in rows if row["partition"] == "memory")
         assert seeded["state"] == "正常"
