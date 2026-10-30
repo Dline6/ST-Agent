@@ -134,6 +134,7 @@ _GET_ROUTES: dict[str, Callable[[UiApp, str], dict]] = {
     "/api/settings/data/job": lambda app, _q: app.api_settings_data_job(),
     "/api/settings/sources": lambda app, _q: app.api_settings_sources(),
     "/api/settings/web": lambda app, _q: app.api_settings_web(),
+    "/api/settings/command": lambda app, _q: app.api_settings_command(),
     "/api/settings/privacy": lambda app, _q: app.api_settings_privacy(),
     # 运行期授权页（[D-143]）：档位 + 动作级分级清单 + 缺省来源 + `agent-change/` 留痕。
     "/api/settings/agent-authorization": lambda app, _q: app.api_settings_agent_authorization(),

@@ -222,6 +222,34 @@ def test_web_page_exposes_the_egress_switch_and_masks_the_search_key(m5) -> None
         assert "没有" in opened["reason"]
 
 
+def test_command_page_exposes_the_local_exec_switch(m5) -> None:
+    """本地命令页：默认关闭；经统一落值面开启并留痕；能力声明归入离线可用组。"""
+    from st_agent.l0.exec.exec_config import get_local_exec_enabled
+
+    runtime = m5.m5
+    settings = runtime.settings
+    with serve(dev=False, settings=settings) as running:
+        payload = _get(running, "/api/settings/command")
+        assert payload["panel"]["status"] == "ok"
+        entries = {e["config_id"]: e for e in payload["panel"]["data"]["slots"]["entries"]}
+        assert set(entries) == {"local-exec/enabled"}
+        assert entries["local-exec/enabled"]["current"] == "已关闭", "出厂默认关（D-137）"
+
+        on = _post(running, "/api/settings/apply", {
+            "config_id": "local-exec/enabled", "action": "enable",
+        })
+        assert on["status"] == "ok", on.get("reason")
+        assert on["data"]["changed"] is True and on["data"]["change_id"]
+        assert get_local_exec_enabled(settings.store) is True
+
+        offline = _get(running, "/api/settings/offline")
+        sections = offline["data"]["slots"]["sections"]
+        by_title = {section["title"]: section["lines"] for section in sections}
+        assert any("本地命令执行" in line for line in by_title["离线可用"]), (
+            "本机命令断网可用，应归入「离线可用」（04 对齐 A4）"
+        )
+
+
 def test_offline_report_is_populated_by_the_seeded_declarations(m5) -> None:
     """GWT-5：三类清单**非空**——出厂能力声明由组合根播种（此前 `register_capability`
     只有测试在调，真装配下 `offline_report()` 恒空）。"""

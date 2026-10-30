@@ -17,12 +17,19 @@ from pathlib import Path
 import pytest
 
 from st_agent.contracts.result_envelope import ResultEnvelope
+from st_agent.l0.exec.command import CommandRunner
 from st_agent.l0.file_workspace import FileWorkspace
 from st_agent.l0.info.docs import LocalDocSource
 from st_agent.l0.market.db import MarketDb
 from st_agent.l0.secrets import CredentialVault
 from st_agent.l0.storage import Store
-from st_agent.l1.builtin import BUILTIN_PRIMITIVES, SyncPort, WebAccess, install_builtins
+from st_agent.l1.builtin import (
+    BUILTIN_PRIMITIVES,
+    CommandAccess,
+    SyncPort,
+    WebAccess,
+    install_builtins,
+)
 from st_agent.l1.runner import RUN_PREFIX, SkillRunner
 from st_agent.l1.runner.models import SkillRun
 from st_agent.l1.skills import SkillRegistry
@@ -56,6 +63,7 @@ def runner(store: Store, db: MarketDb) -> SkillRunner:
             "sync": SyncPort(),
             "files": FileWorkspace(store),
             "web": WebAccess(store, CredentialVault(store)),
+            "commands": CommandAccess(store, CommandRunner(store)),
         },
     )
     return pipeline
@@ -202,6 +210,7 @@ class TestLocalSql:
                 "sync": SyncPort(),
                 "files": FileWorkspace(store),
                 "web": WebAccess(store, CredentialVault(store)),
+                "commands": CommandAccess(store, CommandRunner(store)),
             },
         )
         out = _run(pipeline, LOCAL_SQL, {"sql": "SELECT 1"})
@@ -266,6 +275,7 @@ class TestDataStatus:
                 "sync": SyncPort(),
                 "files": FileWorkspace(store),
                 "web": WebAccess(store, CredentialVault(store)),
+                "commands": CommandAccess(store, CommandRunner(store)),
             },
         )
         out = _run(pipeline, DATA_STATUS)
@@ -287,6 +297,7 @@ def test_seed_table_contains_the_data_control_and_file_primitives():
         "sk_docs", "sk_plan_update", "sk_ask_user",
         "sk_file_read", "sk_file_glob", "sk_file_grep", "sk_file_write",
         "sk_web_search", "sk_web_fetch",
+        "sk_run_command",
     ]
 
 

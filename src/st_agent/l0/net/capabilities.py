@@ -26,6 +26,12 @@ DEFAULT_CAPABILITIES: tuple[tuple[str, str, str, str], ...] = (
     ("chat-history", "对话历史检索", "full", ""),
     ("cached-skill", "已缓存 Skill 的运行", "full", ""),
     (
+        "local-exec",
+        "本地命令执行（Agent 在本机运行一次性命令）",
+        "full",
+        "断网可用；出厂默认关闭，需在设置中显式开启后才执行命令",
+    ),
+    (
         "cloud-llm",
         "云端 LLM 推理",
         "degraded",

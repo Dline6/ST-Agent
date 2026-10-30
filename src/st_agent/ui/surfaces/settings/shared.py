@@ -248,6 +248,25 @@ def _privacy_entries(registry: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _command_entries(registry: Any) -> list[dict[str, Any]]:
+    """本地命令页的可改条目（``local-exec/*``；开关以 enable / disable 动作表达取值）。"""
+    out: list[dict[str, Any]] = []
+    for entry in sorted(registry.list(), key=lambda e: e.config_id):
+        if not entry.config_id.startswith("local-exec/"):
+            continue
+        enabled = bool(entry.default)
+        out.append({
+            "config_id": entry.config_id,
+            "params": {"config_id": entry.config_id},
+            "identifier": entry.display_name,
+            "current": "已开启" if enabled else "已关闭",
+            "options": [],
+            "actions": ["enable", "disable"],
+            "description": entry.panel_form_spec.help_text,
+        })
+    return out
+
+
 def _web_entries(registry: Any) -> list[dict[str, Any]]:
     """开放网络页的三条可改条目（开关 / 域名名单 / 搜索提供方）。
 

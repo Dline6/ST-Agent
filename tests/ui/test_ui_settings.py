@@ -26,6 +26,7 @@ _GET_PATHS = (
     "/api/settings/data/job",
     "/api/settings/sources",
     "/api/settings/web",
+    "/api/settings/command",
     "/api/settings/privacy",
     "/api/settings/maintenance",
     "/api/settings/network",

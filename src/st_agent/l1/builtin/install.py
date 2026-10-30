@@ -13,7 +13,7 @@
 
 **本叶不接组合根**：安装入口由 :func:`st_agent.l1.runtime.build_l1_runtime` 与官方
 Pack 同点调用；种子表 :data:`BUILTIN_PRIMITIVES` 目前含本地数据面、取数 / 同步、
-文档取数、循环控制、文件面与开放网络共 13 条原语。
+文档取数、循环控制、文件面、开放网络与本地命令共 14 条原语。
 """
 
 from __future__ import annotations
@@ -30,6 +30,7 @@ from st_agent.l1.builtin.data_status import DATA_STATUS
 from st_agent.l1.builtin.data_sync import DATA_SYNC
 from st_agent.l1.builtin.docs import DOCS
 from st_agent.l1.builtin.errors import BuiltinRegistrationError
+from st_agent.l1.builtin.exec import RUN_COMMAND
 from st_agent.l1.builtin.files import FILE_GLOB, FILE_GREP, FILE_READ, FILE_WRITE
 from st_agent.l1.builtin.local_sql import LOCAL_SQL
 from st_agent.l1.builtin.models import BuiltinPrimitive
@@ -43,8 +44,9 @@ __all__ = ["BUILTIN_PRIMITIVES", "install_builtins"]
 BUILTIN_PRIMITIVES: tuple[BuiltinPrimitive, ...] = (
     LOCAL_SQL, DATA_STATUS, DATA_SYNC, DATA_FETCH, DOCS, PLAN_UPDATE, ASK_USER,
     FILE_READ, FILE_GLOB, FILE_GREP, FILE_WRITE, WEB_SEARCH, WEB_FETCH,
+    RUN_COMMAND,
 )
-"""内置原语种子表（本地数据面四条 + 循环控制面两条 + 文档取数一条 + 文件面四条 + 开放网络两条）。
+"""内置原语种子表（本地数据面四条 + 循环控制面两条 + 文档取数一条 + 文件面四条 + 开放网络两条 + 本地命令一条）。
 
 一行一条能力。权限必须逐条显式给出（见 ``models.BuiltinPrimitive.permissions``）。
 循环控制面两条（``sk_plan_update`` / ``sk_ask_user``）在循环内由 L3 拦截执行，
@@ -53,7 +55,8 @@ BUILTIN_PRIMITIVES: tuple[BuiltinPrimitive, ...] = (
 注入（``L1Runtime.bind_data_sync``），未注入时原语显式 ``unavailable``。
 文件面四条经 ``FileWorkspace`` 访问工作区分区与导入收件目录，按 01 §10 声明
 ``local_read`` / ``local_write``（D-146）。开放网络两条经 ``EgressGateway`` 出网，
-受 ``web-egress/enabled`` 开关与域名名单约束（T-AGT-015）。
+受 ``web-egress/enabled`` 开关与域名名单约束（T-AGT-015）。本地命令一条经
+``CommandRunner`` 执行，受 ``local-exec/enabled`` 开关约束（T-AGT-016）。
 """
 
 _SOURCE = "builtin"
