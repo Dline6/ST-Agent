@@ -10,7 +10,7 @@ milestone: M9
 depends_on: [T-AGT-013.1, T-AGT-013.2, T-AGT-013.3, T-AGT-014.1, T-AGT-014.2, T-AGT-014.3, T-AGT-015.1, T-AGT-015.2, T-AGT-015.3, T-AGT-016.1, T-AGT-016.2]
 status: done
 decisions: [D-137]
-verify: 全量 4880 passed / 16 deselected / 2 errors（两例 tests/ui/test_shell.py 本机既有环境性，报错文本与前批一致）；tests/integration/test_m9_open_capabilities.py 6 例覆盖 GWT-1～4（缺公告/龙虎榜 → 两次确认续跑后真落缓存并 SQL 作答；出网关闭与未配置均显式 unavailable 且零请求零审计；写文件落 workspace 并可读回；web_search / data_fetch 的来源、时间与网关审计）；verify_docs.py --strict PASS。见执行日志 T-INT-010 条目。
+verify: 全量 4880 passed / 16 deselected / 2 errors（两例 tests/ui/test_shell.py 本机既有环境性，报错文本与前批一致）；tests/integration/test_m9_open_capabilities.py 6 例覆盖 GWT-1～4（缺公告/龙虎榜 → 两次确认续跑后真落缓存并 SQL 作答；出网关闭与未配置均显式 unavailable 且零请求零审计；写文件落 workspace 并可读回；web_search / data_fetch 的来源、时间与网关审计）；verify_docs.py --strict PASS。commit `a40fe4c`。见执行日志 T-INT-010 条目。
 ---
 
 # T-INT-010 · M9 集成关卡 · 开放能力面
