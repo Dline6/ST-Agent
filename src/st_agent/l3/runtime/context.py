@@ -41,6 +41,13 @@ from st_agent.l1.skills.tool_catalog import ToolEntry
 from st_agent.l2.memory.reader import MemorySlice
 from st_agent.l3.chat.session import ROLE_LABELS, ChatMessage
 from st_agent.l3.errors import AgentRuntimeValidationError
+from st_agent.l3.runtime.tool_search import (
+    SUMMARY_CHARS,
+    TOOL_SEARCH_TOOL,
+    tool_search_description,
+    tool_search_parameters,
+    tool_search_spec,
+)
 
 __all__ = [
     "CATALOG_EMPTY_REASON",
@@ -105,6 +112,12 @@ class TruncatedResult(BaseModel):
     truncated: bool = True
     log_ref: str = Field(min_length=1)
     """外置指针（:func:`log_ref_of`；指向真实存在的 ``execution_log`` 记录）。"""
+    skill_run_id: str = ""
+    """产生该结果的执行标识——回读原语按它定位记录（T-AGT-017.2）。"""
+    read_tool: str = "sk_result_read"
+    """回读原语名（模型可经它按 ``offset`` 分片取回完整载荷）。"""
+    next_offset: int = Field(default=0, ge=0)
+    """默认回读起点（从载荷头部开始；一次取 ``max_chars``，续读用返回的 ``next_offset``）。"""
     original_chars: int = Field(ge=0)
     """原载荷的字符数（截断前的规模）。"""
     preview: str = ""
@@ -221,6 +234,13 @@ class WorkContext(BaseModel):
     dropped: tuple[str, ...] = ()
     """**被预算舍弃的项**（``memory:<node_id>`` / ``history:<message_id>``）——如实标注，
     不静默丢；用于空态区分「本来没有」与「有但装不下」。"""
+    lazy_tools: bool = False
+    """工具目录是否进入**惰性态**（模型可见形态超阈值；见 :func:`assemble_work_context`）。
+    为假时目录整份下发，装配输出与未引入检索时逐字节一致。"""
+    retrieved_tools: tuple[str, ...] = ()
+    """已按检索**展开**的工具名（惰性态下完整描述与参数只给这些条目）。"""
+    tool_search_note: str = ""
+    """上一次检索的显式说明（命中数 / 未命中 / 参数非法原因；无检索即空）。"""
     plan: tuple[PlanStep, ...] = ()
     """**当前计划**（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的计划原语；
     空元组的含义由 ``plan_updated`` 区分「尚未给出」与「显式清空」）。"""
@@ -242,10 +262,18 @@ class WorkContext(BaseModel):
         """工具条目的**模型可见形态**（[02 §4](../../../../docs/技术架构-v2/02-L0-本地优先基座.md) 的 ``ToolSpec``）。
 
         只取三字段——``skill_id`` **不**进模型上下文（它是执行目标，不是模型要看见的东西）。
+        惰性态下只给**检索入口 + 已展开条目**；未超阈值时与未引入检索时逐字节一致。
         """
-        return tuple(
+        if not self.lazy_tools:
+            return tuple(
+                ToolSpec(name=e.name, description=e.description, parameters=e.parameters)
+                for e in self.tools
+            )
+        retrieved = set(self.retrieved_tools)
+        return (tool_search_spec(),) + tuple(
             ToolSpec(name=e.name, description=e.description, parameters=e.parameters)
             for e in self.tools
+            if e.name in retrieved
         )
 
     def render_prompt(self, *, include_tools: bool = False) -> str:
@@ -258,18 +286,19 @@ class WorkContext(BaseModel):
         lines.append("")
         lines.extend(self._render_plan_lines())
         lines.append("")
+        if self.tool_search_note:
+            lines.append(f"上次工具检索：{self.tool_search_note}")
+            lines.append("")
         if self.user_inputs:
             lines.append("用户补充（续跑，一问一参）：" + _json(self.user_inputs))
             lines.append("")
         lines.extend(self._render_history_lines())
-        if include_tools:
+        if self.lazy_tools:
             lines.append("")
-            lines.append(f"可用工具（{len(self.tools)} 个）：")
-            for entry in self.tools:
-                lines.append(f"- {entry.name}：{entry.description}")
-                lines.append(
-                    "  参数：" + _json(entry.parameters)
-                )
+            lines.extend(self._render_lazy_tools(include_tools=include_tools))
+        elif include_tools:
+            lines.append("")
+            lines.extend(self._render_full_tools())
         lines.append("")
         if not self.steps:
             lines.append("已执行动作与结果：无（尚未执行任何动作）")
@@ -330,6 +359,41 @@ class WorkContext(BaseModel):
             return [f"相关记忆：已按预算舍弃 {dropped} 条（原文仍可从记忆图谱读面取回）"]
         return ["相关记忆：无（无相关记忆切片）"]
 
+    def _render_full_tools(self) -> list[str]:
+        """整份目录的模型可见形态（未超阈值；与未引检索时的输出逐字节一致）。"""
+        out = [f"可用工具（{len(self.tools)} 个）："]
+        for entry in self.tools:
+            out.append(f"- {entry.name}：{entry.description}")
+            out.append("  参数：" + _json(entry.parameters))
+        return out
+
+    def _render_lazy_tools(self, *, include_tools: bool) -> list[str]:
+        """惰性态：摘要索引 + 检索入口 + 已展开条目（完整参数只给已展开者）。"""
+        out = [
+            f"可用工具（{len(self.tools)} 个，目录超过阈值：仅给摘要，"
+            f"调用 {TOOL_SEARCH_TOOL} 按需展开完整参数）："
+        ]
+        for entry in self.tools:
+            out.append(f"- {entry.name}：{_summary(entry.description)}")
+        out.append("")
+        out.append("检索入口：")
+        out.append(f"- {TOOL_SEARCH_TOOL}：{tool_search_description()}")
+        out.append("  参数：" + _json(tool_search_parameters()))
+        retrieved_names = set(self.retrieved_tools)
+        retrieved = [e for e in self.tools if e.name in retrieved_names]
+        out.append("")
+        if not retrieved:
+            out.append("已展开的工具：无（检索命中后会在此给出完整描述与参数）")
+        elif include_tools:
+            out.append(f"已展开的工具（{len(retrieved)} 个）：")
+            for entry in retrieved:
+                out.append(f"- {entry.name}：{entry.description}")
+                out.append("  参数：" + _json(entry.parameters))
+        else:
+            names = "、".join(entry.name for entry in retrieved)
+            out.append(f"已展开的工具：{names}（完整参数经工具调用通道下发）")
+        return out
+
 
 def assemble_work_context(
     task: str,
@@ -344,6 +408,9 @@ def assemble_work_context(
     user_inputs: dict[str, Any] | None = None,
     budget_chars: int = DEFAULT_WORK_CONTEXT_BUDGET,
     max_result_chars: int = RESULT_TRUNCATE_CHARS,
+    retrieved_tools: Sequence[str] = (),
+    tool_search_note: str = "",
+    tool_lazy_chars: int | None = None,
 ) -> ResultEnvelope:
     """装配循环工作上下文（纯函数，GWT-6）。
 
@@ -359,8 +426,16 @@ def assemble_work_context(
     :param user_inputs: 续跑时用户补充的答案（一问一参）
     :param budget_chars: 规模预算（字符数）
     :param max_result_chars: 单条结果的截断阈值（字符数）
+    :param retrieved_tools: 已被工具检索**展开**的工具名（惰性态下完整参数只给这些条目；
+        不在目录内的名字被忽略——续跑承接的旧检索结果可能指向已下线能力）
+    :param tool_search_note: 上一次检索的显式说明（命中数 / 未命中 / 参数非法原因）
+    :param tool_lazy_chars: 惰性态阈值（目录工具段的字符数）；``None`` 即取本次预算
     :returns: ``ok``（载荷为 :class:`WorkContext`）或 ``empty``（目录为空）；入参非法抛
         :class:`~st_agent.l3.errors.AgentRuntimeValidationError`
+
+    **惰性态**（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）：目录工具段的
+    字符数超过 ``tool_lazy_chars``（缺省＝本次预算）时，只给摘要索引与检索入口，条目按
+    ``retrieved_tools`` 展开。未超阈值时输出**逐字节同前**——不向目录加任何条目。
 
     **超限取舍**（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）：先舍记忆切片
     （自末向首），再舍历史消息（自旧向新）；任务、工具目录与已执行动作**不参与取舍**
@@ -376,11 +451,23 @@ def assemble_work_context(
     if not isinstance(max_result_chars, int) or isinstance(max_result_chars, bool) \
             or max_result_chars < 1:
         raise AgentRuntimeValidationError(f"截断阈值须为 ≥1 的整数，得到 {max_result_chars!r}")
+    if tool_lazy_chars is not None and (
+        not isinstance(tool_lazy_chars, int) or isinstance(tool_lazy_chars, bool)
+        or tool_lazy_chars < 1
+    ):
+        raise AgentRuntimeValidationError(
+            f"工具惰性阈值须为 ≥1 的整数，得到 {tool_lazy_chars!r}"
+        )
 
     entries = _checked_entries(tools)
     if not entries:
         return ResultEnvelope.empty(CATALOG_EMPTY_REASON)
     ordered = _checked_steps(steps)
+    threshold = budget_chars if tool_lazy_chars is None else tool_lazy_chars
+    retrieved_names = set(retrieved_tools)
+    retrieved = tuple(
+        entry.name for entry in entries if entry.name in retrieved_names
+    )
     context, size = _fit_budget(
         task=task,
         tools=entries,
@@ -392,6 +479,9 @@ def assemble_work_context(
         plan_error=str(plan_error or ""),
         user_inputs=dict(user_inputs or {}),
         budget_chars=budget_chars,
+        lazy_tools=_tools_section_chars(entries) > threshold,
+        retrieved_tools=retrieved,
+        tool_search_note=str(tool_search_note or ""),
     )
     return ResultEnvelope.ok(
         context.model_copy(update={"size_chars": size, "over_budget": size > budget_chars})
@@ -410,6 +500,9 @@ def _fit_budget(
     plan_error: str,
     user_inputs: dict[str, Any],
     budget_chars: int,
+    lazy_tools: bool,
+    retrieved_tools: tuple[str, ...],
+    tool_search_note: str,
 ) -> tuple[WorkContext, int]:
     """按声明顺序取舍直至装下（或无可再舍），返回上下文与最终规模。
 
@@ -427,6 +520,8 @@ def _fit_budget(
             plan=plan, plan_updated=plan_updated, plan_error=plan_error,
             user_inputs=dict(user_inputs),
             dropped=tuple(dropped), budget_chars=budget_chars, size_chars=0,
+            lazy_tools=lazy_tools, retrieved_tools=retrieved_tools,
+            tool_search_note=tool_search_note,
         )
 
     context = build()
@@ -536,6 +631,7 @@ def _apply_truncation(step: WorkStep, max_result_chars: int) -> WorkStep:
         return step
     truncated = TruncatedResult(
         log_ref=step.log_ref,
+        skill_run_id=step.skill_run_id,
         original_chars=len(payload),
         preview=payload[:TRUNCATED_PREVIEW_CHARS],
     )
@@ -548,11 +644,41 @@ def _apply_truncation(step: WorkStep, max_result_chars: int) -> WorkStep:
 
 
 def _render_result(step: WorkStep) -> str:
-    """一步结果的可读形态（ok 给载荷；其余给状态 + 原因——失败**照实**呈现）。"""
+    """一步结果的可读形态（ok 给载荷；其余给状态 + 原因——失败**照实**呈现）。
+
+    截断件后附**回读提示**：完整载荷仍在 ``execution_log`` 的记录里，模型可经
+    ``sk_result_read`` 按 ``offset`` 分片取回（T-AGT-017.2；[01 §5]）。
+    """
     envelope = step.envelope
     if envelope.status == "ok":
-        return _json(envelope.data)
+        rendered = _json(envelope.data)
+        if step.truncated:
+            return rendered + (
+                "\n   （完整结果已外置；回读：sk_result_read"
+                f' {{"skill_run_id": "{step.skill_run_id}", "offset": 0, "max_chars": 2000}}'
+                "，越界会被拒绝）"
+            )
+        return rendered
     return f"[{envelope.status}] {envelope.reason or ''}".rstrip()
+
+
+def _summary(description: str) -> str:
+    """摘要索引里的一条描述（折叠空白 + 截断；只用于惰性态）。"""
+    text = " ".join(description.split())
+    return text if len(text) <= SUMMARY_CHARS else text[:SUMMARY_CHARS] + "…"
+
+
+def _tools_section_chars(entries: tuple[ToolEntry, ...]) -> int:
+    """整份目录工具段的字符数（与 :meth:`WorkContext._render_full_tools` 同一形态）。
+
+    这是惰性态的**阈值口径**（超预算即切摘要）；与渲染同形是为了「阈值判断看到的规模」
+    与「模型实际看到的规模」不漂移——两处由同一份字段拼出，测试钉住相等。
+    """
+    lines = [f"可用工具（{len(entries)} 个）："]
+    for entry in entries:
+        lines.append(f"- {entry.name}：{entry.description}")
+        lines.append("  参数：" + _json(entry.parameters))
+    return len("\n".join(lines))
 
 
 def _json(value: Any) -> str:

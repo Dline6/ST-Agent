@@ -25,7 +25,7 @@ from st_agent.l0.market.db import MarketDb
 from st_agent.l0.secrets import CredentialVault
 from st_agent.l0.storage import Store
 from st_agent.l0.sync_runner import SyncBusyError
-from st_agent.l1.builtin import CommandAccess, SyncPort, WebAccess, install_builtins
+from st_agent.l1.builtin import CommandAccess, ResultAccess, SyncPort, WebAccess, install_builtins
 from st_agent.l1.runner import SkillRunner
 from st_agent.l1.skills import SkillRegistry
 
@@ -99,6 +99,7 @@ def _pipeline(store: Store, db: MarketDb, sync: object) -> SkillRunner:
             "files": FileWorkspace(store),
             "web": WebAccess(store, CredentialVault(store)),
             "commands": CommandAccess(store, CommandRunner(store)),
+            "results": ResultAccess(store),
         },
     )
     return runner

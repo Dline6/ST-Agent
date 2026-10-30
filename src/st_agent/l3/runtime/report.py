@@ -40,6 +40,7 @@ from st_agent.l3.errors import AgentRunNotFoundError, AgentRuntimeValidationErro
 from st_agent.l3.render.describe import describe_agent_run
 from st_agent.l3.runtime.context import AskQuestion, PlanStep
 from st_agent.l3.runtime.loop import LoopOutcome, TerminationReason
+from st_agent.l3.runtime.tool_search import ToolSearchRecord
 
 __all__ = [
     "AGENT_RUN_PREFIX",
@@ -163,6 +164,8 @@ class AgentRunRecord(BaseModel):
     context_dropped: tuple[str, ...] = ()
     """被预算**舍弃**的上下文项（``memory:<node_id>`` / ``history:<message_id>``）——
     [05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 要求如实标注被舍项。"""
+    tool_searches: tuple[ToolSearchRecord, ...] = ()
+    """本次循环的工具检索记录（**决策**：不产 Trace 步 / ``skill_run``，故在此留痕）。"""
     at_bound_kind: str = ""
     """触界的那一条（``step_limit`` / ``llm_call_limit``；未触界为空）。"""
     recorded_at: datetime
@@ -238,6 +241,7 @@ def record_agent_run(
         max_llm_calls=outcome.max_llm_calls,
         budget_chars=outcome.budget_chars,
         context_dropped=outcome.dropped,
+        tool_searches=tuple(outcome.tool_searches),
         recorded_at=now if now is not None else _now(),
     )
     store.put("execution_log", agent_log_ref_of(agent_run_id),

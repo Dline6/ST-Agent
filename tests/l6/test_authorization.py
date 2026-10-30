@@ -158,6 +158,7 @@ class TestGwt4RiskGrading:
             ("skill.sk_file_read", "autonomous-ok"),
             ("skill.sk_file_glob", "autonomous-ok"),
             ("skill.sk_file_grep", "autonomous-ok"),
+            ("skill.sk_result_read", "autonomous-ok"),
             # 写 / 出网动作显式登记为必须协作（[D-145] / [D-146]）
             ("skill.sk_data_sync", "collaborative-required"),
             ("skill.sk_data_fetch", "collaborative-required"),
@@ -185,6 +186,7 @@ class TestGwt4RiskGrading:
         assert prefixes.index("skill.sk_file_read") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_file_glob") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_file_grep") < prefixes.index("skill.")
+        assert prefixes.index("skill.sk_result_read") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_data_sync") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_data_fetch") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_file_write") < prefixes.index("skill.")

@@ -26,6 +26,7 @@ from st_agent.l0.storage import Store
 from st_agent.l1.builtin import (
     BUILTIN_PRIMITIVES,
     CommandAccess,
+    ResultAccess,
     SyncPort,
     WebAccess,
     install_builtins,
@@ -64,6 +65,7 @@ def runner(store: Store, db: MarketDb) -> SkillRunner:
             "files": FileWorkspace(store),
             "web": WebAccess(store, CredentialVault(store)),
             "commands": CommandAccess(store, CommandRunner(store)),
+            "results": ResultAccess(store),
         },
     )
     return pipeline
@@ -211,6 +213,7 @@ class TestLocalSql:
                 "files": FileWorkspace(store),
                 "web": WebAccess(store, CredentialVault(store)),
                 "commands": CommandAccess(store, CommandRunner(store)),
+                "results": ResultAccess(store),
             },
         )
         out = _run(pipeline, LOCAL_SQL, {"sql": "SELECT 1"})
@@ -276,6 +279,7 @@ class TestDataStatus:
                 "files": FileWorkspace(store),
                 "web": WebAccess(store, CredentialVault(store)),
                 "commands": CommandAccess(store, CommandRunner(store)),
+                "results": ResultAccess(store),
             },
         )
         out = _run(pipeline, DATA_STATUS)
@@ -297,7 +301,7 @@ def test_seed_table_contains_the_data_control_and_file_primitives():
         "sk_docs", "sk_plan_update", "sk_ask_user",
         "sk_file_read", "sk_file_glob", "sk_file_grep", "sk_file_write",
         "sk_web_search", "sk_web_fetch",
-        "sk_run_command",
+        "sk_run_command", "sk_result_read",
     ]
 
 
