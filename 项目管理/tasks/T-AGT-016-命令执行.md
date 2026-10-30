@@ -10,7 +10,7 @@ milestone: M9
 depends_on: [T-AGT-008.3]
 status: done
 decisions: [D-137, D-148]
-verify: 两叶合成：受限命令执行 + 默认关闭的本地命令开关；见执行日志 [T-AGT-016.1] / [T-AGT-016.2]（commit 待回填）
+verify: 两叶合成：受限命令执行 + 默认关闭的本地命令开关；见执行日志 [T-AGT-016.1] / [T-AGT-016.2]（commit 7dca980）
 ---
 
 # T-AGT-016 · 命令执行

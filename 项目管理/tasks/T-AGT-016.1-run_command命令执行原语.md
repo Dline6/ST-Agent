@@ -10,7 +10,7 @@ milestone: M9
 depends_on: [T-AGT-008.3]
 status: done
 decisions: [D-137, D-148]
-verify: 一次性 shell / 超时终止 / 输出上限 / 每次执行留痕；经 exec_command 声明与批准闸门；见执行日志 [T-AGT-016.1]（commit 待回填）
+verify: 一次性 shell / 超时终止 / 输出上限 / 每次执行留痕；经 exec_command 声明与批准闸门；见执行日志 [T-AGT-016.1]（commit 7dca980）
 ---
 
 # T-AGT-016.1 · run_command（命令执行原语）

@@ -10,7 +10,7 @@ milestone: M9
 depends_on: [T-AGT-016.1]
 status: done
 decisions: [D-137, D-148]
-verify: local-exec 离线档 full、默认关、开启留痕可回滚；设置页「本地命令」开关；见执行日志 [T-AGT-016.2]（commit 待回填）
+verify: local-exec 离线档 full、默认关、开启留痕可回滚；设置页「本地命令」开关；见执行日志 [T-AGT-016.2]（commit 7dca980）
 ---
 
 # T-AGT-016.2 · 命令能力声明与开启
