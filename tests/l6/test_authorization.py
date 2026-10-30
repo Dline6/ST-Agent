@@ -164,6 +164,7 @@ class TestGwt4RiskGrading:
             ("skill.sk_file_write", "collaborative-required"),
             ("skill.sk_web_search", "collaborative-required"),
             ("skill.sk_web_fetch", "collaborative-required"),
+            ("skill.sk_run_command", "collaborative-required"),
             ("skill.sk_local_write", "collaborative-required"),
             ("skill.demo.param", "collaborative-required"),
             ("attention-budget.max-per-slot", "collaborative-required"),
@@ -189,6 +190,7 @@ class TestGwt4RiskGrading:
         assert prefixes.index("skill.sk_file_write") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_web_search") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_web_fetch") < prefixes.index("skill.")
+        assert prefixes.index("skill.sk_run_command") < prefixes.index("skill.")
 
     def test_grading_can_be_replaced_and_validated(self, tmp_path):
         auth = face(tmp_path)

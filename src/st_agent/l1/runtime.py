@@ -41,6 +41,7 @@ from st_agent.l0.llm.http_transport import (
     openai_compat_sender_factory,
     provider_hosts_of,
 )
+from st_agent.l0.exec.command import CommandRunner
 from st_agent.l0.llm.models import ToolSpec
 from st_agent.l0.llm.registry import EndpointRegistry
 from st_agent.l0.market.db import MarketDb
@@ -49,7 +50,7 @@ from st_agent.l0.net.gateway import EgressGateway
 from st_agent.l0.secrets.errors import CredentialNotFoundError
 from st_agent.l0.secrets.vault import CredentialVault
 from st_agent.l0.storage.store import Store
-from st_agent.l1.builtin import SyncPort, WebAccess, install_builtins
+from st_agent.l1.builtin import CommandAccess, SyncPort, WebAccess, install_builtins
 from st_agent.l1.mcp.lifecycle import McpHubStateMachine
 from st_agent.l1.mcp.mapping import McpSkillMapper
 from st_agent.l1.mcp.permissions import McpPermissionBook
@@ -59,6 +60,7 @@ from st_agent.l1.reuse.registry import OutputRegistry
 from st_agent.l1.registry.facade import ConfigRegistryFacade
 from st_agent.l1.registry.families import (
     DataSourceSwitchFamily,
+    LocalExecFamily,
     McpHubPolicyFamily,
     NetAuditFamily,
     ProviderHostFamily,
@@ -459,11 +461,12 @@ def build_l1_runtime(
     docs_source = LocalDocSource(MarketDb(store), store)
     files = FileWorkspace(store)
     web = WebAccess(store, vault, http=web_http)
+    commands = CommandAccess(store, CommandRunner(store))
     install_builtins(
         skills, runner,
         context={
             "market": market_query, "docs": docs_source, "sync": builtin_sync,
-            "files": files, "web": web,
+            "files": files, "web": web, "commands": commands,
         },
         permissions=skill_permissions,
     )
@@ -570,6 +573,7 @@ def _build_config_registry(
     facade.register_family(NetAuditFamily(store, gateway=gateway))
     facade.register_family(SearchFamily(store, vault=vault))
     facade.register_family(WebEgressFamily(store))
+    facade.register_family(LocalExecFamily(store))
     facade.register_family(DataSourceSwitchFamily(store))
     return facade
 

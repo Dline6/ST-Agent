@@ -57,6 +57,12 @@ from st_agent.l0.net.web_config import (
     validate_host_patterns,
     web_config_entries,
 )
+from st_agent.l0.exec.exec_config import (
+    LOCAL_EXEC_ENABLED_CONFIG_ID,
+    exec_config_entries,
+    get_local_exec_enabled,
+    set_local_exec_enabled,
+)
 from st_agent.l0.secrets import CredentialVault
 from st_agent.l0.secrets.errors import (
     CredentialError,
@@ -76,6 +82,7 @@ from st_agent.l1.scheduler.policy import OFFLINE_CATCH_UP_CONFIG_ID, SchedulerPo
 
 __all__ = [
     "DataSourceSwitchFamily",
+    "LocalExecFamily",
     "McpHubPolicyFamily",
     "NetAuditFamily",
     "ProviderHostFamily",
@@ -612,6 +619,64 @@ class WebEgressFamily:
         change = ChangeRecord(
             change_id=new_change_id(), config_id=config_id,
             old_value=old, new_value=new, applied_at=self._now().isoformat(),
+            trace_ref=trace_id,
+        )
+        self._store.put(
+            CHANGE_PARTITION, f"{self.change_prefix}{change.change_id}.json",
+            change.model_dump_json().encode("utf-8"),
+        )
+        return change
+
+
+class LocalExecFamily:
+    """本地命令执行开关（``local-exec/enabled``；T-AGT-016.2）。
+
+    条目为 L0 owner 的标量配置：开关落 ``local-exec/enabled.json``；变更由本族补落
+    ``ChangeRecord``（前缀 ``local-exec-change/``）。关闭态与执行的**消费方**是
+    ``sk_run_command``，它每次调用时现读，故落值即对下一次调用生效。
+
+    :param store: ``Store`` 句柄
+    :param now: 取时函数（测试注入固定时钟；缺省本机当前时刻）
+    """
+
+    config_prefix = "local-exec/"
+    scope: ConfigScope = "global"
+    change_prefix = "local-exec-change/"
+
+    def __init__(self, store, *, now: Callable[[], datetime] | None = None) -> None:
+        self._store = store
+        self._now = _system_now if now is None else now
+
+    def entries(self) -> tuple[ConfigEntry, ...]:
+        return tuple(
+            entry.model_copy(update={"default": get_local_exec_enabled(self._store)})
+            for entry in exec_config_entries()
+        )
+
+    def entry(self, config_id: str) -> ConfigEntry | None:
+        if config_id != LOCAL_EXEC_ENABLED_CONFIG_ID:
+            return None
+        canonical = exec_config_entries()[0]
+        return canonical.model_copy(
+            update={"default": get_local_exec_enabled(self._store)}
+        )
+
+    def apply(
+        self, config_id: str, value: object, *, trace_id: str | None = None
+    ) -> ChangeRecord | None:
+        if config_id != LOCAL_EXEC_ENABLED_CONFIG_ID:
+            raise RegistryValidationError(
+                f"{config_id!r} 不属本族（{LOCAL_EXEC_ENABLED_CONFIG_ID}）"
+            )
+        if not isinstance(value, bool):
+            raise RegistryValidationError(f"{config_id} 的取值须为布尔：{value!r}")
+        old = get_local_exec_enabled(self._store)
+        if old == value:
+            return None
+        set_local_exec_enabled(self._store, value)
+        change = ChangeRecord(
+            change_id=new_change_id(), config_id=config_id,
+            old_value=old, new_value=value, applied_at=self._now().isoformat(),
             trace_ref=trace_id,
         )
         self._store.put(

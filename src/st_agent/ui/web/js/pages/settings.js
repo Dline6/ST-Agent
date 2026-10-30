@@ -27,11 +27,12 @@ function el(tag, className, text) {
 }
 
 /** 设置区各视图的键与标签——左栏二级与页内取数共用这一份（不另造词表）。 */
-export const VIEWS = ['storage', 'llm', 'web', 'sources', 'privacy', 'agent', 'data', 'maintenance', 'network'];
+export const VIEWS = ['storage', 'llm', 'web', 'command', 'sources', 'privacy', 'agent', 'data', 'maintenance', 'network'];
 export const VIEW_TITLES = {
   storage: '存储',
   llm: 'LLM 提供方',
   web: '开放网络',
+  command: '本地命令',
   sources: '数据源',
   privacy: '隐私与留存',
   agent: '运行期授权',
@@ -2070,6 +2071,8 @@ export async function renderSettingsPage(page, mount) {
   } else if (view === 'web') {
     await renderParts('/api/settings/web', root, ['panel', 'credential']);
     credentialChrome(root);
+  } else if (view === 'command') {
+    await renderParts('/api/settings/command', root, ['panel']);
   } else if (view === 'sources') {
     await renderParts('/api/settings/sources', root, ['panel']);
   } else if (view === 'privacy') {

@@ -399,6 +399,11 @@ def test_m9_builtin_data_ports_are_bound_in_the_production_root(rig):
     assert l1.skill_permissions.approved_permissions("sk_web_fetch") == (
         "net_access:<*>",
     )
+    # 本地命令原语同样可见，声明已落批准账本（T-AGT-016）
+    assert "sk_run_command" in names
+    assert l1.skill_permissions.approved_permissions("sk_run_command") == (
+        "exec_command",
+    )
 
 
 # ───────────────────────────── 内部 ─────────────────────────────
