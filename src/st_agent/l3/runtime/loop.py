@@ -56,6 +56,13 @@ from st_agent.l3.runtime.protocol import (
     DEFAULT_TURN_PURPOSE,
     ToolCallProtocol,
 )
+from st_agent.l3.runtime.tool_search import (
+    TOOL_SEARCH_TOOL,
+    ToolSearchRecord,
+    normalize_limit,
+    normalize_query,
+    search_catalog,
+)
 
 __all__ = [
     "AGENT_GATE_METHOD",
@@ -211,6 +218,8 @@ class LoopOutcome(BaseModel):
     dropped: tuple[str, ...] = ()
     """被预算**舍弃**的上下文项（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)：
     超限如实取舍并标注；末次装配的取值）。"""
+    tool_searches: tuple[ToolSearchRecord, ...] = ()
+    """本次循环里的工具检索记录（**决策**，不产 Trace 步 / ``skill_run``；进 ``agent_run``）。"""
     failure: ResultEnvelope | None = None
     """``llm_failed`` 时端点侧给的信封（[01 §5](../../../../docs/技术架构-v2/01-平台共享契约.md)）
     ——**产出装配原样透出它**，不重包、不改 status、不吞 reason（既有口径）。"""
@@ -252,6 +261,7 @@ def run_agent_loop(
     max_llm_calls: int = DEFAULT_MAX_LLM_CALLS,
     budget_chars: int = DEFAULT_WORK_CONTEXT_BUDGET,
     max_result_chars: int = RESULT_TRUNCATE_CHARS,
+    tool_lazy_chars: int | None = None,
     trace: Trace | None = None,
     session_id: str | None = None,
     history: Sequence[ChatMessage] = (),
@@ -288,6 +298,8 @@ def run_agent_loop(
     :param plan: 续跑承接的计划（同 ``prior_steps``）
     :param plan_updated: 续跑前的计划是否已给出过（区分「尚未给出」与「已清空」）
     :param user_inputs: 续跑时用户补充的答案（一问一参；进工作上下文，恒保留）
+    :param tool_lazy_chars: 工具目录的**惰性阈值**（工具段字符数；``None`` 即取本次预算）。
+        超阈值时只给摘要与检索入口，模型经 ``sk_tool_search`` 按需展开（T-AGT-017.1）
     :returns: :class:`LoopOutcome`——终止原因、已执行步骤、链、以及被拦下未执行的那一步
 
     入参非法（上界非正 / 任务为空 / 目录形态坏）抛
@@ -301,6 +313,13 @@ def run_agent_loop(
             )
     if runner is None:
         raise AgentRuntimeValidationError("循环需要执行面（L1 SkillRunner；组合根注入）")
+    if tool_lazy_chars is not None and (
+        not isinstance(tool_lazy_chars, int) or isinstance(tool_lazy_chars, bool)
+        or tool_lazy_chars < 1
+    ):
+        raise AgentRuntimeValidationError(
+            f"工具惰性阈值须为 ≥1 的整数，得到 {tool_lazy_chars!r}"
+        )
 
     chain = trace if trace is not None else Trace(trace_id=TraceId.generate())
     steps: list[WorkStep] = list(prior_steps)
@@ -312,6 +331,10 @@ def run_agent_loop(
     plan_given = bool(plan_updated)
     plan_error = ""
     by_name = {entry.name: entry for entry in tools}
+    retrieved: list[str] = []
+    """已按检索展开的工具名（惰性态下完整参数只给这些条目；按首次命中顺序）。"""
+    searches: list[ToolSearchRecord] = []
+    tool_search_note = ""
 
     def finish(
         termination: TerminationReason,
@@ -334,6 +357,7 @@ def run_agent_loop(
             dropped=dropped, budget_chars=budget_chars,
             plan=current_plan, plan_updated=plan_given, plan_error=plan_error,
             questions=tuple(questions), directions=tuple(directions), ask_note=ask_note,
+            tool_searches=tuple(searches),
         )
 
     if not protocol.tool_calls_supported():
@@ -360,6 +384,8 @@ def run_agent_loop(
             plan=current_plan, plan_updated=plan_given, plan_error=plan_error,
             user_inputs=user_inputs,
             budget_chars=budget_chars, max_result_chars=max_result_chars,
+            retrieved_tools=tuple(retrieved), tool_search_note=tool_search_note,
+            tool_lazy_chars=tool_lazy_chars,
         )
         if assembled.status != "ok":
             return finish("catalog_empty", reason=assembled.reason or "")
@@ -378,6 +404,18 @@ def run_agent_loop(
         if not turn.tool_calls:
             return finish("finished", answer=turn.text)
 
+        # 顺序驱动（并行工具调用不在本期，D-090 冻结范围）：一轮只认第一个调用
+        call = turn.tool_calls[0]
+
+        # ── 上下文控制：工具检索（仅惰性态可见；不计步数、不过闸门）──
+        # 它只改「模型看到什么」，没有任何外部副作用，故与 sk_plan_update 同属决策：
+        # 不产 skill_run / Trace 步（01 §4），但检索记录进 agent_run 留痕（可审计）。
+        if call.name == TOOL_SEARCH_TOOL and context.lazy_tools:
+            tool_search_note = _apply_tool_search(
+                call, tuple(tools), retrieved, searches,
+            )
+            continue
+
         # ── 上界（步数）：有动作要执行才判 —— 恰在第 N 步给出「结束」不算触界（GWT-5） ──
         if executed >= max_steps:
             return finish(
@@ -385,8 +423,6 @@ def run_agent_loop(
                 reason=f"已达到步数上界（{max_steps}），终止",
             )
 
-        # 顺序驱动（并行工具调用不在本期，D-090 冻结范围）：一轮只认第一个调用
-        call = turn.tool_calls[0]
         entry = by_name.get(call.name)
         if entry is None:
             return finish(
@@ -525,6 +561,7 @@ def _outcome(
     questions: Sequence[AskQuestion] = (),
     directions: Sequence[str] = (),
     ask_note: str = "",
+    tool_searches: Sequence[ToolSearchRecord] = (),
 ) -> LoopOutcome:
     """装配一次循环的产出（``failure`` 即端点侧给的原信封，产出装配原样透出）。"""
     return LoopOutcome(
@@ -536,4 +573,38 @@ def _outcome(
         failure=failure,
         plan=tuple(plan), plan_updated=plan_updated, plan_error=plan_error,
         questions=tuple(questions), directions=tuple(directions), ask_note=ask_note,
+        tool_searches=tuple(tool_searches),
     )
+
+
+def _apply_tool_search(
+    call: ToolCall,
+    tools: tuple[Any, ...],
+    retrieved: list[str],
+    searches: list[ToolSearchRecord],
+) -> str:
+    """执行一次工具检索并把命中项加入已展开集（返回进下一轮上下文的显式说明）。
+
+    参数非法 / 未命中都**不终止循环**——把原因写进上下文让模型下一轮纠正（同计划原语
+    的「非法形态不终止」口径），到上界仍未纠正即按上界终止。
+    """
+    arguments = dict(call.arguments)
+    query, error = normalize_query(arguments.get("query"))
+    if error:
+        searches.append(ToolSearchRecord(note=error))
+        return error
+    limit, limit_error = normalize_limit(arguments.get("limit"))
+    if limit_error:
+        searches.append(ToolSearchRecord(query=query, note=limit_error))
+        return limit_error
+    matches = search_catalog(tools, query, limit=limit)
+    names = tuple(match.name for match in matches)
+    for name in names:
+        if name not in retrieved:
+            retrieved.append(name)
+    if names:
+        note = f"「{query}」命中 {len(names)} 条：{'、'.join(names)}（完整参数已展开）"
+    else:
+        note = f"「{query}」未命中任何工具（目录里只有摘要，可换关键词再试）"
+    searches.append(ToolSearchRecord(query=query, matched=names, note=note))
+    return note

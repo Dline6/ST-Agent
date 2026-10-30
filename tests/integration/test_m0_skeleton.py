@@ -48,7 +48,7 @@ BUILTIN_BASES = (
     "sk_data_sync", "sk_data_fetch", "sk_docs",
     "sk_file_read", "sk_file_glob", "sk_file_grep", "sk_file_write",
     "sk_web_search", "sk_web_fetch",
-    "sk_run_command",
+    "sk_run_command", "sk_result_read",
 )
 BASE_COUNT = OFFICIAL_BASE_COUNT + len(BUILTIN_BASES)
 
