@@ -10,7 +10,7 @@ milestone: M10
 depends_on: [T-INT-010]
 status: done
 decisions: [D-137, D-149]
-verify: "执行日志 [T-AGT-017.1]；新增 15 例 + 全量 4910 passed；出厂目录 27 条 10276 字符未触发"
+verify: "执行日志 [T-AGT-017.1]；新增 15 例 + 全量 4910 passed；出厂目录 27 条 10276 字符未触发；commit d0f2408"
 ---
 
 # T-AGT-017.1 · 工具检索与延迟加载

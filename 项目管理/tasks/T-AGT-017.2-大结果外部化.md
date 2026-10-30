@@ -10,7 +10,7 @@ milestone: M10
 depends_on: [T-AGT-017.1]
 status: done
 decisions: [D-137, D-149]
-verify: "执行日志 [T-AGT-017.2]；新增 12 例 + 全量 4910 passed；回读分片可拼接"
+verify: "执行日志 [T-AGT-017.2]；新增 12 例 + 全量 4910 passed；回读分片可拼接；commit d0f2408"
 ---
 
 # T-AGT-017.2 · 大结果外部化

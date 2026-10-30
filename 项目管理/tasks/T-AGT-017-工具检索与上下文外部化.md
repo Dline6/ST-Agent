@@ -10,7 +10,7 @@ milestone: M10
 depends_on: [T-INT-010]
 status: done
 decisions: [D-137, D-149]
-verify: 由 T-AGT-017.1 / T-AGT-017.2 合成（执行日志两条）
+verify: 由 T-AGT-017.1 / T-AGT-017.2 合成（执行日志两条；commit d0f2408"
 ---
 
 # T-AGT-017 · 工具检索与上下文外部化
