@@ -10,7 +10,7 @@ milestone: M10
 depends_on: [T-AGT-018.1]
 status: done
 decisions: [D-137, D-150, D-151]
-verify: "全量 4930 passed / 16 deselected / 2 errors（两例 test_shell 环境性）；新增 tests/l3/test_agent_subagent.py 8 例、tests/l6/test_authorization.py 分级用例；见执行日志 [T-AGT-018.2]"
+verify: "全量 4930 passed / 16 deselected / 2 errors（两例 test_shell 环境性）；新增 tests/l3/test_agent_subagent.py 8 例、tests/l6/test_authorization.py 分级用例；见执行日志 [T-AGT-018.2]（commit dce1518）"
 ---
 
 # T-AGT-018.2 · 子 Agent（上下文隔离）

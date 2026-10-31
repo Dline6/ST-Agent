@@ -10,7 +10,7 @@ milestone: M10
 depends_on: [T-INT-010]
 status: done
 decisions: [D-137, D-151]
-verify: "全量 4930 passed / 16 deselected / 2 errors（两例 test_shell 环境性）；新增 tests/l3/test_agent_parallel.py 9 例、tests/integration/test_m5_autonomy.py 接线用例；见执行日志 [T-AGT-018.1]"
+verify: "全量 4930 passed / 16 deselected / 2 errors（两例 test_shell 环境性）；新增 tests/l3/test_agent_parallel.py 9 例、tests/integration/test_m5_autonomy.py 接线用例；见执行日志 [T-AGT-018.1]（commit dce1518）"
 ---
 
 # T-AGT-018.1 · 并行工具调用
