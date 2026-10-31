@@ -6,14 +6,16 @@ story: ../../docs/PRD-v2-Agent/story-01-chat-as-os.md
 arch: ../../docs/技术架构-v2/05-L3-对话主入口.md
 arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P2
-milestone: M10
+milestone: ""
 depends_on: [T-AGT-018.1]
 status: todo
-decisions: [D-137]
+decisions: [D-137, D-150]
 verify:
 ---
 
 # T-AGT-018.2 · 子 Agent（上下文隔离）
+
+> **悬空任务（2026-10-31，[D-150](../决策日志.md)）**：本叶已**移出 M10**、`milestone` 置空，待负责人择时另立里程碑。悬空任务**不入就绪集**（[`render_ledger.compute_status`](../tools/render_ledger.py)），故不会被下个会话当作可开工项领走；M10 关卡 [`T-INT-011`](T-INT-011-M10集成关卡长任务运行时.md) 的 `depends_on` 与 GWT 亦已不再包含本叶。
 
 ## 目标
 探索型任务在隔离子上下文里跑，只回传结论与引用。

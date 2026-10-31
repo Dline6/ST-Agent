@@ -1,7 +1,7 @@
 ---
 id: T-AGT-018
 parent: null
-title: 并行与隔离
+title: 并行与隔离（子 Agent 暂悬空）
 story: ../../docs/PRD-v2-Agent/story-01-chat-as-os.md
 arch: ../../docs/技术架构-v2/05-L3-对话主入口.md
 arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
@@ -9,19 +9,21 @@ priority: P2
 milestone: M10
 depends_on: [T-INT-010]
 status: todo
-decisions: [D-137]
+decisions: [D-137, D-150]
 verify:
 ---
 
 # T-AGT-018 · 并行与隔离
 
+> **范围变更（2026-10-31，[D-150](../决策日志.md)）**：子 Agent 叶 [`T-AGT-018.2`](T-AGT-018.2-子Agent上下文隔离.md) 已移出 M10 暂悬空；本分组当前仅由 [`T-AGT-018.1`](T-AGT-018.1-并行工具调用.md) 承接。
+
 > **分组节点**：本节点不直接交付，交付由 [`T-AGT-018.1`](T-AGT-018.1-并行工具调用.md) / [`T-AGT-018.2`](T-AGT-018.2-子Agent上下文隔离.md) 承接；父状态与父 `depends_on` 由 `render_ledger.py render` 按 children 派生。
 
 ## 目标
-一轮多动作，以及把探索装进不污染主窗的子上下文。
+一轮多动作；把探索装进不污染主窗的子上下文（子 Agent 叶暂悬空，不在本里程碑）。
 
 ## 验收标准（Given-When-Then）
-- 分组节点不单独验收——由并行调用与子 Agent 两叶合成。
+- 分组节点不单独验收——当前由并行调用一叶承接；子 Agent 叶随 `T-AGT-018.2` 悬空。
 
 ## 接口面
 <④ 对齐时实填（`doing` 起不可留占位），见 [工作流](../工作流.md) 第 ④ 步>
