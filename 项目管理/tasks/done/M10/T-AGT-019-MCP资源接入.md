@@ -4,7 +4,7 @@ parent: null
 title: MCP resources 接入
 story: ../../docs/PRD-v2-Agent/story-08-mcp-hub.md
 arch: ../../docs/技术架构-v2/03-L1-能力底座-Skills与MCP.md
-arch_link: "[03 §5.5](../../docs/技术架构-v2/03-L1-能力底座-Skills与MCP.md)"
+arch_link: "[03 §5.5](../../../../docs/技术架构-v2/03-L1-能力底座-Skills与MCP.md)"
 priority: P2
 milestone: M10
 depends_on: [T-AGT-008.3]
@@ -33,7 +33,7 @@ verify: 执行日志 [T-AGT-019]——capabilities 判定与 -32601 → unavaila
   - `McpClient.list_resources()` / `McpClient.read_resource(uri)`（`src/st_agent/l1/mcp/client.py`）；新模型 `McpResourceSpec` / `McpResourceContent`（`src/st_agent/l1/mcp/models.py`）。
   - `McpServerRegistry.list_resources(server_id)` / `McpServerRegistry.read_resource(server_id, uri)`（`src/st_agent/l1/mcp/registry.py`）。
   - 内置原语 `sk_mcp_list_resources` / `sk_mcp_read_resource`（新增 `src/st_agent/l1/builtin/mcp_resources.py`，登记进 `BUILTIN_PRIMITIVES`）。
-  - 契约 [03 §5.5](../../docs/技术架构-v2/03-L1-能力底座-Skills与MCP.md)（新增 resources 小节）；分级规则落 `src/st_agent/l6/authorization.py`。
+  - 契约 [03 §5.5](../../../../docs/技术架构-v2/03-L1-能力底座-Skills与MCP.md)（新增 resources 小节）；分级规则落 `src/st_agent/l6/authorization.py`。
   - 测试：新增 `tests/l1/test_mcp_resources.py` / `tests/l1/test_builtin_mcp_resources.py`；同步 `tests/l1/test_builtin_data.py` 种子表与 `tests/l6/test_authorization.py`。
 
 ## 可关闭的遗留
@@ -48,9 +48,9 @@ verify: 执行日志 [T-AGT-019]——capabilities 判定与 -32601 → unavaila
 - **A6**：留痕沿用 `SkillRunner` 的 `skill_run` 记录，不另建审计分区。若错的影响：资源读取的审计只在 execution_log。验证方式：经 `SkillRunner.run` 的用例断言记录可查。
 
 ## 涉及契约
-- [03 §5.5](../../docs/技术架构-v2/03-L1-能力底座-Skills与MCP.md) —— MCP resources（本任务新增小节）
-- [01 §2](../../docs/技术架构-v2/01-平台共享契约.md) —— 工具暴露面（`builtin` 来源与注册面＝可见面）
-- [01 §10](../../docs/技术架构-v2/01-平台共享契约.md) —— 权限模型（Server 侧声明与批准）
+- [03 §5.5](../../../../docs/技术架构-v2/03-L1-能力底座-Skills与MCP.md) —— MCP resources（本任务新增小节）
+- [01 §2](../../../../docs/技术架构-v2/01-平台共享契约.md) —— 工具暴露面（`builtin` 来源与注册面＝可见面）
+- [01 §10](../../../../docs/技术架构-v2/01-平台共享契约.md) —— 权限模型（Server 侧声明与批准）
 
 ## 参考
 - `l1/mcp/client.py` / `transports.py`
