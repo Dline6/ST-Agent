@@ -13,7 +13,8 @@
   注入按操作抓取闭包的先例）。
 
 **协议面取最小子集**（任务文件假设 A1）：``initialize`` /
-``notifications/initialized`` / ``tools/list`` / ``tools/call``。
+``notifications/initialized`` / ``tools/list`` / ``tools/call`` /
+``resources/list`` / ``resources/read``（后两者见 03 §5.5）。
 """
 
 from __future__ import annotations
@@ -30,7 +31,7 @@ from collections.abc import Callable, Sequence
 from typing import Any
 
 from st_agent.l0.net import EgressCancelledError, EgressError, EgressUnavailableError
-from st_agent.l1.mcp.errors import McpConnectionError
+from st_agent.l1.mcp.errors import McpConnectionError, McpMethodNotFoundError
 from st_agent.l1.mcp.ids import check_remote_url, check_server_id, remote_host
 
 __all__ = [
@@ -99,11 +100,15 @@ def _unwrap(raw_message: str) -> dict[str, Any]:
         raise McpConnectionError("MCP 响应不是 JSON 对象")
     error = msg.get("error")
     if error is not None:
+        code = error.get("code") if isinstance(error, dict) else None
         if isinstance(error, dict):
             detail = f"{error.get('code', '')} {error.get('message', '')}".strip()
         else:
             detail = str(error)
-        raise McpConnectionError(f"MCP 调用被拒：{detail or '未说明原因'}")
+        message = f"MCP 调用被拒：{detail or '未说明原因'}"
+        if code == -32601:
+            raise McpMethodNotFoundError(message)
+        raise McpConnectionError(message)
     result = msg.get("result")
     return result if isinstance(result, dict) else {}
 
@@ -120,6 +125,7 @@ class McpTransport(ABC):
         self._protocol_version = ""
         self._server_name = ""
         self._server_version = ""
+        self._capabilities: dict[str, Any] = {}
 
     # ───────────────────────── 子类实现面 ─────────────────────────
 
@@ -179,6 +185,11 @@ class McpTransport(ABC):
         """握手带回的 Server 版本（未握手为空串）。"""
         return self._server_version
 
+    @property
+    def capabilities(self) -> dict[str, Any]:
+        """握手带回的 Server 能力声明（未握手为空字典；03 §5.5 的能力判定依据）。"""
+        return dict(self._capabilities)
+
     def initialize(self) -> dict[str, Any]:
         """MCP 握手：``initialize`` + ``notifications/initialized``。"""
         result = self.request(
@@ -194,6 +205,8 @@ class McpTransport(ABC):
         self._protocol_version = str(result.get("protocolVersion", "") or "")
         self._server_name = str(info.get("name", "") or "")
         self._server_version = str(info.get("version", "") or "")
+        capabilities = result.get("capabilities")
+        self._capabilities = dict(capabilities) if isinstance(capabilities, dict) else {}
         self.notify("notifications/initialized")
         return result
 

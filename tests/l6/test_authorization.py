@@ -161,6 +161,9 @@ class TestGwt4RiskGrading:
             ("skill.sk_result_read", "autonomous-ok"),
             # 子 Agent 派生无副作用（子步逐步过同一闸门）——T-AGT-018.2 / [D-151]
             ("skill.sk_spawn_agent", "autonomous-ok"),
+            # MCP resources 只读（Server 权限另在 mcp-permission 账本批准）——T-AGT-019 / 03 §5.5
+            ("skill.sk_mcp_list_resources", "autonomous-ok"),
+            ("skill.sk_mcp_read_resource", "autonomous-ok"),
             # 写 / 出网动作显式登记为必须协作（[D-145] / [D-146]）
             ("skill.sk_data_sync", "collaborative-required"),
             ("skill.sk_data_fetch", "collaborative-required"),
@@ -190,6 +193,8 @@ class TestGwt4RiskGrading:
         assert prefixes.index("skill.sk_file_grep") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_result_read") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_spawn_agent") < prefixes.index("skill.")
+        assert prefixes.index("skill.sk_mcp_list_resources") < prefixes.index("skill.")
+        assert prefixes.index("skill.sk_mcp_read_resource") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_data_sync") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_data_fetch") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_file_write") < prefixes.index("skill.")

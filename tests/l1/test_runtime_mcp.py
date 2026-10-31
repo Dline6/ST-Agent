@@ -65,7 +65,10 @@ def mounted(store: Store, runtime: L1Runtime) -> L1Runtime:
 
 
 def _derived(rt: L1Runtime) -> list[str]:
-    return [d.skill_id for d in rt.skills.list_all() if d.skill_id.startswith("sk_mcp_")]
+    """MCP 映射派生的 Skill（按来源判定；`sk_mcp_*` 前缀也含内置原语，不能按名前缀）。"""
+    return [
+        d.skill_id for d in rt.skills.list_all() if d.source == "mcp-mapped"
+    ]
 
 
 class TestGwt1RecycleWiring:

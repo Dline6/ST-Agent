@@ -31,6 +31,7 @@ from st_agent.l1.builtin import (
     WebAccess,
     install_builtins,
 )
+from st_agent.l1.mcp import McpServerRegistry
 from st_agent.l1.runner import RUN_PREFIX, SkillRunner
 from st_agent.l1.runner.models import SkillRun
 from st_agent.l1.skills import SkillRegistry
@@ -66,6 +67,7 @@ def runner(store: Store, db: MarketDb) -> SkillRunner:
             "web": WebAccess(store, CredentialVault(store)),
             "commands": CommandAccess(store, CommandRunner(store)),
             "results": ResultAccess(store),
+            "mcp_servers": McpServerRegistry(store),
         },
     )
     return pipeline
@@ -214,6 +216,8 @@ class TestLocalSql:
                 "web": WebAccess(store, CredentialVault(store)),
                 "commands": CommandAccess(store, CommandRunner(store)),
                 "results": ResultAccess(store),
+                "mcp_servers": McpServerRegistry(store),
+            "mcp_servers": McpServerRegistry(store),
             },
         )
         out = _run(pipeline, LOCAL_SQL, {"sql": "SELECT 1"})
@@ -280,6 +284,8 @@ class TestDataStatus:
                 "web": WebAccess(store, CredentialVault(store)),
                 "commands": CommandAccess(store, CommandRunner(store)),
                 "results": ResultAccess(store),
+                "mcp_servers": McpServerRegistry(store),
+            "mcp_servers": McpServerRegistry(store),
             },
         )
         out = _run(pipeline, DATA_STATUS)
@@ -303,6 +309,7 @@ def test_seed_table_contains_the_data_control_and_file_primitives():
         "sk_web_search", "sk_web_fetch",
         "sk_run_command", "sk_result_read",
         "sk_spawn_agent",
+        "sk_mcp_list_resources", "sk_mcp_read_resource",
     ]
 
 

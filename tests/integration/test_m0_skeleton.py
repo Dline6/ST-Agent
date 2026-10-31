@@ -50,6 +50,7 @@ BUILTIN_BASES = (
     "sk_web_search", "sk_web_fetch",
     "sk_run_command", "sk_result_read",
     "sk_spawn_agent",
+    "sk_mcp_list_resources", "sk_mcp_read_resource",
 )
 BASE_COUNT = OFFICIAL_BASE_COUNT + len(BUILTIN_BASES)
 

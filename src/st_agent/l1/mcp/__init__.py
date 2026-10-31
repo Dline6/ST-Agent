@@ -13,16 +13,19 @@
 
 批次：``T-L1-002.1`` 交付传输（stdio / HTTP-SSE）、注册表、权限批准；
 ``T-L1-002.2`` 交付 tool → Skill 自动映射与版本化；
-``T-L1-002.3`` 交付状态机、崩溃重连、降级候选与禁用中止。
+``T-L1-002.3`` 交付状态机、崩溃重连、降级候选与禁用中止；
+``T-AGT-019`` 交付 resources（list / read，03 §5.5）。
 """
 
 from st_agent.l1.mcp.client import McpClient
 from st_agent.l1.mcp.errors import (
     McpCancelledError,
+    McpCapabilityUnavailableError,
     McpConnectionError,
     McpError,
     McpMappingError,
     McpMappingNotFoundError,
+    McpMethodNotFoundError,
     McpPermissionError,
     McpServerExistsError,
     McpServerNotFoundError,
@@ -72,6 +75,8 @@ from st_agent.l1.mcp.models import (
     DATA_EGRESS_RISK_TEXT,
     ConnectionTestResult,
     McpPermissionDecision,
+    McpResourceContent,
+    McpResourceSpec,
     McpServerRecord,
     McpTransportKind,
     PermissionApproval,
@@ -123,6 +128,7 @@ __all__ = [
     "MAX_RETRIES_CONFIG_ID",
     "MappingStatus",
     "McpCancelledError",
+    "McpCapabilityUnavailableError",
     "McpClient",
     "McpConnectionError",
     "McpError",
@@ -132,9 +138,12 @@ __all__ = [
     "McpLifecycleRecord",
     "McpMappingError",
     "McpMappingNotFoundError",
+    "McpMethodNotFoundError",
     "McpPermissionBook",
     "McpPermissionDecision",
     "McpPermissionError",
+    "McpResourceContent",
+    "McpResourceSpec",
     "McpServerExistsError",
     "McpServerNotFoundError",
     "McpServerRecord",

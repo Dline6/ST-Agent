@@ -217,6 +217,20 @@ Server 生命周期状态：`connected` / `disconnected` / `reconnecting` / `per
 
 沿用 01 §10 统一权限模型：MCP Server 按能力粒度声明（读文件/网络/执行命令），首次调用前逐项批准；远程 Server 额外标注数据外发风险。
 
+### 5.5 resources 接入
+
+MCP Server 除 tool 外还可提供 **resources**（URI 化的可读数据，如文件、记录、文档）。本产品把 `resources/list` 与 `resources/read` 接成**两条内置原语**，与其余 Skill 同走 §1.2 的完整流水线（闸门、沙箱、留痕、Trace 一环不省）：
+
+| 面 | 口径 |
+| --- | --- |
+| 协议面 | 只取 `resources/list` 与 `resources/read`；列表自动跟随 `nextCursor` 取尽，页数上限 100，超限**显式失败**而不是静默截断。订阅（`resources/subscribe`）与模板类方法不在本轮范围 |
+| 能力判定 | 以 `initialize` 回执的 `capabilities.resources` 为准；Server 未声明该能力、或调用返回 JSON-RPC `-32601`（method not found）→ **显式 `unavailable`**，不把「Server 不支持」伪装成空清单 |
+| 模型可见面 | `sk_mcp_list_resources`（参数 `server_id`）与 `sk_mcp_read_resource`（参数 `server_id` / `uri`）；`source=builtin`，随其余内置原语登记进同一注册面（[01 §2](01-平台共享契约.md)），不另开第二份能力登记 |
+| 内容形态 | `resources/read` 的 `contents` 逐条规范化为 `uri` / `mime_type` / `text` / `blob`（`text` 与 `blob` 恰一）；大内容不在此另设截断，由 [05 §10](05-L3-对话主入口.md) 的结果外部化与 `sk_result_read` 承接 |
+| 不可用边界 | 未注册 / 已禁用的 Server、连接失败、未声明 resources 能力 → `unavailable` 并写明原因；`server_id` / `uri` 形态非法 → `validation_failed` |
+| 权限与分级 | 原语**不另声明权限**——能力经注入的 MCP 注册表消费，Server 自身权限仍在 §5.4 的 `mcp-permission/<server_id>.json` 逐项批准；两条原语均为 `autonomous-ok`（读操作；远程 Server 的数据外发在注册时已显式确认，调用经 L0 网关审计） |
+| 留痕 | 沿用 §1.2 的 `skill_run` 记录（输入快照、内容、错误、耗时），不另建审计分区 |
+
 ## 6. 定时调度
 
 - `stock-watch`、`data-aggregate`、`sector-heatmap`、每日报告（[07-L5](07-L5-主动触达.md)）、每周反思（[08-L6](08-L6-反思演进.md)）等均依赖调度器

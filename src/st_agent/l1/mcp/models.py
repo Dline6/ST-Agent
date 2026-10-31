@@ -5,6 +5,8 @@
   构造期校验强制——stdio 要 ``command``，远程要 ``url`` + ``remote_acknowledged``。
 - ``ToolSpec``：MCP tool 的最小描述（``tools/list`` 的解析结果；``.2`` 据其
   派生 SkillDescriptor，故 schema 字段原样保留，不在本层解释）。
+- ``McpResourceSpec`` / ``McpResourceContent``：MCP resource 的清单条目与内容
+  （``resources/list`` / ``resources/read``；03 §5.5）。
 - ``ConnectionTestResult``：一次连接测试的结论（GWT-1 的显式回执）。
 - ``PermissionApproval``：一条权限声明的批准状态（GWT-5；01 §10 逐项批准）。
 """
@@ -25,6 +27,8 @@ from st_agent.l1.mcp.ids import check_remote_url, check_server_id
 __all__ = [
     "DATA_EGRESS_RISK_TEXT",
     "McpPermissionDecision",
+    "McpResourceContent",
+    "McpResourceSpec",
     "McpServerRecord",
     "McpTransportKind",
     "PermissionApproval",
@@ -48,6 +52,36 @@ class ToolSpec(BaseModel):
     description: str = ""
     input_schema: dict[str, object] = Field(default_factory=dict)
     output_schema: dict[str, object] = Field(default_factory=dict)
+
+
+class McpResourceSpec(BaseModel):
+    """MCP resource 的最小描述（``resources/list`` 解析结果；03 §5.5）。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    uri: str = Field(min_length=1, max_length=2048)
+    name: str = Field(min_length=1, max_length=256)
+    description: str = ""
+    mime_type: str = ""
+
+
+class McpResourceContent(BaseModel):
+    """一条资源内容（``resources/read`` 的 ``contents`` 条目；文本与二进制恰一）。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    uri: str = Field(min_length=1, max_length=2048)
+    mime_type: str = ""
+    text: str | None = None
+    blob: str | None = None
+
+    @model_validator(mode="after")
+    def _shape(self) -> "McpResourceContent":
+        if (self.text is None) == (self.blob is None):
+            raise McpValidationError(
+                f"MCP 资源 {self.uri!r} 的内容须恰含 text 或 blob 之一（不静默置空）"
+            )
+        return self
 
 
 class McpServerRecord(BaseModel):

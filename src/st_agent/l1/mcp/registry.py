@@ -19,11 +19,13 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Sequence
 from datetime import datetime
+from typing import Any
 
 from pydantic import ValidationError
 
 from st_agent.l1.mcp.client import McpClient
 from st_agent.l1.mcp.errors import (
+    McpCapabilityUnavailableError,
     McpConnectionError,
     McpError,
     McpServerExistsError,
@@ -34,6 +36,8 @@ from st_agent.l1.mcp.ids import check_server_id
 from st_agent.l1.mcp.models import (
     DATA_EGRESS_RISK_TEXT,
     ConnectionTestResult,
+    McpResourceContent,
+    McpResourceSpec,
     McpServerRecord,
 )
 from st_agent.l1.mcp.permissions import McpPermissionBook
@@ -219,6 +223,22 @@ class McpServerRegistry:
         """按已存记录重跑一次连接测试（GWT-1；失败返回 ``ok=False`` 而非抛错）。"""
         return self._probe(self.get_server(server_id))
 
+    # ───────────────────────── resources（03 §5.5） ─────────────────────────
+
+    def list_resources(self, server_id: str) -> tuple[McpResourceSpec, ...]:
+        """列出一台 Server 提供的全部 resource（一次会话，用完即关）。
+
+        未注册 → ``McpServerNotFoundError``；已禁用 / 未声明 ``resources`` 能力 →
+        ``McpCapabilityUnavailableError``；连接失败 → ``McpConnectionError``。
+        """
+        record = self.get_server(server_id)
+        return self._with_session(record, lambda client: client.list_resources())
+
+    def read_resource(self, server_id: str, uri: str) -> tuple[McpResourceContent, ...]:
+        """读取一台 Server 的一个 resource（一次会话，用完即关；失败形态同上）。"""
+        record = self.get_server(server_id)
+        return self._with_session(record, lambda client: client.read_resource(uri))
+
     # ───────────────────────── 内部工具 ─────────────────────────
 
     def _build_record(self, sid: str, **fields) -> McpServerRecord:
@@ -277,6 +297,27 @@ class McpServerRegistry:
             ok=False, server_id=record.server_id,
             permissions=record.permissions, reason=reason, tested_at=_now(),
         )
+
+    def _with_session(self, record: McpServerRecord, action: Callable[[McpClient], Any]) -> Any:
+        """开一次会话做 ``action``（握手后交付客户端，用完即关）。
+
+        已禁用 → ``McpCapabilityUnavailableError``（不接取）；底层异常统一显式化。
+        """
+        if not record.enabled:
+            raise McpCapabilityUnavailableError(
+                f"MCP Server {record.server_id!r} 已禁用，不接取其资源"
+            )
+        client = McpClient(self._make_transport(record))
+        try:
+            client.open()
+            client.initialize()
+            return action(client)
+        except McpError:
+            raise
+        except Exception as exc:  # 底层异常（含网关 Egress*）一律显式化
+            raise McpConnectionError(f"{type(exc).__name__}: {exc}") from exc
+        finally:
+            client.close()
 
     def _make_transport(self, record: McpServerRecord) -> McpTransport:
         if self._factory is not None:
