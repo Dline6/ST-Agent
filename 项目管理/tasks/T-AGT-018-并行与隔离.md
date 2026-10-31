@@ -1,29 +1,29 @@
 ---
 id: T-AGT-018
 parent: null
-title: 并行与隔离（子 Agent 暂悬空）
+title: 并行与隔离
 story: ../../docs/PRD-v2-Agent/story-01-chat-as-os.md
 arch: ../../docs/技术架构-v2/05-L3-对话主入口.md
 arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P2
 milestone: M10
 depends_on: [T-INT-010]
-status: todo
-decisions: [D-137, D-150]
+status: done
+decisions: [D-137, D-150, D-151]
 verify:
 ---
 
 # T-AGT-018 · 并行与隔离
 
-> **范围变更（2026-10-31，[D-150](../决策日志.md)）**：子 Agent 叶 [`T-AGT-018.2`](T-AGT-018.2-子Agent上下文隔离.md) 已移出 M10 暂悬空；本分组当前仅由 [`T-AGT-018.1`](T-AGT-018.1-并行工具调用.md) 承接。
+> **范围变更（2026-10-31）**：子 Agent 叶 [`T-AGT-018.2`](T-AGT-018.2-子Agent上下文隔离.md) 先按 [D-150](../决策日志.md) 移出 M10 暂悬空，同日负责人指示「连 018.2」一并交付，[D-151](../决策日志.md) 回挂本叶并恢复 [`T-INT-011`](T-INT-011-M10集成关卡长任务运行时.md) 的依赖与 GWT-4。本分组当前由 [`.1`](T-AGT-018.1-并行工具调用.md) / [`.2`](T-AGT-018.2-子Agent上下文隔离.md) 两叶承接。
 
 > **分组节点**：本节点不直接交付，交付由 [`T-AGT-018.1`](T-AGT-018.1-并行工具调用.md) / [`T-AGT-018.2`](T-AGT-018.2-子Agent上下文隔离.md) 承接；父状态与父 `depends_on` 由 `render_ledger.py render` 按 children 派生。
 
 ## 目标
-一轮多动作；把探索装进不污染主窗的子上下文（子 Agent 叶暂悬空，不在本里程碑）。
+一轮多动作；把探索装进不污染主窗的子上下文。
 
 ## 验收标准（Given-When-Then）
-- 分组节点不单独验收——当前由并行调用一叶承接；子 Agent 叶随 `T-AGT-018.2` 悬空。
+- 分组节点不单独验收——由 [`T-AGT-018.1`](T-AGT-018.1-并行工具调用.md)（并行调用）与 [`T-AGT-018.2`](T-AGT-018.2-子Agent上下文隔离.md)（子 Agent）两叶承接。
 
 ## 接口面
 <④ 对齐时实填（`doing` 起不可留占位），见 [工作流](../工作流.md) 第 ④ 步>

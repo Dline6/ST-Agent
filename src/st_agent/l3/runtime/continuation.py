@@ -132,6 +132,9 @@ def resume_agent_run(
     session_id: str | None = None,
     history: Sequence[Any] = (),
     memory: Sequence[Any] = (),
+    parallel_safe: bool = False,
+    allow_sub_agents: bool = True,
+    nested_recorder: Any = None,
     now: datetime | None = None,
     ttl: timedelta = CONTINUATION_TTL,
 ) -> ResumeOutcome:
@@ -258,6 +261,11 @@ def resume_agent_run(
         plan=plan,
         plan_updated=plan_updated,
         user_inputs=user_inputs,
+        parallel_safe=parallel_safe,
+        allow_sub_agents=allow_sub_agents,
+        nested_recorder=nested_recorder,
+        parent_trace_id=record.parent_trace_id,
+        prior_sub_agents=tuple(record.sub_agents),
     )
     if decision == "answer":
         outcome = outcome.model_copy(update={

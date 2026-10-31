@@ -306,6 +306,20 @@ def describe_agent_run(
             ],
             "directions": [str(item) for item in tuple(getattr(view, "directions", ()) or ())],
             "ask_note": getattr(view, "ask_note", "") or "",
+            "sub_agents": [
+                {
+                    "task": sub.task,
+                    "agent_run_id": sub.agent_run_id,
+                    "trace_id": sub.trace_id,
+                    "termination": sub.termination,
+                    "reason": sub.reason,
+                    "answer": sub.answer,
+                    "evidence": [item.ref for item in sub.evidence],
+                    "steps": sub.steps,
+                    "llm_calls": sub.llm_calls,
+                }
+                for sub in tuple(getattr(view, "sub_agents", ()) or ())
+            ],
             "resumed_from": getattr(view, "resumed_from", "") or "",
             "answer": getattr(view, "answer", "") or "",
             "llm_calls": int(getattr(view, "llm_calls", 0)),
@@ -328,6 +342,7 @@ def describe_agent_run(
             "questions": "data",
             "directions": "generated",
             "ask_note": "generated",
+            "sub_agents": "data",
             "resumed_from": "data",
             "answer": "generated",
             "llm_calls": "data",

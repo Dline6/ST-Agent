@@ -27,16 +27,18 @@
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from st_agent.contracts.identifiers import TraceId
-from st_agent.contracts.result_envelope import ResultEnvelope
+from st_agent.contracts.result_envelope import EvidenceRef, ResultEnvelope
 from st_agent.contracts.trace import Trace
 from st_agent.l0.llm import ToolCall
 from st_agent.l1.builtin.ask_user import ASK_USER, normalize_questions
 from st_agent.l1.builtin.plan_update import PLAN_UPDATE, normalize_plan
+from st_agent.l1.builtin.spawn import SPAWN_AGENT, normalize_spawn_task
 from st_agent.l1.skills.tool_catalog import split_arguments
 from st_agent.l2.memory.reader import MemorySlice
 from st_agent.l3.chat.session import ChatMessage
@@ -71,11 +73,16 @@ __all__ = [
     "DEFAULT_MAX_LLM_CALLS",
     "DEFAULT_MAX_STEPS",
     "GATE_VERDICTS",
+    "NestedRecorder",
+    "NestedRunRef",
     "PLAN_UPDATE_TOOL",
+    "SPAWN_AGENT_TOOL",
     "GateDecision",
     "GateVerdict",
     "LoopOutcome",
+    "SubAgentRun",
     "TerminationReason",
+    "render_subagent_note",
     "resolve_approved",
     "run_agent_loop",
 ]
@@ -132,6 +139,14 @@ ASK_USER_TOOL = ASK_USER.base
 循环按工具名识别：它的效果是**终止并交还结构化问项**，同样不经 L1 执行面。
 """
 
+SPAWN_AGENT_TOOL = SPAWN_AGENT.base
+"""派生子 Agent 原语的工具名（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+
+循环按工具名识别：它在**隔离子上下文**里再跑一次本循环，只把结论与引用带回主上下文。
+派生本身是**决策式控制动作**（不产 Trace 步 / ``skill_run``，同计划原语），子循环的动作
+另起一条 Trace（[01 §4](../../../../docs/技术架构-v2/01-平台共享契约.md)）。
+"""
+
 GateVerdict = Literal["autonomous-ok", "needs-confirmation", "denied"]
 
 TerminationReason = Literal[
@@ -163,6 +178,39 @@ class GateDecision(BaseModel):
 
     verdict: GateVerdict
     reason: str = ""
+
+
+class NestedRunRef(BaseModel):
+    """一次子 Agent 运行落痕后的**定位串**（由注入的记录端口返回）。
+
+    L3 循环本体不持存储，故「把子循环落成 ``agent_run``」由组合根注入的记录端口完成；
+    端口回传子运行的 ``agent_run_id`` 与留痕路径，供主产出引用与 ``explain`` 展开。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    agent_run_id: str
+    log_ref: str
+
+
+class SubAgentRun(BaseModel):
+    """一次子 Agent 派生的**回传摘要**（结论 + 引用；不携子步骤明细）。
+
+    子步骤明细在子循环自己的 Trace 与 ``skill_run`` 记录里，以 ``trace_id`` /
+    ``agent_run_id`` 定位；本摘要只把主上下文与主产出需要的东西带回来。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    task: str
+    agent_run_id: str
+    trace_id: str
+    termination: str
+    reason: str = ""
+    answer: str = ""
+    evidence: tuple[EvidenceRef, ...] = ()
+    steps: int = 0
+    llm_calls: int = 0
 
 
 class LoopOutcome(BaseModel):
@@ -223,6 +271,16 @@ class LoopOutcome(BaseModel):
     failure: ResultEnvelope | None = None
     """``llm_failed`` 时端点侧给的信封（[01 §5](../../../../docs/技术架构-v2/01-平台共享契约.md)）
     ——**产出装配原样透出它**，不重包、不改 status、不吞 reason（既有口径）。"""
+    parent_trace_id: str = ""
+    """子循环派生的父链 ``trace_id``（主循环为空）——子链与父链因此可关联（[01 §4]）。"""
+    executed_steps: int = 0
+    """本次循环**实际消耗**的步数（含子 Agent 内的步；可见 ``steps`` 不含子步骤）。"""
+    parallel_used: bool = False
+    """本次循环是否**真的**并行执行过一批调用（串行回退时为假）。"""
+    parallel_note: str = ""
+    """并发形态的显式标注（并行 / 因底层未声明并发安全而退回串行）。"""
+    sub_agents: tuple[SubAgentRun, ...] = ()
+    """本次循环派生的子 Agent 摘要（按派生顺序；子步骤不在 ``steps`` 内）。"""
 
     @property
     def at_bound(self) -> bool:
@@ -233,6 +291,10 @@ class LoopOutcome(BaseModel):
     def finished(self) -> bool:
         """模型是否自行给出了「结束」。"""
         return self.termination == "finished"
+
+
+NestedRecorder = Callable[[LoopOutcome], NestedRunRef]
+"""子循环的落痕端口（组合根注入；缺省未注入即派生显式不可用）。"""
 
 
 def resolve_approved(source: ApprovedPermissions, skill_id: str) -> tuple[str, ...]:
@@ -270,6 +332,11 @@ def run_agent_loop(
     plan: Sequence[PlanStep] = (),
     plan_updated: bool = False,
     user_inputs: dict[str, Any] | None = None,
+    parallel_safe: bool = False,
+    allow_sub_agents: bool = True,
+    nested_recorder: NestedRecorder | None = None,
+    parent_trace_id: str = "",
+    prior_sub_agents: Sequence[SubAgentRun] = (),
 ) -> LoopOutcome:
     """驱动自主查证循环（四段一轮，直至模型给出「结束」或触界）。
 
@@ -300,6 +367,13 @@ def run_agent_loop(
     :param user_inputs: 续跑时用户补充的答案（一问一参；进工作上下文，恒保留）
     :param tool_lazy_chars: 工具目录的**惰性阈值**（工具段字符数；``None`` 即取本次预算）。
         超阈值时只给摘要与检索入口，模型经 ``sk_tool_search`` 按需展开（T-AGT-017.1）
+    :param parallel_safe: 底层（执行面 / 存储 / 原语）是否**已声明并发安全**——
+        **缺省 ``False``**：一轮多个调用显式退回串行并在产出标注；装配方核验后才可置 ``True``
+    :param allow_sub_agents: 本循环是否允许派生子 Agent（子循环置 ``False``，只允许一层）
+    :param nested_recorder: 子循环的**落痕端口**（组合根注入；缺省即派生显式不可用）
+    :param parent_trace_id: 子循环的父链 ``trace_id``（主循环留空；只进留痕，不改 Trace 结构）
+    :param prior_sub_agents: 续跑承接的**子 Agent 摘要**（取自旧 ``agent_run`` 留痕；
+        子步骤不重建，但结论、引用与留痕链接仍进工作上下文与本次留痕）
     :returns: :class:`LoopOutcome`——终止原因、已执行步骤、链、以及被拦下未执行的那一步
 
     入参非法（上界非正 / 任务为空 / 目录形态坏）抛
@@ -320,6 +394,11 @@ def run_agent_loop(
         raise AgentRuntimeValidationError(
             f"工具惰性阈值须为 ≥1 的整数，得到 {tool_lazy_chars!r}"
         )
+    for name, value in (("parallel_safe", parallel_safe), ("allow_sub_agents", allow_sub_agents)):
+        if not isinstance(value, bool):
+            raise AgentRuntimeValidationError(f"{name} 须为布尔值，得到 {value!r}")
+    if nested_recorder is not None and not callable(nested_recorder):
+        raise AgentRuntimeValidationError("子 Agent 的落痕端口须为可调用对象（或 None）")
 
     chain = trace if trace is not None else Trace(trace_id=TraceId.generate())
     steps: list[WorkStep] = list(prior_steps)
@@ -335,6 +414,10 @@ def run_agent_loop(
     """已按检索展开的工具名（惰性态下完整参数只给这些条目；按首次命中顺序）。"""
     searches: list[ToolSearchRecord] = []
     tool_search_note = ""
+    sub_runs: list[SubAgentRun] = list(prior_sub_agents)
+    subagent_notes: list[str] = [render_subagent_note(sub) for sub in prior_sub_agents]
+    parallel_notes: list[str] = []
+    parallel_used = False
 
     def finish(
         termination: TerminationReason,
@@ -358,6 +441,9 @@ def run_agent_loop(
             plan=current_plan, plan_updated=plan_given, plan_error=plan_error,
             questions=tuple(questions), directions=tuple(directions), ask_note=ask_note,
             tool_searches=tuple(searches),
+            parent_trace_id=parent_trace_id, executed_steps=executed,
+            parallel_used=parallel_used, parallel_note="；".join(parallel_notes),
+            sub_agents=tuple(sub_runs),
         )
 
     if not protocol.tool_calls_supported():
@@ -385,6 +471,7 @@ def run_agent_loop(
             user_inputs=user_inputs,
             budget_chars=budget_chars, max_result_chars=max_result_chars,
             retrieved_tools=tuple(retrieved), tool_search_note=tool_search_note,
+            subagent_note="\n".join(subagent_notes),
             tool_lazy_chars=tool_lazy_chars,
         )
         if assembled.status != "ok":
@@ -404,113 +491,286 @@ def run_agent_loop(
         if not turn.tool_calls:
             return finish("finished", answer=turn.text)
 
-        # 顺序驱动（并行工具调用不在本期，D-090 冻结范围）：一轮只认第一个调用
-        call = turn.tool_calls[0]
+        # ── 本轮多调用：先解析（检索入口惰性态不过闸门；未知工具在预算判定后终止）──
+        calls = tuple(turn.tool_calls)
+        planned: list[tuple[ToolCall, Any]] = []
+        unknown: ToolCall | None = None
+        executable_count = 0
+        for call in calls:
+            if call.name == TOOL_SEARCH_TOOL and context.lazy_tools:
+                planned.append((call, None))       # 上下文控制：不占步数、不过闸门
+                continue
+            entry = by_name.get(call.name)
+            if entry is None:
+                unknown = call
+                continue
+            planned.append((call, entry))
+            if call.name not in (PLAN_UPDATE_TOOL, ASK_USER_TOOL, SPAWN_AGENT_TOOL):
+                executable_count += 1
 
-        # ── 上下文控制：工具检索（仅惰性态可见；不计步数、不过闸门）──
-        # 它只改「模型看到什么」，没有任何外部副作用，故与 sk_plan_update 同属决策：
-        # 不产 skill_run / Trace 步（01 §4），但检索记录进 agent_run 留痕（可审计）。
-        if call.name == TOOL_SEARCH_TOOL and context.lazy_tools:
-            tool_search_note = _apply_tool_search(
-                call, tuple(tools), retrieved, searches,
+        # ── 上界（步数）：有动作要执行才判；一轮多调用按**多个动作**计 ──
+        # 单调用时与既有「到界即停」等价；检索入口不占步数（同既有）。
+        if any(entry is not None for _, entry in planned) or unknown is not None:
+            if executed >= max_steps or executed + executable_count > max_steps:
+                return finish(
+                    "step_limit",
+                    reason=f"已达到步数上界（{max_steps}），终止",
+                )
+        if unknown is not None:
+            return finish(
+                "unknown_tool",
+                reason=(
+                    f"模型请求的工具 {unknown.name!r} 不在工具目录内，无法执行"
+                    "（目录是 01 §2 描述体的投影，循环不臆造能力）"
+                ),
             )
+
+        # ── 控制面：按调用顺序逐个过闸门（在任何执行之前）──
+        # 检索入口（惰性态）不过闸门、只改上下文；计划 / 提问 / 派生子 Agent 同属控制动作。
+        batch: list[tuple[ToolCall, Any]] = []
+        for index, (call, entry) in enumerate(planned):
+            # 终止交还时点名「同轮其余未执行」：已收进 batch 的可执行调用 + 之后未处理的调用
+            rest = len(batch) + sum(
+                1 for _later_call, later_entry in planned[index + 1:]
+                if later_entry is not None
+            )
+            if entry is None:
+                tool_search_note = _apply_tool_search(
+                    call, tuple(tools), retrieved, searches,
+                )
+                continue
+
+            # 控制动作可能在本轮内消耗预算（如派生子 Agent），故每个动作前**再看一次**上界
+            if executed >= max_steps:
+                return finish(
+                    "step_limit",
+                    reason=f"已达到步数上界（{max_steps}），终止",
+                )
+
+            decision = _gate_decision(gate, entry, call)
+            if decision is None:
+                return finish(
+                    "gate_absent",
+                    reason=(
+                        "未注入授权端口，按 fail-closed 拒绝执行任何动作"
+                        "（闸门缺省不得放行；见 05 §10 授权闸门与交还）"
+                    ),
+                )
+            if decision.verdict != "autonomous-ok":
+                termination: TerminationReason = (
+                    "needs_confirmation" if decision.verdict == "needs-confirmation"
+                    else "denied"
+                )
+                reason = (
+                    f"下一步（调用 {call.name}）未获自主执行授权（{decision.verdict}），"
+                    "终止并把该步交还用户确认"
+                )
+                if rest:
+                    reason += f"；同轮其余 {rest} 个调用未执行（不静默丢）"
+                return finish(
+                    termination, reason=reason,
+                    pending=call, gate_reason=decision.reason,
+                )
+
+            if call.name == PLAN_UPDATE_TOOL:
+                normalized, error = normalize_plan(dict(call.arguments).get("plan"))
+                if error:
+                    plan_error = error
+                else:
+                    plan_error = ""
+                    plan_given = True
+                    current_plan = tuple(
+                        PlanStep(title=item["title"], status=item["status"])
+                        for item in normalized
+                    )
+                continue
+
+            if call.name == ASK_USER_TOOL:
+                arguments = dict(call.arguments)
+                ask = normalize_questions(
+                    arguments.get("questions"), arguments.get("directions"),
+                )
+                questions = tuple(AskQuestion(**item) for item in ask.questions)
+                ask_note = ask.note or ask.error
+                if rest:
+                    ask_note = _join_note(ask_note, f"同轮其余 {rest} 个调用未执行")
+                return finish(
+                    "needs_user_input",
+                    reason=ask.error or "模型请求用户补充信息，循环终止并交还结构化问项",
+                    questions=questions,
+                    directions=ask.directions,
+                    ask_note=ask_note,
+                )
+
+            if call.name == SPAWN_AGENT_TOOL:
+                if not allow_sub_agents:
+                    return finish(
+                        "unknown_tool",
+                        reason=(
+                            "子 Agent 只允许一层：本次循环不提供 sk_spawn_agent"
+                            "（更深探索请由主循环决定）"
+                        ),
+                    )
+                task_text, task_error = normalize_spawn_task(
+                    dict(call.arguments).get("task")
+                )
+                executed += 1                      # 派生本身占一步（含形态非法）
+                if task_error:
+                    subagent_notes.append(f"子 Agent 派生未执行：{task_error}")
+                    continue
+                if nested_recorder is None:
+                    subagent_notes.append(
+                        "子 Agent 派生未执行：组合根未注入子循环留痕端口"
+                        "（L3 不持存储，不假跑）"
+                    )
+                    continue
+                remaining_steps = max_steps - executed
+                remaining_llm = max_llm_calls - llm_calls
+                if remaining_steps < 1:
+                    subagent_notes.append(
+                        "子 Agent 派生未执行：步数预算已用尽（派生本身占 1 步）"
+                    )
+                    continue
+                if remaining_llm < 1:
+                    subagent_notes.append("子 Agent 派生未执行：LLM 调用次数预算已用尽")
+                    continue
+                child = run_agent_loop(
+                    task=task_text,
+                    endpoint_id=endpoint_id,
+                    protocol=protocol,
+                    runner=runner,
+                    tools=tuple(item for item in tools if item.name != SPAWN_AGENT_TOOL),
+                    gate=gate,
+                    approved_permissions=approved_permissions,
+                    initiator=initiator,
+                    purpose=purpose,
+                    max_steps=remaining_steps,
+                    max_llm_calls=remaining_llm,
+                    budget_chars=budget_chars,
+                    max_result_chars=max_result_chars,
+                    tool_lazy_chars=tool_lazy_chars,
+                    trace=Trace(trace_id=TraceId.generate()),
+                    session_id=None,
+                    history=(),
+                    memory=memory,
+                    parallel_safe=parallel_safe,
+                    allow_sub_agents=False,
+                    nested_recorder=None,
+                    parent_trace_id=chain.trace_id.value,
+                )
+                ref = nested_recorder(child)
+                evidence = tuple(
+                    EvidenceRef(kind="skill_run_id", ref=step.skill_run_id)
+                    for step in child.steps
+                    if step.envelope.status == "ok"
+                )
+                child_steps = child.executed_steps or len(child.steps)
+                sub = SubAgentRun(
+                    task=task_text,
+                    agent_run_id=ref.agent_run_id,
+                    trace_id=child.trace.trace_id.value,
+                    termination=child.termination,
+                    reason=child.reason,
+                    answer=child.answer,
+                    evidence=evidence,
+                    steps=child_steps,
+                    llm_calls=child.llm_calls,
+                )
+                sub_runs.append(sub)
+                executed += child_steps
+                llm_calls += child.llm_calls
+                subagent_notes.append(render_subagent_note(sub))
+                continue
+
+            batch.append((call, entry))
+
+        if not batch:
             continue
 
-        # ── 上界（步数）：有动作要执行才判 —— 恰在第 N 步给出「结束」不算触界（GWT-5） ──
-        if executed >= max_steps:
+        # 控制动作可能已消耗预算，执行前按**当前**已执行步数再判一次（不超上界）
+        if executed + len(batch) > max_steps:
             return finish(
                 "step_limit",
                 reason=f"已达到步数上界（{max_steps}），终止",
             )
 
-        entry = by_name.get(call.name)
-        if entry is None:
-            return finish(
-                "unknown_tool",
-                reason=(
-                    f"模型请求的工具 {call.name!r} 不在工具目录内，无法执行"
-                    "（目录是 01 §2 描述体的投影，循环不臆造能力）"
-                ),
-            )
-
-        # ── ② 过闸门（缺省 fail-closed：一步都不执行；控制原语同样过闸门） ──
-        decision = _gate_decision(gate, entry, call)
-        if decision is None:
-            return finish(
-                "gate_absent",
-                reason=(
-                    "未注入授权端口，按 fail-closed 拒绝执行任何动作"
-                    "（闸门缺省不得放行；见 05 §10 授权闸门与交还）"
-                ),
-            )
-        if decision.verdict != "autonomous-ok":
-            termination: TerminationReason = (
-                "needs_confirmation" if decision.verdict == "needs-confirmation" else "denied"
-            )
-            return finish(
-                termination,
-                reason=(
-                    f"下一步（调用 {call.name}）未获自主执行授权（{decision.verdict}），"
-                    "终止并把该步交还用户确认"
-                ),
-                pending=call, gate_reason=decision.reason,
-            )
-
-        # ── 控制原语：计划 ──
-        # 只改工作上下文里的计划（决策，不产 Trace 步 / skill_run，01 §4）；形态非法时
-        # 写入 plan_error 让模型下一轮纠正，不终止循环、不静默丢弃。
-        if call.name == PLAN_UPDATE_TOOL:
-            normalized, error = normalize_plan(dict(call.arguments).get("plan"))
-            if error:
-                plan_error = error
-            else:
-                plan_error = ""
-                plan_given = True
-                current_plan = tuple(
-                    PlanStep(title=item["title"], status=item["status"])
-                    for item in normalized
+        # ── ③④ 执行与回填 —— 并发安全须由装配方**显式声明**，未声明即退回串行并标注 ──
+        if len(batch) == 1 or not parallel_safe:
+            if len(batch) > 1:
+                parallel_notes.append(
+                    f"本轮 {len(batch)} 个调用按顺序串行执行"
+                    "（底层未声明并发安全，显式退回串行）"
                 )
+            for call, entry in batch:
+                values, object_inputs = split_arguments(entry, dict(call.arguments))
+                run = runner.run(
+                    entry.skill_id,
+                    values,
+                    inputs=object_inputs,
+                    trace=chain,
+                    approved_permissions=resolve_approved(
+                        approved_permissions, entry.skill_id),
+                    initiator=initiator,
+                    purpose=purpose,
+                )
+                steps.append(new_work_step(
+                    tool_name=call.name,
+                    skill_id=entry.skill_id,
+                    arguments=dict(call.arguments),
+                    skill_run_id=run.skill_run_id,
+                    envelope=run.envelope,
+                ))
+                chain = run.trace
+                executed += 1
             continue
 
-        # ── 控制原语：提问（终止并交还结构化问项） ──
-        if call.name == ASK_USER_TOOL:
-            arguments = dict(call.arguments)
-            ask = normalize_questions(
-                arguments.get("questions"), arguments.get("directions"),
+        parallel_used = True
+        parallel_notes.append(f"本轮 {len(batch)} 个调用已并行执行")
+        prepared = [
+            (
+                call, entry,
+                *split_arguments(entry, dict(call.arguments)),
+                resolve_approved(approved_permissions, entry.skill_id),
             )
-            questions = tuple(AskQuestion(**item) for item in ask.questions)
-            return finish(
-                "needs_user_input",
-                reason=ask.error or "模型请求用户补充信息，循环终止并交还结构化问项",
-                questions=questions,
-                directions=ask.directions,
-                ask_note=ask.note or ask.error,
-            )
+            for call, entry in batch
+        ]
+        with ThreadPoolExecutor(max_workers=len(prepared)) as pool:
+            futures = [
+                pool.submit(
+                    runner.run,
+                    entry.skill_id,
+                    values,
+                    inputs=object_inputs,
+                    trace=chain,
+                    approved_permissions=approved,
+                    initiator=initiator,
+                    purpose=purpose,
+                )
+                for _call, entry, values, object_inputs, approved in prepared
+            ]
+            runs = [future.result() for future in futures]
 
-        # ── ③ 执行（经 L1 既有流水线；参数/权限/沙箱/留痕全在那边判） ──
-        # 实参按描述体拆两通道（05 §10）：对象键走 inputs、其余走 values；
-        # 未声明的键交给 L1 按「未知参数」显式拒，循环不替它猜。
-        values, object_inputs = split_arguments(entry, dict(call.arguments))
-        run = runner.run(
-            entry.skill_id,
-            values,
-            inputs=object_inputs,
-            trace=chain,
-            approved_permissions=resolve_approved(approved_permissions, entry.skill_id),
-            initiator=initiator,
-            purpose=purpose,
-        )
-
-        # ── ④ 回填（工作上下文下一轮重装时带上这一步） ──
-        steps.append(new_work_step(
-            tool_name=call.name,
-            skill_id=entry.skill_id,
-            arguments=dict(call.arguments),
-            skill_run_id=run.skill_run_id,
-            envelope=run.envelope,
-        ))
-        chain = run.trace
-        executed += 1
+        # 各分支以同一条 frozen base 起跑，故按**调用顺序**把各分支新增步 append 回主链
+        # ——完成先后不影响上下文与 Trace 的顺序（05 §10）。
+        base_len = len(chain.steps)
+        merged = chain
+        for (call, entry, _values, _inputs, _approved), run in zip(prepared, runs):
+            if run.trace.trace_id != chain.trace_id:
+                raise AgentRuntimeValidationError(
+                    "并行分支返回的 Trace 与本次循环的链不一致"
+                    f"（{run.trace.trace_id.value!r} ≠ {chain.trace_id.value!r}）"
+                )
+            for step in run.trace.steps[base_len:]:
+                merged = merged.append_step(step)
+            steps.append(new_work_step(
+                tool_name=call.name,
+                skill_id=entry.skill_id,
+                arguments=dict(call.arguments),
+                skill_run_id=run.skill_run_id,
+                envelope=run.envelope,
+            ))
+        chain = merged
+        executed += len(batch)
 
 
 # ───────────────────────── 内部 ─────────────────────────
@@ -562,6 +822,11 @@ def _outcome(
     directions: Sequence[str] = (),
     ask_note: str = "",
     tool_searches: Sequence[ToolSearchRecord] = (),
+    parent_trace_id: str = "",
+    executed_steps: int = 0,
+    parallel_used: bool = False,
+    parallel_note: str = "",
+    sub_agents: Sequence[SubAgentRun] = (),
 ) -> LoopOutcome:
     """装配一次循环的产出（``failure`` 即端点侧给的原信封，产出装配原样透出）。"""
     return LoopOutcome(
@@ -574,7 +839,36 @@ def _outcome(
         plan=tuple(plan), plan_updated=plan_updated, plan_error=plan_error,
         questions=tuple(questions), directions=tuple(directions), ask_note=ask_note,
         tool_searches=tuple(tool_searches),
+        parent_trace_id=parent_trace_id, executed_steps=executed_steps,
+        parallel_used=parallel_used, parallel_note=parallel_note,
+        sub_agents=tuple(sub_agents),
     )
+
+
+def _join_note(*parts: str) -> str:
+    """把若干显式说明拼成一条（空串跳过；分隔与既有留痕口径一致）。"""
+    return "；".join(part for part in parts if part)
+
+
+def render_subagent_note(sub: SubAgentRun) -> str:
+    """子 Agent 回传段（结论 + 引用 + 留痕定位；中性措辞，不外显子步骤）。
+
+    同一份渲染供**本次运行**与**续跑承接**共用——续跑从旧留痕的 ``sub_agents`` 重建
+    这段说明，不重跑子 Agent、也不复制子步骤。
+    """
+    pieces = [f"子 Agent「{sub.task}」"]
+    if sub.termination == "finished":
+        pieces.append("已完成")
+        if sub.answer:
+            pieces.append(f"结论：{sub.answer}")
+    else:
+        pieces.append(f"未完成（终止原因 {sub.termination}）")
+        if sub.reason:
+            pieces.append(f"原因：{sub.reason}")
+    if sub.evidence:
+        pieces.append("引用：" + "、".join(item.ref for item in sub.evidence))
+    pieces.append(f"留痕：{sub.agent_run_id}")
+    return "；".join(pieces)
 
 
 def _apply_tool_search(

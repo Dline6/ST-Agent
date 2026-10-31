@@ -18,7 +18,9 @@ from st_agent.l3.runtime import (
     AgentRunReport,
     LoopBounds,
     NativeToolCallProtocol,
+    NestedRunRef,
     ResumeOutcome,
+    agent_log_ref_of,
     conclude_agent_run,
     investigate_family,
     load_agent_run,
@@ -99,6 +101,7 @@ class _AgentInvestigator:
         sessions: Any = None,
         reader: Any = None,
         permissions: Any = None,
+        nested_recorder: Any = None,
     ) -> None:
         self._store = store
         self._runner = runner
@@ -110,6 +113,17 @@ class _AgentInvestigator:
         self._sessions = sessions
         self._reader = reader
         self._permissions = permissions
+
+        if nested_recorder is None:
+            def _record(outcome: Any) -> NestedRunRef:
+                report = conclude_agent_run(self._store, outcome)
+                return NestedRunRef(
+                    agent_run_id=report.agent_run_id,
+                    log_ref=agent_log_ref_of(report.agent_run_id),
+                )
+
+            nested_recorder = _record
+        self._nested_recorder = nested_recorder
 
     def investigate(
         self,
@@ -148,6 +162,8 @@ class _AgentInvestigator:
             session_id=session,
             history=history,
             memory=memory,
+            parallel_safe=True,
+            nested_recorder=self._nested_recorder,
         )
         outcome = outcome.model_copy(update={"context_note": note})
         report = conclude_agent_run(self._store, outcome, now=now)
@@ -196,6 +212,8 @@ class _AgentInvestigator:
                 session_id=session,
                 history=history,
                 memory=memory,
+                parallel_safe=True,
+                nested_recorder=self._nested_recorder,
                 now=now,
             )
         except AgentRuntimeValidationError as exc:
