@@ -8,10 +8,12 @@ from __future__ import annotations
 
 __all__ = [
     "McpCancelledError",
+    "McpCapabilityUnavailableError",
     "McpConnectionError",
     "McpError",
     "McpMappingError",
     "McpMappingNotFoundError",
+    "McpMethodNotFoundError",
     "McpPermissionError",
     "McpServerExistsError",
     "McpServerNotFoundError",
@@ -39,6 +41,14 @@ class McpServerExistsError(McpError):
 
 class McpConnectionError(McpError):
     """连接 / 握手 / 调用失败（远程路径另有 ``Egress*`` 系列经 ``__cause__`` 保留）。"""
+
+
+class McpMethodNotFoundError(McpConnectionError):
+    """Server 未实现所请求的协议方法（JSON-RPC ``-32601``）。"""
+
+
+class McpCapabilityUnavailableError(McpError):
+    """Server 未声明该能力或已禁用——按**显式不可用**上报，不伪装成空结果。"""
 
 
 class McpPermissionError(McpError):

@@ -13,7 +13,7 @@
 
 **本叶不接组合根**：安装入口由 :func:`st_agent.l1.runtime.build_l1_runtime` 与官方
 Pack 同点调用；种子表 :data:`BUILTIN_PRIMITIVES` 目前含本地数据面、取数 / 同步、
-文档取数、循环控制、文件面、开放网络、本地命令与结果回读共 16 条原语。
+文档取数、循环控制、文件面、开放网络、本地命令、结果回读与 MCP resources 共 18 条原语。
 """
 
 from __future__ import annotations
@@ -33,6 +33,7 @@ from st_agent.l1.builtin.errors import BuiltinRegistrationError
 from st_agent.l1.builtin.exec import RUN_COMMAND
 from st_agent.l1.builtin.files import FILE_GLOB, FILE_GREP, FILE_READ, FILE_WRITE
 from st_agent.l1.builtin.local_sql import LOCAL_SQL
+from st_agent.l1.builtin.mcp_resources import MCP_LIST_RESOURCES, MCP_READ_RESOURCE
 from st_agent.l1.builtin.models import BuiltinPrimitive
 from st_agent.l1.builtin.plan_update import PLAN_UPDATE
 from st_agent.l1.builtin.results import RESULT_READ
@@ -46,9 +47,9 @@ __all__ = ["BUILTIN_PRIMITIVES", "install_builtins"]
 BUILTIN_PRIMITIVES: tuple[BuiltinPrimitive, ...] = (
     LOCAL_SQL, DATA_STATUS, DATA_SYNC, DATA_FETCH, DOCS, PLAN_UPDATE, ASK_USER,
     FILE_READ, FILE_GLOB, FILE_GREP, FILE_WRITE, WEB_SEARCH, WEB_FETCH,
-    RUN_COMMAND, RESULT_READ, SPAWN_AGENT,
+    RUN_COMMAND, RESULT_READ, SPAWN_AGENT, MCP_LIST_RESOURCES, MCP_READ_RESOURCE,
 )
-"""内置原语种子表（本地数据面四条 + 循环控制面三条 + 文档取数一条 + 文件面四条 + 开放网络两条 + 本地命令一条 + 结果回读一条）。
+"""内置原语种子表（本地数据面四条 + 循环控制面三条 + 文档取数一条 + 文件面四条 + 开放网络两条 + 本地命令一条 + 结果回读一条 + MCP resources 两条）。
 
 一行一条能力。权限必须逐条显式给出（见 ``models.BuiltinPrimitive.permissions``）。
 循环控制面三条（``sk_plan_update`` / ``sk_ask_user`` / ``sk_spawn_agent``）在循环内由 L3
@@ -60,7 +61,8 @@ BUILTIN_PRIMITIVES: tuple[BuiltinPrimitive, ...] = (
 受 ``web-egress/enabled`` 开关与域名名单约束（T-AGT-015）。本地命令一条经
 ``CommandRunner`` 执行，受 ``local-exec/enabled`` 开关约束（T-AGT-016）。
 结果回读一条经 ``ResultAccess`` 读 ``execution_log`` 的 ``skill-run/`` 记录，只读、无副作用
-（T-AGT-017.2）。
+（T-AGT-017.2）。MCP resources 两条经注入的 ``McpServerRegistry`` 消费，
+Server 侧权限走 ``mcp-permission`` 账本，原语自身不另开出口（T-AGT-019）。
 """
 
 _SOURCE = "builtin"

@@ -454,24 +454,15 @@ def build_l1_runtime(
     workflows = WorkflowStore(store, skills)
     install_official_pack(skills, runner, market_query=market_query)
     # 内置原语的执行面：本地只读查询（market）、文档取数（L0 LocalDocSource）、
-    # 文件面（L0 FileWorkspace：工作区分区 + 导入收件目录）与同步执行
+    # 文件面（L0 FileWorkspace：工作区分区 + 导入收件目录）、同步执行
     # （DataSyncRunner 由组合根后置造出——M5 的 build_m5_runtime 调
-    # `L1Runtime.bind_data_sync` 绑定；未绑定时原语显式 unavailable）。
+    # `L1Runtime.bind_data_sync` 绑定；未绑定时原语显式 unavailable）与
+    # MCP resources（经注入的 McpServerRegistry，03 §5.5）。
     builtin_sync = SyncPort()
     docs_source = LocalDocSource(MarketDb(store), store)
     files = FileWorkspace(store)
     web = WebAccess(store, vault, http=web_http)
     commands = CommandAccess(store, CommandRunner(store))
-    install_builtins(
-        skills, runner,
-        context={
-            "market": market_query, "docs": docs_source, "sync": builtin_sync,
-            "files": files, "web": web, "commands": commands,
-            "results": ResultAccess(store),
-        },
-        permissions=skill_permissions,
-    )
-
     machine: McpHubStateMachine | None = None
     mapper: McpSkillMapper | None = None
 
@@ -486,6 +477,8 @@ def build_l1_runtime(
         mapper.recycle_server(server_id)
         machine.recycle_server(server_id)
 
+    # MCP 注册表先于内置原语安装构造——`sk_mcp_list_resources` / `sk_mcp_read_resource`
+    # 经注入消费它（T-AGT-019，03 §5.5）；mapper / machine 仍在其后接线。
     mcp_servers = McpServerRegistry(
         store,
         gateway=gateway,
@@ -494,6 +487,16 @@ def build_l1_runtime(
                       else VaultEnvResolver(vault)),
         on_server_removed=_on_server_removed,
     )
+    install_builtins(
+        skills, runner,
+        context={
+            "market": market_query, "docs": docs_source, "sync": builtin_sync,
+            "files": files, "web": web, "commands": commands,
+            "results": ResultAccess(store), "mcp_servers": mcp_servers,
+        },
+        permissions=skill_permissions,
+    )
+
     mapper = McpSkillMapper(store, servers=mcp_servers, skills=skills)
     machine = McpHubStateMachine(store, servers=mcp_servers, skills=skills, sandbox=sandbox)
 
