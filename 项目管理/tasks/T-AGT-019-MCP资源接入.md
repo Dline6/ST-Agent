@@ -10,7 +10,7 @@ milestone: M10
 depends_on: [T-AGT-008.3]
 status: done
 decisions: [D-137, D-152]
-verify: 执行日志 [T-AGT-019]——capabilities 判定与 -32601 → unavailable、分页 100 页上限、text/blob 内容规范化；两条原语经 SkillRunner 留痕；范围 2701 passed / verify_docs --strict PASS
+verify: 执行日志 [T-AGT-019]——capabilities 判定与 -32601 → unavailable、分页 100 页上限、text/blob 内容规范化；两条原语经 SkillRunner 留痕；范围 2701 passed / verify_docs --strict PASS；实现 commit fe88dbe
 ---
 
 # T-AGT-019 · MCP resources 接入
