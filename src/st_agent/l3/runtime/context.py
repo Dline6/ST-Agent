@@ -241,6 +241,9 @@ class WorkContext(BaseModel):
     """已按检索**展开**的工具名（惰性态下完整描述与参数只给这些条目）。"""
     tool_search_note: str = ""
     """上一次检索的显式说明（命中数 / 未命中 / 参数非法原因；无检索即空）。"""
+    subagent_note: str = ""
+    """**子 Agent 的结论与引用**（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+    子步骤不进主上下文，只这一段的结论 + ``skill_run_id`` 引用；无派生即空。"""
     plan: tuple[PlanStep, ...] = ()
     """**当前计划**（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的计划原语；
     空元组的含义由 ``plan_updated`` 区分「尚未给出」与「显式清空」）。"""
@@ -288,6 +291,10 @@ class WorkContext(BaseModel):
         lines.append("")
         if self.tool_search_note:
             lines.append(f"上次工具检索：{self.tool_search_note}")
+            lines.append("")
+        if self.subagent_note:
+            lines.append("子 Agent 结果（子上下文不进本窗，仅回传结论与引用）：")
+            lines.append(self.subagent_note)
             lines.append("")
         if self.user_inputs:
             lines.append("用户补充（续跑，一问一参）：" + _json(self.user_inputs))
@@ -410,6 +417,7 @@ def assemble_work_context(
     max_result_chars: int = RESULT_TRUNCATE_CHARS,
     retrieved_tools: Sequence[str] = (),
     tool_search_note: str = "",
+    subagent_note: str = "",
     tool_lazy_chars: int | None = None,
 ) -> ResultEnvelope:
     """装配循环工作上下文（纯函数，GWT-6）。
@@ -429,6 +437,7 @@ def assemble_work_context(
     :param retrieved_tools: 已被工具检索**展开**的工具名（惰性态下完整参数只给这些条目；
         不在目录内的名字被忽略——续跑承接的旧检索结果可能指向已下线能力）
     :param tool_search_note: 上一次检索的显式说明（命中数 / 未命中 / 参数非法原因）
+    :param subagent_note: 子 Agent 回传的结论与引用（子步骤不进主上下文；恒保留）
     :param tool_lazy_chars: 惰性态阈值（目录工具段的字符数）；``None`` 即取本次预算
     :returns: ``ok``（载荷为 :class:`WorkContext`）或 ``empty``（目录为空）；入参非法抛
         :class:`~st_agent.l3.errors.AgentRuntimeValidationError`
@@ -482,6 +491,7 @@ def assemble_work_context(
         lazy_tools=_tools_section_chars(entries) > threshold,
         retrieved_tools=retrieved,
         tool_search_note=str(tool_search_note or ""),
+        subagent_note=str(subagent_note or ""),
     )
     return ResultEnvelope.ok(
         context.model_copy(update={"size_chars": size, "over_budget": size > budget_chars})
@@ -503,6 +513,7 @@ def _fit_budget(
     lazy_tools: bool,
     retrieved_tools: tuple[str, ...],
     tool_search_note: str,
+    subagent_note: str,
 ) -> tuple[WorkContext, int]:
     """按声明顺序取舍直至装下（或无可再舍），返回上下文与最终规模。
 
@@ -521,7 +532,7 @@ def _fit_budget(
             user_inputs=dict(user_inputs),
             dropped=tuple(dropped), budget_chars=budget_chars, size_chars=0,
             lazy_tools=lazy_tools, retrieved_tools=retrieved_tools,
-            tool_search_note=tool_search_note,
+            tool_search_note=tool_search_note, subagent_note=subagent_note,
         )
 
     context = build()

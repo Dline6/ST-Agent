@@ -302,6 +302,7 @@ def test_seed_table_contains_the_data_control_and_file_primitives():
         "sk_file_read", "sk_file_glob", "sk_file_grep", "sk_file_write",
         "sk_web_search", "sk_web_fetch",
         "sk_run_command", "sk_result_read",
+        "sk_spawn_agent",
     ]
 
 

@@ -404,6 +404,44 @@ def test_m9_builtin_data_ports_are_bound_in_the_production_root(rig):
     assert l1.skill_permissions.approved_permissions("sk_run_command") == (
         "exec_command",
     )
+    # 子 Agent 派生原语与原语面同处一个目录（T-AGT-018.2）
+    assert "sk_spawn_agent" in names
+    assert l1.skill_permissions.approved_permissions("sk_spawn_agent") == ()
+
+
+# ───────────────── 循环端口的并发声明与子 Agent 落痕接线（T-AGT-018 批） ─────────────────
+
+def test_loop_port_declares_parallel_safety_and_nested_recorder(rig, monkeypatch):
+    """组合根核验后注入 `parallel_safe=True`，并给出可用的子循环落痕端口。"""
+    import st_agent.composition.agent as agent_module
+    from st_agent.contracts.identifiers import TraceId
+    from st_agent.contracts.trace import Trace
+    from st_agent.l3.runtime import LoopOutcome
+
+    captured: dict = {}
+
+    def fake_loop(**kwargs):
+        captured.update(kwargs)
+        return LoopOutcome(
+            task=kwargs["task"], endpoint_id=kwargs["endpoint_id"],
+            termination="finished", trace=Trace(trace_id=TraceId.generate()),
+            max_steps=kwargs["max_steps"], max_llm_calls=kwargs["max_llm_calls"],
+        )
+
+    monkeypatch.setattr(agent_module, "run_agent_loop", fake_loop)
+    rig.m5.investigations.investigate(_card("investigate", TASK_TEXT))
+
+    assert captured["parallel_safe"] is True
+    assert callable(captured["nested_recorder"])
+
+    child = LoopOutcome(
+        task="子任务：查证一条公告", endpoint_id="ep_child",
+        termination="finished", trace=Trace(trace_id=TraceId.generate()),
+        max_steps=1, max_llm_calls=1,
+    )
+    ref = captured["nested_recorder"](child)
+    assert load_agent_run(rig.m5.store, ref.agent_run_id).task == "子任务：查证一条公告"
+    assert ref.log_ref
 
 
 # ───────────────────────────── 内部 ─────────────────────────────

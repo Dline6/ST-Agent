@@ -159,6 +159,8 @@ class TestGwt4RiskGrading:
             ("skill.sk_file_glob", "autonomous-ok"),
             ("skill.sk_file_grep", "autonomous-ok"),
             ("skill.sk_result_read", "autonomous-ok"),
+            # 子 Agent 派生无副作用（子步逐步过同一闸门）——T-AGT-018.2 / [D-151]
+            ("skill.sk_spawn_agent", "autonomous-ok"),
             # 写 / 出网动作显式登记为必须协作（[D-145] / [D-146]）
             ("skill.sk_data_sync", "collaborative-required"),
             ("skill.sk_data_fetch", "collaborative-required"),
@@ -187,6 +189,7 @@ class TestGwt4RiskGrading:
         assert prefixes.index("skill.sk_file_glob") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_file_grep") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_result_read") < prefixes.index("skill.")
+        assert prefixes.index("skill.sk_spawn_agent") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_data_sync") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_data_fetch") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_file_write") < prefixes.index("skill.")

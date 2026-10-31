@@ -39,7 +39,7 @@ from st_agent.contracts.result_envelope import EvidenceRef, ResultEnvelope
 from st_agent.l3.errors import AgentRunNotFoundError, AgentRuntimeValidationError
 from st_agent.l3.render.describe import describe_agent_run
 from st_agent.l3.runtime.context import AskQuestion, PlanStep
-from st_agent.l3.runtime.loop import LoopOutcome, TerminationReason
+from st_agent.l3.runtime.loop import LoopOutcome, SubAgentRun, TerminationReason
 from st_agent.l3.runtime.tool_search import ToolSearchRecord
 
 __all__ = [
@@ -153,6 +153,16 @@ class AgentRunRecord(BaseModel):
     """提问交还的说明（如问项超预算被截断的显式记录）。"""
     resumed_from: str = ""
     """本次循环承接的旧 ``agent_run_id``（续跑时非空；空即独立运行）。"""
+    parent_trace_id: str = ""
+    """子 Agent 派生的父链 ``trace_id``（主循环为空；子步骤不并入父链，见 [01 §4]）。"""
+    executed_steps: int = Field(default=0, ge=0)
+    """本次循环**实际消耗**的步数（含派生本身与子 Agent 内的步；``steps`` 只含主链可见步）。"""
+    parallel_used: bool = False
+    """本次是否真的并行执行过一批调用（串行回退时为假）。"""
+    parallel_note: str = ""
+    """并发形态的显式标注（并行 / 因底层未声明并发安全而退回串行）。"""
+    sub_agents: tuple[SubAgentRun, ...] = ()
+    """派生的子 Agent 摘要（结论与引用；子步骤在子链自己的留痕里）。"""
     llm_calls: int = Field(default=0, ge=0)
     max_steps: int = Field(ge=1)
     """本次生效的**步数上界**（取值可注入，故记实际生效值而非缺省值）。"""
@@ -174,8 +184,12 @@ class AgentRunRecord(BaseModel):
 
     @property
     def steps_count(self) -> int:
-        """步数（[D-090](../../../项目管理/决策日志.md) ⑥ 的三项之一）。"""
-        return len(self.steps)
+        """记录里的步数（[D-090](../../../项目管理/决策日志.md) ⑥ 的三项之一）。
+
+        主链可见步 + 子 Agent 的步（子步骤不在 ``steps`` 内）；续跑承接的**前序步**也在
+        ``steps`` 里，故续跑记录不会少算。预算口径（含派生本身一步）另见 ``executed_steps``。
+        """
+        return len(self.steps) + sum(sub.steps for sub in self.sub_agents)
 
 
 class AgentRunReport(BaseModel):
@@ -236,6 +250,11 @@ def record_agent_run(
         directions=tuple(outcome.directions),
         ask_note=outcome.ask_note,
         resumed_from=str(resumed_from or ""),
+        parent_trace_id=outcome.parent_trace_id,
+        executed_steps=outcome.executed_steps,
+        parallel_used=outcome.parallel_used,
+        parallel_note=outcome.parallel_note,
+        sub_agents=tuple(outcome.sub_agents),
         llm_calls=outcome.llm_calls,
         max_steps=outcome.max_steps,
         max_llm_calls=outcome.max_llm_calls,
@@ -320,12 +339,19 @@ def conclude_agent_run(
 
 
 def _evidence_refs(outcome: LoopOutcome) -> tuple[EvidenceRef, ...]:
-    """本次结论的引用清单（各**成功**步的 ``skill_run_id``，[01 §5](../../../../docs/技术架构-v2/01-平台共享契约.md)）。"""
-    return tuple(
+    """本次结论的引用清单（各**成功**步的 ``skill_run_id``，[01 §5](../../../../docs/技术架构-v2/01-平台共享契约.md)）。
+
+    子 Agent 的成功步引用同样并入——子步骤不成为父链的 ``skill_run`` 步，但它们的
+    证据价值不应在父产出里丢失（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+    """
+    refs = [
         EvidenceRef(kind="skill_run_id", ref=step.skill_run_id)
         for step in outcome.steps
         if step.envelope.status == "ok"
-    )
+    ]
+    for sub in outcome.sub_agents:
+        refs.extend(sub.evidence)
+    return tuple(refs)
 
 
 def _without_steps(
@@ -366,7 +392,10 @@ def _handback_reason(outcome: LoopOutcome, reason: str) -> str:
         pieces.append(f"未执行：{reason}")
     if outcome.gate_reason:
         pieces.append(f"闸门成因：{outcome.gate_reason}")
-    pieces.append(f"本次已收集证据 {len(outcome.steps)} 步（其中已执行的步均已照实留痕）")
+    collected = len(outcome.steps) + sum(
+        len(sub.evidence) for sub in outcome.sub_agents
+    )
+    pieces.append(f"本次已收集证据 {collected} 步（其中已执行的步均已照实留痕）")
     return "；".join(pieces)
 
 

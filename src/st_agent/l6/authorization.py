@@ -109,6 +109,10 @@ DEFAULT_RISK_GRADING: tuple[EvolutionRiskRule, ...] = (
     # 可自主——**只读的结果回读**（T-AGT-017.2）：按 skill_run_id 读 execution_log 的既有记录，
     # 不改盘、不出网；回读越界由原语自身拦截。
     EvolutionRiskRule(prefix="skill.sk_result_read", risk_class="autonomous-ok"),
+    # 可自主——**无副作用的子 Agent 派生**（T-AGT-018.2）：派生本身不改盘、不出网、
+    # 不起命令；子循环内的每一步仍逐步过同一张清单与同一闸门，故放行的是「派生」
+    # 而不是「子 Agent 内的动作」。
+    EvolutionRiskRule(prefix="skill.sk_spawn_agent", risk_class="autonomous-ok"),
     # 必须协作——**取数 / 同步**（T-AGT-013.1 / .2 / [D-145]）：写缓存、出网。显式登记
     # （与 `skill.` 通则同判）是把口径写死在清单里，不靠「未被单独列出」兜底。
     EvolutionRiskRule(prefix="skill.sk_data_sync", risk_class="collaborative-required"),
