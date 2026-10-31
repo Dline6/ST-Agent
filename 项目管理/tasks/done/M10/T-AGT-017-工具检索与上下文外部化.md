@@ -4,7 +4,7 @@ parent: null
 title: 工具检索与上下文外部化
 story: ../../docs/PRD-v2-Agent/story-01-chat-as-os.md
 arch: ../../docs/技术架构-v2/05-L3-对话主入口.md
-arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
+arch_link: "[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P2
 milestone: M10
 depends_on: [T-INT-010]
@@ -29,13 +29,13 @@ verify: 由 T-AGT-017.1 / T-AGT-017.2 合成（执行日志两条；commit d0f24
 - 输出（本任务交付的公共 API / 落盘位置）：由两叶合成——`st_agent.l3.runtime.tool_search` 与 `WorkContext` 惰性字段（`.1`）；`sk_result_read` 原语与 `TruncatedResult` 回读指针（`.2`）。
 
 ## 可关闭的遗留
-无（2026-10-30 逐册核过 [遗留问题](../遗留问题/README.md) 六册未闭区，无「归属＝本任务」或「解封条件＝本任务 `done`」的条目）。
+无（2026-10-30 逐册核过 [遗留问题](../../../遗留问题/README.md) 六册未闭区，无「归属＝本任务」或「解封条件＝本任务 `done`」的条目）。
 
 ## 假设与前提
 无（分组节点不直接交付，假设随两叶登记）。
 
 ## 涉及契约
-- [05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md) —— 上下文管理
+- [05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) —— 上下文管理
 
 ## 参考
 - D-090 冻结范围（本组为解冻项）

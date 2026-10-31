@@ -4,7 +4,7 @@ parent: T-AGT-018
 title: 并行工具调用
 story: ../../docs/PRD-v2-Agent/story-01-chat-as-os.md
 arch: ../../docs/技术架构-v2/05-L3-对话主入口.md
-arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
+arch_link: "[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P2
 milestone: M10
 depends_on: [T-INT-010]
@@ -30,13 +30,13 @@ verify: "全量 4930 passed / 16 deselected / 2 errors（两例 test_shell 环�
   - `l1/runner/runner.py::SkillRunner.run`——真流水线（参数 / 权限 / 沙箱 / 留痕），循环不绕过任何一环。
   - `l1/skills/tool_catalog.py::ToolEntry`——按工具名解析执行目标。
   - `l3/runtime/gate.py::ActionGate.authorize`——无状态，可按调用顺序先全部问一遍。
-  - 并发安全依据：`l0/storage/store.py::_part_lock`（[02 §2.4](../../docs/技术架构-v2/02-L0-本地优先基座.md) 的分区级 RLock + 原子替换，[D-015](../决策日志.md)）、`SkillRunner` 构造后无可变共享状态、`Trace` 为 frozen 追加式、`SkillRegistry` 每次读 Store 无内存缓存。
+  - 并发安全依据：`l0/storage/store.py::_part_lock`（[02 §2.4](../../../../docs/技术架构-v2/02-L0-本地优先基座.md) 的分区级 RLock + 原子替换，[D-015](../../../决策日志.md)）、`SkillRunner` 构造后无可变共享状态、`Trace` 为 frozen 追加式、`SkillRegistry` 每次读 Store 无内存缓存。
 - 输出（本任务交付的公共 API / 落盘位置）：
   - `run_agent_loop(..., parallel_safe: bool = False)`——**缺省不声明并发安全，显式退回串行**；组合根核验后注入 `True`。
   - `LoopOutcome.parallel_used: bool` / `parallel_note: str` / `executed_steps: int`——并发形态与**实际消耗步数**的显式留痕。
   - `AgentRunRecord.parallel_used` / `parallel_note` / `executed_steps`（缺省值保证旧记录可读）。
   - `resume_agent_run(..., parallel_safe=False)` 同参透传。
-  - 契约：[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)「并行工具调用」段；测试 `tests/l3/test_agent_parallel.py`。
+  - 契约：[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)「并行工具调用」段；测试 `tests/l3/test_agent_parallel.py`。
 
 ## 可关闭的遗留
 无（L0 / L1 / L2 / L3 / L5 / L6 六册未闭区逐册核过，无「归属＝本任务」或「解封条件＝本任务 `done`」的条目；检查 8 = 0）。
@@ -50,7 +50,7 @@ verify: "全量 4930 passed / 16 deselected / 2 errors（两例 test_shell 环�
 - **A6**（组合根注入 True 后生产真并行）——组合根在核验 A1 后注入；未注入的根仍串行。若错：生产退回串行（功能未生效）。验证：`composition/agent.py` 的两个入口均显式传 `parallel_safe=True`，由集成套件按端口取值断言。
 
 ## 涉及契约
-- [05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md) —— 循环执行语义（并行工具调用段）
+- [05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) —— 循环执行语义（并行工具调用段）
 
 ## 参考
 - `l3/runtime/loop.py:282`（现「一轮只认第一个调用」）

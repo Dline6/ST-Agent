@@ -4,7 +4,7 @@ parent: T-AGT-018
 title: 子 Agent（上下文隔离）
 story: ../../docs/PRD-v2-Agent/story-01-chat-as-os.md
 arch: ../../docs/技术架构-v2/05-L3-对话主入口.md
-arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
+arch_link: "[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P2
 milestone: M10
 depends_on: [T-AGT-018.1]
@@ -15,7 +15,7 @@ verify: "全量 4930 passed / 16 deselected / 2 errors（两例 test_shell 环�
 
 # T-AGT-018.2 · 子 Agent（上下文隔离）
 
-> **范围回挂（2026-10-31，[D-151](../决策日志.md)）**：本叶曾按 [D-150](../决策日志.md) 移出 M10 暂悬空；
+> **范围回挂（2026-10-31，[D-151](../../../决策日志.md)）**：本叶曾按 [D-150](../../../决策日志.md) 移出 M10 暂悬空；
 > 负责人 2026-10-31 指示「连 018.2」一并交付，故 `milestone` 回到 M10、并入 [`T-INT-011`](T-INT-011-M10集成关卡长任务运行时.md)
 > 的依赖与 GWT-4。与 [`T-AGT-018.1`](T-AGT-018.1-并行工具调用.md) 同批推进。
 
@@ -39,7 +39,7 @@ verify: "全量 4930 passed / 16 deselected / 2 errors（两例 test_shell 环�
   - `LoopOutcome.sub_agents: tuple[SubAgentRun, ...]` / `executed_steps` / `parent_trace_id`；`SubAgentRun` / `NestedRunRef` / `NestedRecorder`（`l3/runtime/loop.py`）。
   - `AgentRunRecord.parent_trace_id` / `sub_agents` / `executed_steps`（落 `execution_log` 的 `agent_run/` 与 `skill-run/`，沿用既有分区）。
   - 组合根 `composition/agent.py::_AgentInvestigator` 注入默认 `nested_recorder`（`conclude_agent_run` + `agent_log_ref_of`）。
-  - 风险分级 `skill.sk_spawn_agent → autonomous-ok`（[08 §5](../../docs/技术架构-v2/08-L6-反思演进.md)）。
+  - 风险分级 `skill.sk_spawn_agent → autonomous-ok`（[08 §5](../../../../docs/技术架构-v2/08-L6-反思演进.md)）。
   - 测试 `tests/l3/test_agent_subagent.py`。
 
 ## 可关闭的遗留
@@ -54,9 +54,9 @@ verify: "全量 4930 passed / 16 deselected / 2 errors（两例 test_shell 环�
 - **A6**（分级 `autonomous-ok`）——派生自身不改盘 / 不出网 / 不起命令，子步逐步过同一闸门。若错：出厂档下派生不可达或放宽子步授权。验证：`tests/l6/test_authorization.py` 分级与顺序用例。
 
 ## 涉及契约
-- [05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md) —— 子 Agent 与上下文隔离
-- [01 §4](../../docs/技术架构-v2/01-平台共享契约.md) —— 子链与父链的 Trace 归属
-- [08 §5](../../docs/技术架构-v2/08-L6-反思演进.md) —— 风险分级清单
+- [05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) —— 子 Agent 与上下文隔离
+- [01 §4](../../../../docs/技术架构-v2/01-平台共享契约.md) —— 子链与父链的 Trace 归属
+- [08 §5](../../../../docs/技术架构-v2/08-L6-反思演进.md) —— 风险分级清单
 
 ## 参考
 - Codex 的 `spawn_agent` 一族
