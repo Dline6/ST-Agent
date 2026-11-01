@@ -250,20 +250,20 @@ def test_proc_layer_sits_before_int():
 
 
 def test_milestones_registered():
-    """M0–M7 既有里程碑 + M8 / M9 / M10 已登记（决策日志 D-103 / D-121 / D-136 / D-137）——账本里程碑视图据它成行。
+    """M0–M7 既有里程碑 + M8 / M9 / M10 / M11 已登记（决策日志 D-103 / D-121 / D-136 / D-137 / D-154）——账本里程碑视图据它成行。
 
     M7 于 2026-10-16 由「打包发布」重定为「桌面形态与发布」（D-121）；2026-10-27 二次收窄为
     「桌面形态」（D-136）——打包发布两叶移出 M7、`milestone` 置空悬空，待择时单独立里程碑。
-    M8–M10 由 D-137 立项：自主可跑 / 开放能力面 / 长任务运行时。
+    M8–M10 由 D-137 立项：自主可跑 / 开放能力面 / 长任务运行时；M11 由 D-154 立项：Agent 主入口与运行控制面。
     """
     assert [m[0] for m in rl.MILESTONES] == [
-        "M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10",
+        "M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11",
     ]
     names = {m[0]: m[1] for m in rl.MILESTONES}
     assert names["M5"] == "受控自主"
     assert names["M7"] == "桌面形态"
-    assert [names["M8"], names["M9"], names["M10"]] == [
-        "自主可跑", "开放能力面", "长任务运行时",
+    assert [names["M8"], names["M9"], names["M10"], names["M11"]] == [
+        "自主可跑", "开放能力面", "长任务运行时", "Agent 主入口",
     ]
 
 
