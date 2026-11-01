@@ -84,6 +84,7 @@ __all__ = [
     "GateDecision",
     "GateVerdict",
     "LoopOutcome",
+    "MAX_UNKNOWN_TOOL_ROUNDS",
     "SubAgentRun",
     "TerminationReason",
     "render_subagent_note",
@@ -114,6 +115,14 @@ DEFAULT_MAX_LLM_CALLS = 12
 
 **有意高于步数上界**：模型每执行一步要问一轮，结束还要再问一轮才拿得到收尾——两者相等会
 把「收尾那一问」剪掉，让一次本该正常完成的循环被误判为触界。
+"""
+
+MAX_UNKNOWN_TOOL_ROUNDS = 2
+"""未知工具的**连续轮次**上限（工具调用自愈，[D-154](../../../项目管理/决策日志.md) A6）。
+
+第 1 轮请求目录外工具 → 回灌说明并继续；**连续第 2 轮**仍如此即终止（终止原因
+``unknown_tool``，说明写明已回灌仍未改选）。取 2 是给模型一次看到说明与目录后改选的机会；
+再宽会放任它在同一错误上打转，而双上界本身也会兜底。
 """
 
 AGENT_GATE_METHOD = "authorize"
@@ -437,6 +446,10 @@ def run_agent_loop(
     """已按检索展开的工具名（惰性态下完整参数只给这些条目；按首次命中顺序）。"""
     searches: list[ToolSearchRecord] = []
     tool_search_note = ""
+    unknown_rounds = 0
+    """最近**连续**请求目录外工具的轮次（模型改选即清零；见 MAX_UNKNOWN_TOOL_ROUNDS）。"""
+    unknown_tool_note = ""
+    """下一轮工作上下文的回灌说明（点名未知工具 + 指向本轮目录；无回灌即空）。"""
     sub_runs: list[SubAgentRun] = list(prior_sub_agents)
     subagent_notes: list[str] = [render_subagent_note(sub) for sub in prior_sub_agents]
     parallel_notes: list[str] = []
@@ -535,6 +548,7 @@ def run_agent_loop(
             budget_chars=budget_chars, max_result_chars=max_result_chars,
             retrieved_tools=tuple(retrieved), tool_search_note=tool_search_note,
             subagent_note="\n".join(subagent_notes),
+            unknown_tool_note=unknown_tool_note,
             tool_lazy_chars=tool_lazy_chars,
         )
         if assembled.status != "ok":
@@ -566,10 +580,10 @@ def run_agent_loop(
             _emit("text_delta", {"text": turn.text})
             return finish("finished", answer=turn.text)
 
-        # ── 本轮多调用：先解析（检索入口惰性态不过闸门；未知工具在预算判定后终止）──
+        # ── 本轮多调用：先解析（检索入口惰性态不过闸门；未知工具在预算判定后回灌或终止）──
         calls = tuple(turn.tool_calls)
         planned: list[tuple[ToolCall, Any]] = []
-        unknown: ToolCall | None = None
+        unknown: list[ToolCall] = []
         executable_count = 0
         for call in calls:
             if call.name == TOOL_SEARCH_TOOL and context.lazy_tools:
@@ -577,7 +591,7 @@ def run_agent_loop(
                 continue
             entry = by_name.get(call.name)
             if entry is None:
-                unknown = call
+                unknown.append(call)
                 continue
             planned.append((call, entry))
             if call.name not in (PLAN_UPDATE_TOOL, ASK_USER_TOOL, SPAWN_AGENT_TOOL):
@@ -585,20 +599,34 @@ def run_agent_loop(
 
         # ── 上界（步数）：有动作要执行才判；一轮多调用按**多个动作**计 ──
         # 单调用时与既有「到界即停」等价；检索入口不占步数（同既有）。
-        if any(entry is not None for _, entry in planned) or unknown is not None:
+        if any(entry is not None for _, entry in planned) or unknown:
             if executed >= max_steps or executed + executable_count > max_steps:
                 return finish(
                     "step_limit",
                     reason=f"已达到步数上界（{max_steps}），终止",
                 )
-        if unknown is not None:
-            return finish(
-                "unknown_tool",
-                reason=(
-                    f"模型请求的工具 {unknown.name!r} 不在工具目录内，无法执行"
-                    "（目录是 01 §2 描述体的投影，循环不臆造能力）"
-                ),
+
+        # ── 工具调用自愈（[D-154](../../../项目管理/决策日志.md) A6 / 05 §10）──
+        # 目录外工具：整轮不执行、只回灌说明；连续第 MAX_UNKNOWN_TOOL_ROUNDS 轮才终止。
+        if unknown:
+            unknown_rounds += 1
+            names = "、".join(f"「{call.name}」" for call in unknown)
+            if unknown_rounds >= MAX_UNKNOWN_TOOL_ROUNDS:
+                return finish(
+                    "unknown_tool",
+                    reason=(
+                        f"模型连续 {unknown_rounds} 轮请求目录外的工具（{names}），"
+                        "已回灌当前工具目录仍未改选，终止"
+                        "（目录是 01 §2 描述体的投影，循环不臆造能力）"
+                    ),
+                )
+            unknown_tool_note = (
+                f"请求的工具 {names} 不在工具目录内（目录是唯一可选来源），"
+                "该轮未执行任何调用；请从本轮工具目录中选择，或直接结束。"
             )
+            continue
+        unknown_rounds = 0
+        unknown_tool_note = ""
 
         # ── 控制面：按调用顺序逐个过闸门（在任何执行之前）──
         # 检索入口（惰性态）不过闸门、只改上下文；计划 / 提问 / 派生子 Agent 同属控制动作。

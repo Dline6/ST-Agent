@@ -251,14 +251,17 @@ def test_invalid_query_does_not_terminate_the_loop(store, runner, skills):
 
 
 def test_search_is_unknown_when_catalog_is_not_lazy(store, runner, skills):
+    """非惰性态下检索入口不在目录内——按未知工具回灌，下一轮可正常改选。"""
     protocol = ScriptedProtocol([
         TurnResult(tool_calls=(
             ToolCall(call_id="c1", name=TOOL_SEARCH_TOOL, arguments={"query": "x"}),
         )),
+        TurnResult(text="结束"),
     ])
     outcome = run_agent_loop(
         task="任务", endpoint_id="ep", protocol=protocol, runner=runner,
         tools=skills.tool_catalog(), gate=AllowGate(),
     )
-    assert outcome.termination == "unknown_tool"
+    assert outcome.termination == "finished"
     assert outcome.tool_searches == ()
+    assert TOOL_SEARCH_TOOL in protocol.contexts[1].unknown_tool_note
