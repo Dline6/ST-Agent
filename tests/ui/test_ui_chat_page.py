@@ -208,3 +208,38 @@ def test_chat_forwards_the_agent_continuation(http_post) -> None:
 
     assert payload["status"] == "ok"
     assert payload["agent_continuation"] == continuation
+
+
+# ── 运行面板：步骤流 / 计划块 / 交还卡（T-AGT-026.1/.2/.3） ────────────────────
+
+_CSS = _UI / "web" / "css" / "app.css"
+
+
+def test_run_panel_renders_the_step_stream_with_expandable_detail() -> None:
+    """一行一动作（工具 / 目标 / 状态 / 耗时），详情给参数、结果摘要、截断标记与留痕指针。"""
+    chat = _CHAT_JS.read_text(encoding="utf-8")
+    for marker in (
+        "findOpenStep",              # 按 call_id 对位同一调用
+        "runStepNode",
+        "chat__run-step-row",
+        "chat__run-step-duration",   # 耗时由事件时刻差算
+        "已截断",
+        "结果摘要",
+        "留痕指针",
+        "subAgentNode",              # 子 Agent 嵌套
+        "chat__run-sub",
+    ):
+        assert marker in chat, f"运行面板缺少：{marker}"
+    css = _CSS.read_text(encoding="utf-8")
+    for rule in (".chat__run-step-badge", ".chat__run-detail-body", ".chat__run-sub"):
+        assert rule in css, f"运行面板样式缺少：{rule}"
+
+
+def test_plan_block_only_appears_after_plan_updated_and_handback_card_states_evidence() -> None:
+    """计划块只在 `plan_updated` 后出现；交还卡写明已收集证据、原因与允许 / 拒绝。"""
+    chat = _CHAT_JS.read_text(encoding="utf-8")
+    assert "planShown" in chat, "计划块必须由 plan_updated 触发（未给不伪造）"
+    assert "PLAN_STATUS_LABELS" in chat
+    for marker in ("已收集的证据", "交还说明", "允许并继续", "拒绝"):
+        assert marker in chat, f"交还卡缺少：{marker}"
+    assert "'approve'" in chat and "'cancel'" in chat, "确认 / 拒绝沿用既有 resume 决策值"

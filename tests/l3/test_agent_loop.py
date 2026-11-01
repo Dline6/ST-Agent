@@ -27,6 +27,7 @@ from st_agent.l3.runtime import (
     GateDecision,
     ToolCallProtocol,
     TurnResult,
+    conclude_agent_run,
     run_agent_loop,
 )
 from st_agent.l0.llm import ToolCall
@@ -488,6 +489,57 @@ def test_truncated_result_keeps_readable_pointer(runner, tools, store):
     assert seen["truncated"] is True
     assert store.get("execution_log", seen["log_ref"])       # 指针可读
     assert outcome.steps[0].truncated is False               # 循环里的原件未被改写
+
+
+# ───────────────────────── 运行面板事件字段（T-AGT-026.1） ─────────────────────────
+
+
+def _capture(events: list) -> object:
+    def emit(kind, payload):
+        events.append((kind, dict(payload)))
+    return emit
+
+
+def test_step_events_carry_the_objective_fields_for_one_row(runner, tools):
+    """步骤流一行所需的客观字段齐备：调用标识 / 参数 / 目标 / 状态 / 留痕指针 / 摘要。"""
+    events: list = []
+    outcome = drive(
+        runner, tools,
+        FakeProtocol([call(SK_B, {"top_n": 3}, call_id="call_a"), finish()]),
+        emit=_capture(events),
+    )
+    started = [payload for kind, payload in events if kind == "step_started"][0]
+    finished = [payload for kind, payload in events if kind == "step_finished"][0]
+
+    assert started["call_id"] == "call_a"
+    assert started["arguments"] == {"top_n": 3}
+    assert started["skill_id"] == f"{SK_B}_v1.0"      # 执行目标（该 base 的最高版本）
+    assert finished["call_id"] == started["call_id"]      # 同一次调用可对位
+    assert finished["status"] == "ok"
+    assert finished["truncated"] is False
+    assert finished["log_ref"] == outcome.steps[0].log_ref
+    assert finished["summary"]                            # 结果摘要非空（ok 取载荷头部）
+
+
+def test_truncated_flag_is_the_same_judgment_in_event_record_and_table(runner, tools, store):
+    """「结果已截断」在事件、留痕与终轮证据表三处同一判定（原件仍不被改写）。"""
+    runner.register_executor(
+        f"{SK_B}_v1.0", lambda ctx, params: ResultEnvelope.ok({"heatmap": {"note": BIG_NOTE}}),
+    )
+    events: list = []
+    outcome = drive(
+        runner, tools,
+        FakeProtocol([call(SK_B, {"top_n": 3}, call_id="call_big"), finish()]),
+        max_result_chars=200,
+        emit=_capture(events),
+    )
+    finished = [payload for kind, payload in events if kind == "step_finished"][0]
+    assert finished["truncated"] is True
+    assert outcome.steps[0].truncated is False            # 循环内原件（既有口径不变）
+
+    report = conclude_agent_run(store, outcome)
+    assert report.record.steps[0].truncated is True       # 留痕同一判定
+    assert report.envelope.data.slots["rows"][0]["truncated"] is True
 
 
 # ───────────────────────── 非法入参 ─────────────────────────

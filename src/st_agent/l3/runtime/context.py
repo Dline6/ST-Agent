@@ -28,7 +28,6 @@
 
 from __future__ import annotations
 
-import json
 from collections.abc import Iterable, Sequence
 from typing import Any, Literal
 
@@ -48,10 +47,18 @@ from st_agent.l3.runtime.tool_search import (
     tool_search_parameters,
     tool_search_spec,
 )
+from st_agent.l3.runtime.truncation import (
+    RESULT_SUMMARY_CHARS,
+    RESULT_TRUNCATE_CHARS,
+    json_text,
+    result_will_truncate,
+    summarize_result,
+)
 
 __all__ = [
     "CATALOG_EMPTY_REASON",
     "DEFAULT_WORK_CONTEXT_BUDGET",
+    "RESULT_SUMMARY_CHARS",
     "RESULT_TRUNCATE_CHARS",
     "TRUNCATED_PREVIEW_CHARS",
     "AskQuestion",
@@ -62,6 +69,8 @@ __all__ = [
     "assemble_work_context",
     "log_ref_of",
     "new_work_step",
+    "result_will_truncate",
+    "summarize_result",
 ]
 
 DEFAULT_WORK_CONTEXT_BUDGET = 12000
@@ -76,12 +85,6 @@ DEFAULT_WORK_CONTEXT_BUDGET = 12000
 目录为 **19 个能力**（12 官方 Skill + 7 内置原语），其模型可见形态实测约 **7.75k 字符**
 ——6000 的余量不足 1.3k，历史与记忆在出厂配置下会被整条舍弃。12000 留出约 4.2k 给两者
 （与 D-144 时 6000 留出的余量同量级）；仍远低于 `investigate.context_budget` 的 32000 上限。
-"""
-
-RESULT_TRUNCATE_CHARS = 1200
-"""单条结果的截断阈值（字符数；超者截断 + 留指针）。
-
-取值属实现口径：在 12000 字符的预算下，单条结果占十分之一以上即无谓挤占后续步骤的位置。
 """
 
 TRUNCATED_PREVIEW_CHARS = 200
@@ -646,12 +649,9 @@ def _render_memory(slice_: MemorySlice) -> str:
 def _apply_truncation(step: WorkStep, max_result_chars: int) -> WorkStep:
     """单条结果的截断（超阈值 → 截断形态 + 指针；未超 → **逐字节原样**，GWT-4）。"""
     envelope = step.envelope
-    if envelope.status != "ok":
-        # 非 ok 态无载荷（01 §5：载荷只属于 ok）；原因串是中性短文案，不属「结果」体量
+    if not result_will_truncate(envelope, max_result_chars):
         return step
     payload = _json(envelope.data)
-    if len(payload) <= max_result_chars:
-        return step
     truncated = TruncatedResult(
         log_ref=step.log_ref,
         skill_run_id=step.skill_run_id,
@@ -705,5 +705,5 @@ def _tools_section_chars(entries: tuple[ToolEntry, ...]) -> int:
 
 
 def _json(value: Any) -> str:
-    """确定性的 JSON 文本（排序键 + 不转义非 ASCII），供 prompt 与规模口径共用。"""
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=repr)
+    """确定性的 JSON 文本（与截断 / 摘要判定**同一序列化口径**）。"""
+    return json_text(value)

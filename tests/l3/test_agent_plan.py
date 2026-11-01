@@ -207,3 +207,42 @@ def test_invalid_plan_does_not_terminate_and_is_reported_next_round(rig):
     assert "上次计划更新未采用" in observed["prompt"]
     assert "不在枚举" in observed["prompt"]
     assert outcome.plan_error  # 最后一轮里模型仍未纠正，终止产出如实带上
+
+
+# ───────────────────────── 运行面板的计划块（T-AGT-026.2） ─────────────────────────
+
+
+def test_plan_event_carries_the_whole_snapshot_for_the_run_panel(rig):
+    """每次计划更新发**整份快照**（状态随之更新）；前端据此整体替换，不拼增量。"""
+    _store, runner, tools = rig
+    events: list = []
+    drive(
+        runner, tools,
+        ScriptedProtocol([
+            plan_call([{"title": "取数", "status": "active"}]),
+            plan_call([
+                {"title": "取数", "status": "done"},
+                {"title": "汇总", "status": "pending"},
+            ]),
+            finish(),
+        ]),
+        emit=lambda kind, payload: events.append((kind, dict(payload))),
+    )
+    plans = [payload for kind, payload in events if kind == "plan_updated"]
+    assert plans[0]["plan"] == [{"title": "取数", "status": "active"}]
+    assert plans[1]["plan"] == [
+        {"title": "取数", "status": "done"},
+        {"title": "汇总", "status": "pending"},
+    ]
+    assert all(payload["error"] == "" for payload in plans)
+
+
+def test_no_plan_event_when_the_model_never_gives_a_plan(rig):
+    """模型未给计划 ⇒ 不发 ``plan_updated``（运行面板据此不出计划块，不伪造）。"""
+    _store, runner, tools = rig
+    events: list = []
+    drive(
+        runner, tools, ScriptedProtocol([finish()]),
+        emit=lambda kind, payload: events.append((kind, dict(payload))),
+    )
+    assert not [kind for kind, _payload in events if kind == "plan_updated"]

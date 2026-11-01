@@ -212,7 +212,8 @@ function adoptRunResponse(pending, payload, retry, note) {
   if (payload && payload.running && payload.agent_run_id) {
     const running = {
       role: 'agent', running: true, runId: payload.agent_run_id,
-      note: note || '运行中…', steps: [], plan: [],
+      note: note || '运行中…', steps: [], plan: [], planShown: false, planError: '',
+      subAgents: [],
     };
     replaceMessage(pending, running);
     notify();
@@ -249,18 +250,23 @@ async function dispatch(body) {
   }
 }
 
-/** 续跑：与派发同一套后台 / 事件 / 回读口径；重试沿用同一续跑体。 */
+/** 续跑：与派发同一套后台 / 事件 / 回读口径；重试沿用同一续跑体。
+ *
+ * `cancel`（拒绝）是**即时记账**、不产生运行事件——按同步回执处理，不跟随 SSE
+ * （否则会为一次不存在的运行去连 404 的事件流，界面卡在「续跑中」）。
+ */
 async function resume(cont, body) {
   if (state.sending || !cont || !cont.agent_run_id) return;
   state.sending = true;
   const pending = { role: 'agent', pending: true, note: '正在续跑…' };
   state.messages.push(pending);
   notify();
+  const instant = body && body.decision === 'cancel';
   const request = {
     action: 'resume',
     agent_run_id: cont.agent_run_id,
     session_id: state.sessionId,
-    background: true,
+    ...(instant ? {} : { background: true }),
     ...body,
   };
   let running = false;
@@ -305,25 +311,75 @@ function applyRunEvent(message, type, data) {
   const body = data && typeof data.payload === 'object' && data.payload !== null
     ? data.payload
     : (data || {});
+  const at = data && typeof data.at === 'string' ? data.at : '';
   if (type === 'run_started') {
     if (body.task) message.note = `运行中：${String(body.task).slice(0, 60)}`;
     return;
   }
   if (type === 'step_started') {
-    message.steps.push({ tool: String(body.tool || ''), status: 'running' });
+    message.steps.push({
+      callId: String(body.call_id || ''),
+      tool: String(body.tool || ''),
+      skillId: String(body.skill_id || ''),
+      arguments: body.arguments && typeof body.arguments === 'object' ? body.arguments : {},
+      status: 'running',
+      startedAt: at,
+      finishedAt: '',
+      durationMs: null,
+      truncated: false,
+      logRef: '',
+      summary: '',
+    });
     message.note = `正在执行：${body.tool || ''}`;
     return;
   }
   if (type === 'step_finished') {
-    const step = [...message.steps].reverse().find(
-      (item) => item.tool === body.tool && item.status === 'running',
-    );
-    if (step) step.status = String(body.status || 'finished');
+    const step = findOpenStep(message.steps, body);
+    if (step) {
+      step.status = String(body.status || 'finished');
+      step.finishedAt = at;
+      step.durationMs = durationBetween(step.startedAt, at);
+      step.truncated = Boolean(body.truncated);
+      step.logRef = String(body.log_ref || '');
+      step.summary = String(body.summary || '');
+    } else {
+      // 断线续传只收到收尾帧时仍画一行，不丢这一步
+      message.steps.push({
+        callId: String(body.call_id || ''),
+        tool: String(body.tool || ''),
+        skillId: String(body.skill_id || ''),
+        arguments: {},
+        status: String(body.status || 'finished'),
+        startedAt: '',
+        finishedAt: at,
+        durationMs: null,
+        truncated: Boolean(body.truncated),
+        logRef: String(body.log_ref || ''),
+        summary: String(body.summary || ''),
+      });
+    }
     message.note = `已完成：${body.tool || ''}（${body.status || ''}）`;
     return;
   }
   if (type === 'plan_updated') {
+    message.planShown = true;
     message.plan = Array.isArray(body.plan) ? body.plan : [];
+    message.planError = String(body.error || '');
+    return;
+  }
+  if (type === 'sub_agent') {
+    message.subAgents.push({
+      task: String(body.task || ''),
+      runId: String(body.agent_run_id || ''),
+      traceId: String(body.trace_id || ''),
+      termination: String(body.termination || ''),
+      reason: String(body.reason || ''),
+      answer: String(body.answer || ''),
+      evidence: Array.isArray(body.evidence) ? body.evidence.map(String) : [],
+      steps: Number(body.steps) || 0,
+      stepList: Array.isArray(body.step_list) ? body.step_list : [],
+    });
+    message.note = `子 Agent 已返回：${body.task || ''}`;
     return;
   }
   if (type === 'gate_pending') {
@@ -337,6 +393,32 @@ function applyRunEvent(message, type, data) {
   if (type === 'run_finished') {
     message.note = `运行结束（${body.termination || ''}）`;
   }
+}
+
+/** 按调用标识找未收尾的那一行；旧帧无 `call_id` 时退回按工具名找最近一行。 */
+function findOpenStep(steps, body) {
+  const callId = String(body.call_id || '');
+  if (callId) {
+    const hit = [...steps].reverse().find((item) => item.callId === callId);
+    if (hit) return hit;
+  }
+  return [...steps].reverse().find(
+    (item) => item.tool === body.tool && item.status === 'running',
+  ) || null;
+}
+
+function durationBetween(startedAt, finishedAt) {
+  if (!startedAt || !finishedAt) return null;
+  const start = Date.parse(startedAt);
+  const end = Date.parse(finishedAt);
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return null;
+  return end - start;
+}
+
+function durationText(step) {
+  if (step.durationMs === null) return '—';
+  if (step.durationMs < 1000) return `${step.durationMs} ms`;
+  return `${(step.durationMs / 1000).toFixed(1)} s`;
 }
 
 /** 请求安全停止：只置标记，实际终止在下一个边界（T-AGT-024.2 / 05 §10）。 */
@@ -443,6 +525,101 @@ function turn(className) {
   return el('div', `chat__turn chat__turn--${className}`);
 }
 
+/** 计划状态 → 展示标签（枚举沿用后端 `PlanStep` 的三值，前端不改语义）。 */
+const PLAN_STATUS_LABELS = { pending: '待开始', active: '进行中', done: '已完成' };
+
+function planLabel(status) {
+  return PLAN_STATUS_LABELS[status] || String(status || '');
+}
+
+function planNode(plan) {
+  const list = el('ol', 'chat__plan');
+  for (const step of plan) {
+    const item = el('li', 'chat__plan-step');
+    item.append(el('span', 'chat__plan-title', String(step.title || '')));
+    item.append(el(
+      'span',
+      `chat__plan-status chat__plan-status--${String(step.status || 'pending')}`,
+      planLabel(step.status),
+    ));
+    list.append(item);
+  }
+  return list;
+}
+
+/** 一步一行：工具 / 目标 / 状态 / 耗时，可展开参数、结果摘要与留痕指针（T-AGT-026.1）。 */
+function runStepNode(step, index) {
+  const item = el('li', 'chat__run-step');
+  const detail = document.createElement('details');
+  detail.className = 'chat__run-detail';
+  const summary = document.createElement('summary');
+  summary.className = 'chat__run-step-row';
+  summary.append(
+    el('span', 'chat__run-step-index', String(index)),
+    el('span', 'chat__run-step-tool', step.tool || ''),
+    el('span', 'chat__run-step-target', step.skillId || ''),
+    el(
+      'span',
+      `chat__run-step-status chat__run-step-status--${String(step.status || 'running')}`,
+      String(step.status || ''),
+    ),
+    el('span', 'chat__run-step-duration', durationText(step)),
+  );
+  if (step.truncated) summary.append(el('span', 'chat__run-step-badge', '已截断'));
+  detail.append(summary);
+
+  const body = el('div', 'chat__run-detail-body');
+  body.append(el('p', 'chat__run-detail-title', '参数'));
+  body.append(el('pre', 'chat__run-args', JSON.stringify(step.arguments || {}, null, 2)));
+  if (step.summary) {
+    body.append(el('p', 'chat__run-detail-title', '结果摘要'));
+    body.append(el('p', 'chat__run-summary', step.summary));
+  }
+  if (step.logRef) {
+    body.append(el('p', 'chat__run-detail-title', '留痕指针'));
+    body.append(el('code', 'chat__run-ref', step.logRef));
+  }
+  detail.append(body);
+  item.append(detail);
+  return item;
+}
+
+/** 子 Agent 的嵌套块：其步骤引用 + 结论 + 引用与留痕（不复制子步骤结果载荷）。 */
+function subAgentNode(sub) {
+  const box = el('div', 'chat__run-sub');
+  const title = sub.termination
+    ? `子 Agent：${sub.task}（${sub.termination}）`
+    : `子 Agent：${sub.task}`;
+  box.append(el('p', 'chat__run-sub-title', title));
+  if (Array.isArray(sub.stepList) && sub.stepList.length) {
+    const list = el('ol', 'chat__run-list chat__run-list--sub');
+    for (const step of sub.stepList) {
+      const item = el('li', 'chat__run-step');
+      item.append(
+        el('span', 'chat__run-step-tool', String(step.tool || '')),
+        el('span', 'chat__run-step-target', String(step.skill_id || '')),
+        el(
+          'span',
+          `chat__run-step-status chat__run-step-status--${String(step.status || '')}`,
+          String(step.status || ''),
+        ),
+      );
+      if (step.truncated) item.append(el('span', 'chat__run-step-badge', '已截断'));
+      list.append(item);
+    }
+    box.append(list);
+  }
+  if (sub.answer) box.append(el('p', 'chat__run-sub-answer', `结论：${sub.answer}`));
+  if (sub.reason && sub.termination !== 'finished') {
+    box.append(el('p', 'chat__run-sub-reason', `原因：${sub.reason}`));
+  }
+  if (sub.evidence.length) {
+    box.append(el('p', 'chat__run-sub-evidence', `引用：${sub.evidence.join('、')}`));
+  }
+  if (sub.runId) box.append(el('p', 'chat__run-sub-ref', `留痕：${sub.runId}`));
+  return box;
+}
+
 function renderMessage(message) {
   if (message.role === 'user') {
     const node = turn('user');
@@ -461,19 +638,26 @@ function renderMessage(message) {
     const box = el('div', 'chat__run');
     box.setAttribute('aria-busy', 'true');
     box.append(el('p', 'chat__run-note', message.note || '运行中…'));
-    if (Array.isArray(message.plan) && message.plan.length) {
-      const plan = el('ul', 'chat__plan');
-      for (const step of message.plan) {
-        plan.append(el('li', 'chat__plan-step', `${step.title || ''}（${step.status || ''}）`));
-      }
-      box.append(plan);
+    // 计划块：只在模型主动调 `sk_plan_update` 后出现（未给出不伪造，05 §10）
+    if (message.planShown && Array.isArray(message.plan) && message.plan.length) {
+      box.append(planNode(message.plan));
     }
+    if (message.planShown && message.planError) {
+      box.append(el('p', 'chat__run-plan-error', `计划未采用：${message.planError}`));
+    }
+    // 步骤流：每步一行，可展开参数 / 结果摘要 / 留痕指针
     if (Array.isArray(message.steps) && message.steps.length) {
-      const list = el('ul', 'chat__run-list');
-      for (const step of message.steps.slice(-20)) {
-        list.append(el('li', 'chat__run-step', `${step.tool || ''}（${step.status || ''}）`));
-      }
+      const list = el('ol', 'chat__run-list');
+      message.steps.slice(-50).forEach((step, position) => {
+        list.append(runStepNode(step, position + 1));
+      });
       box.append(list);
+    }
+    // 子 Agent：嵌套展示其步骤与结论
+    if (Array.isArray(message.subAgents) && message.subAgents.length) {
+      const agents = el('div', 'chat__run-subs');
+      for (const sub of message.subAgents) agents.append(subAgentNode(sub));
+      box.append(agents);
     }
     // 安全停止（T-AGT-024.2）：只请求、不承诺立即终止；停止中禁用避免重复提交。
     const stop = el('button', 'chat__action', message.stopping ? '停止中…' : '停止');
@@ -563,6 +747,23 @@ function continuationNode(cont) {
     box.append(el('p', 'state state--delayed',
       '续跑依据已过期：旧证据可能不再代表当前状态，可选择重跑。'));
   }
+  // 交还必须显式（05 §10）：已收集的证据 + 那一步未执行的原因（T-AGT-026.3）
+  const evidence = Array.isArray(cont.evidence) ? cont.evidence : [];
+  if (evidence.length) {
+    box.append(el('p', 'chat__continuation-sub', `已收集的证据（${evidence.length} 步）`));
+    const list = el('ul', 'chat__evidence');
+    for (const step of evidence) {
+      const item = el('li', 'chat__evidence-step');
+      item.append(el('span', 'chat__evidence-tool', String(step.tool_name || '')));
+      item.append(el('span', 'chat__evidence-status', String(step.status || '')));
+      if (step.log_ref) item.append(el('span', 'chat__evidence-ref', String(step.log_ref)));
+      list.append(item);
+    }
+    box.append(list);
+  }
+  if (cont.reason) {
+    box.append(el('p', 'chat__continuation-reason', `交还说明：${cont.reason}`));
+  }
   if (Array.isArray(cont.plan) && cont.plan.length) {
     box.append(el('p', 'chat__continuation-sub', '当前计划'));
     const plan = el('ol', 'chat__plan');
@@ -623,7 +824,7 @@ function continuationNode(cont) {
   const bar = el('div', 'chat__actions');
   if (!cont.stale) {
     if (cont.kind === 'pending_step') {
-      const approve = el('button', 'chat__action', '确认并继续');
+      const approve = el('button', 'chat__action', '允许并继续');
       approve.type = 'button';
       approve.addEventListener('click', () => resume(cont, { decision: 'approve' }));
       bar.append(approve);
@@ -645,7 +846,7 @@ function continuationNode(cont) {
   rerun.type = 'button';
   rerun.addEventListener('click', () => resume(cont, { decision: 'rerun' }));
   bar.append(rerun);
-  const cancel = el('button', 'chat__action', '放弃续跑');
+  const cancel = el('button', 'chat__action', '拒绝');
   cancel.type = 'button';
   cancel.addEventListener('click', () => resume(cont, { decision: 'cancel' }));
   bar.append(cancel);

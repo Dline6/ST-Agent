@@ -883,11 +883,57 @@ body {
 /* 对话等待 / 失败 / 空态（[T-UI-031]）——等待轮用中性文案 + 忙碌标记，失败给「重试」。 */
 .chat__pending { margin: 0; color: var(--fg-muted); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
 
-/* 运行态（[T-AGT-023.2]）：只呈现事件里的客观字段（状态 / 工具 / 计划），不伪造进度。 */
+/* 运行态（[T-AGT-023.2] / [T-AGT-026]）：只呈现事件里的客观字段（动作 / 状态 / 计划 / 结果），
+   不伪造进度；步骤行可展开参数、结果摘要与留痕指针。 */
 .chat__run { margin: var(--space-1) 0; }
 .chat__run-note { margin: 0; color: var(--fg-muted); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
+.chat__run-plan-error { margin: var(--space-1) 0; color: var(--delayed); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
 .chat__run-list { margin: var(--space-1) 0; padding-left: var(--space-5); }
+.chat__run-list--sub { margin: var(--space-1) 0 0; }
 .chat__run-step { margin: var(--space-1) 0; color: var(--fg-muted); font-size: var(--text-caption); line-height: var(--leading-caption); }
+.chat__run-detail { margin: var(--space-1) 0; }
+.chat__run-step-row { display: flex; gap: var(--space-2); align-items: baseline; cursor: pointer; }
+.chat__run-step-index { color: var(--fg-faint); font-family: var(--font-num); }
+.chat__run-step-tool { color: var(--fg); }
+.chat__run-step-target { color: var(--fg-faint); overflow-wrap: anywhere; }
+.chat__run-step-status { color: var(--fg-muted); }
+.chat__run-step-status--ok { color: var(--ok); }
+.chat__run-step-status--running { color: var(--delayed); }
+.chat__run-step-status--failed,
+.chat__run-step-status--validation_failed,
+.chat__run-step-status--unavailable,
+.chat__run-step-status--dependency_failed { color: var(--error); }
+.chat__run-step-duration { margin-left: auto; color: var(--fg-faint); font-family: var(--font-num); }
+.chat__run-step-badge { padding: 0 var(--space-1); color: var(--delayed); border: 1px solid var(--delayed); border-radius: var(--radius-pill); }
+.chat__run-detail-body { margin: var(--space-1) 0 0; padding: var(--space-2); background: var(--bg); border: 1px solid var(--line); border-radius: var(--radius-surface); }
+.chat__run-detail-title { margin: var(--space-1) 0; color: var(--fg-muted); font-weight: 600; }
+.chat__run-args {
+  margin: 0 0 var(--space-2); padding: var(--space-2); overflow-x: auto;
+  background: var(--card); border: 1px solid var(--line); border-radius: var(--radius-control);
+  font-family: var(--font-num); font-size: var(--text-caption); line-height: var(--leading-caption);
+}
+.chat__run-summary { margin: 0 0 var(--space-2); color: var(--fg-muted); overflow-wrap: anywhere; }
+.chat__run-ref { font-family: var(--font-num); overflow-wrap: anywhere; }
+.chat__run-subs { margin-top: var(--space-1); }
+.chat__run-sub { margin: var(--space-1) 0; padding: var(--space-2); border: 1px dashed var(--line); border-radius: var(--radius-surface); }
+.chat__run-sub-title { margin: 0 0 var(--space-1); font-weight: 600; }
+.chat__run-sub-answer,
+.chat__run-sub-reason,
+.chat__run-sub-evidence,
+.chat__run-sub-ref {
+  margin: var(--space-1) 0 0; color: var(--fg-muted);
+  font-size: var(--text-body-sm); line-height: var(--leading-body-sm); overflow-wrap: anywhere;
+}
+.chat__plan-title { margin-right: var(--space-2); }
+.chat__plan-status { color: var(--fg-muted); font-size: var(--text-caption); }
+.chat__plan-status--active { color: var(--delayed); }
+.chat__plan-status--done { color: var(--ok); }
+.chat__evidence { margin: var(--space-1) 0; padding-left: var(--space-5); }
+.chat__evidence-step { display: flex; gap: var(--space-2); margin: var(--space-1) 0; font-size: var(--text-caption); line-height: var(--leading-caption); }
+.chat__evidence-tool { color: var(--fg); }
+.chat__evidence-status { color: var(--fg-muted); }
+.chat__evidence-ref { color: var(--fg-faint); font-family: var(--font-num); overflow-wrap: anywhere; }
+.chat__continuation-reason { margin: var(--space-1) 0; color: var(--fg-muted); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); overflow-wrap: anywhere; }
 .chat__run-outcome { margin: var(--space-1) 0 0; color: var(--fg-muted); font-size: var(--text-body-sm); line-height: var(--leading-body-sm); }
 .chat__retry {
   margin-top: var(--space-1); padding: var(--space-1) var(--space-3); font: inherit;
