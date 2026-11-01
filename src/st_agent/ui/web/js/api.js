@@ -27,8 +27,18 @@ export function readToken() {
   return token;
 }
 
-/** 取一条信封（服务端已附 `render` 元数据）。失败即抛，由调用方按错误态呈现。 */
-export async function getJson(path) {
+/** 运行事件流（SSE）的地址：EventSource 不能自定义请求头，故令牌只能进查询串。
+ *
+ * 令牌仍只住在内存里、不落 localStorage / sessionStorage；该地址只用于
+ * `/api/chat/run/<id>/events`（服务端只对这条路径接受查询串令牌）。
+ */
+export function streamUrl(path) {
+  if (!token) return path;
+  const separator = path.includes('?') ? '&' : '?';
+  return `${path}${separator}t=${encodeURIComponent(token)}`;
+}
+
+/** 取一条信封（服务端已附 `render` 元数据）。失败即抛，由调用方按错误态呈现。 */export async function getJson(path) {
   const response = await fetch(path, {
     method: 'GET',
     headers: { 'X-ST-Token': token },

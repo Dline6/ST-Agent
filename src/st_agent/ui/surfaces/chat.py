@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import threading
 import uuid
 from collections.abc import Callable, Mapping
 from typing import Any
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.ui.envelope import envelope_payload
 from st_agent.ui.registry import slot_gaps
+from st_agent.ui.sse import frames as sse_frames
 
 from st_agent.ui.surfaces.base import (
     SurfaceBase,
@@ -58,10 +60,99 @@ class ChatSurface(SurfaceBase):
         `clarification`（澄清轮：问项 / 方向候选 / 超预算默认项，[05 §3.2]，原样透传）。
         未注入门面 → `unavailable` + 点名（不伪造，同 `api_health` 之外的各 fail-closed 面）。
 
+        **后台派发**（[D-154] B1 / [T-AGT-023.1]）：`action=dispatch|resume` 且
+        `background=true` 时，先铸 `agent_run_id` 再在后台线程跑完整轮，**立即**回 running
+        载荷（`running` / `agent_run_id`）；最终助手轮仍由工作线程落会话，前端在
+        `run_finished` 后回读会话渲染（[T-AGT-023.2]）。默认路径（`action=post` 或不带
+        `background`）保持同步，逐字节不变。
+
         **本方法不向上抛**（[00 §6] 失败显式化）：非法请求体（门面在构造契约对象时
         拒绝，属 `ValueError` / `KeyError` 族）转 `validation_failed`；其余未预期异常
         记 traceback 后转 `failed`（附可查 `log_ref`）——两端都回信封，连接不被关闭。
         """
+        if str(body.get("action") or "post") in ("dispatch", "resume") and body.get("background"):
+            return self._api_chat_background(body)
+        return self._chat_turn_payload(body)
+
+    def _api_chat_background(self, body: dict[str, Any]) -> dict[str, Any]:
+        """后台派发：预铸运行标识 → 后台线程跑完整轮 → 立即回 running 载荷。"""
+        face = self.chat
+        if face is None or not getattr(face, "run_available", False):
+            return envelope_payload(
+                ResultEnvelope.unavailable(
+                    "未接入自主查证循环端口，后台运行不可用（装配归组合根）",
+                    last_updated_at=_now(),
+                )
+            )
+        try:
+            run_id = face.new_run_id()
+        except ValueError as exc:
+            return envelope_payload(ResultEnvelope.unavailable(str(exc), last_updated_at=_now()))
+        request = {**body, "agent_run_id": run_id}
+        if str(body.get("action") or "") == "resume":
+            # 续跑同时需要**旧**标识（定位留痕）与**新**标识（本次开跑）；旧标识不能被覆盖。
+            request = {**body, "new_run_id": run_id}
+        outcome: dict[str, Any] = {}
+        done = threading.Event()
+
+        def worker() -> None:
+            try:
+                outcome["payload"] = self._chat_turn_payload(request)
+            except Exception as exc:  # noqa: BLE001 —— 后台线程的失败也要留痕，不吞
+                log_ref = f"ui/chat-run-{uuid.uuid4().hex[:12]}"
+                _LOG.exception("后台运行 %s 未预期失败（log_ref=%s）：%s", run_id, log_ref, exc)
+                outcome["payload"] = envelope_payload(
+                    ResultEnvelope.failed("后台运行未预期失败，详见服务端日志", log_ref=log_ref)
+                )
+            finally:
+                done.set()
+
+        threading.Thread(
+            target=worker, name=f"st-agent-run-{run_id[-12:]}", daemon=True,
+        ).start()
+        if not face.wait_started(run_id, timeout=5.0):
+            # 未登记：要么在跑到登记前就失败（无待确认卡 / 同会话已有活动 run），
+            # 要么启动异常地慢。前者等线程收尾取真实失败信封，后者显式报未就绪。
+            done.wait(timeout=0.2)
+            payload = outcome.get("payload")
+            if isinstance(payload, dict):
+                return payload
+            return envelope_payload(
+                ResultEnvelope.failed("后台运行未能在预期时间内登记")
+            )
+        session_id = body.get("session_id")
+        return {
+            "status": "ok",
+            "data": {"agent_run_id": run_id, "running": True},
+            "render": {},
+            "session_id": session_id,
+            "needs_confirmation": False,
+            "clarification": None,
+            "agent_continuation": None,
+            "description": None,
+            "traces": [],
+            "agent_run_id": run_id,
+            "running": True,
+        }
+
+    def api_chat_run_events(self, agent_run_id: str, *, after_seq: int = 0) -> Any:
+        """运行事件流（SSE 帧生成器；[05 §10] / [T-AGT-023.1]）。
+
+        校验在**返回生成器之前**完成：未接端口 → `ValueError`；未知 id 且无事件日志 →
+        `KeyError`——由传输层在写出响应头之前转成显式错误，**不挂空连接**（GWT-3）。
+        """
+        face = self.chat
+        if face is None or not getattr(face, "run_available", False):
+            raise ValueError("未接入自主查证循环端口，运行事件流不可用（装配归组合根）")
+        run_id = str(agent_run_id or "").strip()
+        if not run_id:
+            raise ValueError("缺少运行标识（需 /api/chat/run/<id>/events）")
+        if not face.has_event_log(run_id) and not face.is_active(run_id):
+            raise KeyError(f"运行不存在或没有事件记录：{run_id}")
+        return sse_frames(face, run_id, after_seq=after_seq)
+
+    def _chat_turn_payload(self, body: dict[str, Any]) -> dict[str, Any]:
+        """同步跑一轮对话（含最终 payload 装配与助手轮落盘）。"""
         if self.chat is None:
             return envelope_payload(
                 ResultEnvelope.unavailable(
@@ -113,6 +204,10 @@ class ChatSurface(SurfaceBase):
         # 各视角推理链（[`T-UI-016.3`]）：`analyze` 去向的结论卡据此展开「推理链」面板——
         # 逐条与 `description` 同一道门（缺链条目 `description` 给 `None`，渲染面显式告知）。
         payload["traces"] = self._chat_traces(result.get("traces"))
+        run_id = str(body.get("agent_run_id") or body.get("new_run_id") or "").strip()
+        if run_id:
+            # 后台运行的前端在 run_finished 后按此回读最终轮（[T-AGT-023.2] 的「不重复渲染」判据）。
+            payload["agent_run_id"] = run_id
         self._record_chat_reply(payload)
         return payload
 
