@@ -189,14 +189,45 @@ class RuntimeAuthorization:
         self._now = _system_now if now is None else now
         self._default_tier: Tier = DEFAULT_AGENT_TIER
         self._tier_set = False
+        # 会话级覆盖：**进程内瞬态**（01 §7）——不落盘、无 change_id、进程结束即失效。
+        self._session_tiers: dict[str, Tier] = {}
 
     # ───────────────────────── 档位 ─────────────────────────
 
     def tier(self) -> Tier:
-        """当前运行期档位（条目缺失 ⇒ 出厂缺省 `autonomous`；**损坏 ⇒ 抛**，不静默回落）。"""
+        """当前**全局**运行期档位（条目缺失 ⇒ 出厂缺省 `autonomous`；**损坏 ⇒ 抛**，不静默回落）。"""
         if self._store is None:
             return self._default_tier
         return _require_tier(self._store.current(AGENT_TIER_CONFIG_ID, self._default_tier))
+
+    def session_tier(self, session_id: str | None) -> Tier | None:
+        """该会话的**覆盖**档位（无覆盖 / 无会话标识 ⇒ ``None``，交由全局档）。"""
+        key = (session_id or "").strip()
+        return self._session_tiers.get(key) if key else None
+
+    def effective_tier(self, session_id: str | None = None) -> Tier:
+        """该会话**生效**的档位：有覆盖取覆盖，否则取全局档（[01 §7](../../../docs/技术架构-v2/01-平台共享契约.md)）。"""
+        override = self.session_tier(session_id)
+        return self.tier() if override is None else override
+
+    def set_session_tier(self, session_id: str, value: Any) -> Tier:
+        """设置**会话级覆盖**（进程内瞬态：不落盘、不产 `change_id`、不改全局条目）。
+
+        :raises AuthorizationError: 会话标识为空 / 取值不在三档内
+        """
+        key = str(session_id or "").strip()
+        if not key:
+            raise AuthorizationError("会话级覆盖需要非空的会话标识（01 §7）")
+        target = _require_tier(value)
+        self._session_tiers[key] = target
+        return target
+
+    def clear_session_tier(self, session_id: str) -> bool:
+        """清除该会话的覆盖（此后**跟随全局档**）；返回此前是否确有覆盖。"""
+        key = str(session_id or "").strip()
+        if not key:
+            return False
+        return self._session_tiers.pop(key, None) is not None
 
     def tier_source(self) -> str:
         """当前档位的来源：``"user"``（已落值）或 ``"default"``（未落值、取出厂缺省）。
@@ -265,12 +296,14 @@ class RuntimeAuthorization:
             )
         return self._grading.classify(text)
 
-    def decide(self, action_id: str) -> ActionDecision:
-        """该动作在当前运行期档位下可否**自主**（[05 §10](../../../docs/技术架构-v2/05-L3-对话主入口.md) 的闸门判据）。
+    def decide(self, action_id: str, session_id: str | None = None) -> ActionDecision:
+        """该动作在该会话**生效档位**下可否**自主**（[05 §10](../../../docs/技术架构-v2/05-L3-对话主入口.md) 的闸门判据）。
 
         结论映射穷尽三类风险类 × 档位（见模块文档）；**读不出清单或档位 ⇒ `denied` + 成因**
         （fail-closed，[01 §7](../../../docs/技术架构-v2/01-平台共享契约.md)）。
 
+        :param session_id: 带会话的运行传会话标识即按该会话的覆盖判；缺省按全局档判
+            （无会话的单次查证，[01 §7](../../../docs/技术架构-v2/01-平台共享契约.md)）。
         :raises AuthorizationError: 动作标识为空（调用方缺陷，fail-fast——不静默判成保守）
         """
         text = (action_id or "").strip()
@@ -278,7 +311,7 @@ class RuntimeAuthorization:
             raise AuthorizationError("判据需要非空的动作标识（01 §7 的键空间）")
         try:
             risk = self.classify(text)
-            tier = self.tier()
+            tier = self.effective_tier(session_id)
         except AuthorizationError as exc:
             return ActionDecision(
                 action_id=text, verdict="denied",

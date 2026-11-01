@@ -177,11 +177,17 @@ TerminationReason = Literal[
     "unknown_tool",
     "catalog_empty",
     "cancelled",
+    "manual_step_done",
 ]
 """循环的终止原因（**穷尽列举**——产出与留痕据此如实标注，不造未列出的原因）。
 
 ``cancelled`` 是**安全停止**（[D-154](../../../项目管理/决策日志.md) B6）：已开始的工具
 跑完再停、不启动下一步；已执行的写操作**不回滚**，在产出里照实列出。
+
+``manual_step_done`` 是 **`manual` 档的「每步单独批、不自动续跑」**（[05 §10](../../../docs/技术架构-v2/05-L3-对话主入口.md)，
+[`T-AGT-028.2`](../../../项目管理/tasks/T-AGT-028.2-manual与collaborative差异补齐.md)）：按用户确认
+执行完待确认的那一步后**主动停下**，不发起下一轮模型调用——它与 ``needs_confirmation``（待确认、
+该步未执行）和 ``finished``（模型给出结束）都不同。
 """
 
 BOUND_REASONS: tuple[str, ...] = ("step_limit", "llm_call_limit")

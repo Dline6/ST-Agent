@@ -29,6 +29,15 @@ const state = {
   sending: false,
   loading: false,
   loadError: null,
+  // 会话级授权档位（T-AGT-028.1 / 01 §7）：**只在服务端有值时呈现**，不缓存默认值。
+  tier: { ready: false, reason: '读取会话档位…' },
+};
+
+/** 三档的展示文案（服务端只下发档位 id 与合法清单，词表留在表现层）。 */
+const TIER_LABELS = {
+  manual: 'manual · 每步单独确认',
+  collaborative: 'collaborative · 确认后继续',
+  autonomous: 'autonomous · 只读自动放行',
 };
 
 /** 已挂载的视图（右栏 / 历史页）；由 `notify` 统一重绘。 */
@@ -86,6 +95,69 @@ export function activeSessionId() {
   return state.sessionId;
 }
 
+// ── 会话级授权档位（T-AGT-028.1 / 01 §7） ───────────────────────────────────
+
+/** 服务端信封 → 档位展示态；非 ok 一律**显式不可用**（不拿默认档冒充）。 */
+function tierStateFrom(payload) {
+  if (!payload || payload.status !== 'ok' || !payload.data) {
+    return {
+      ready: false,
+      reason: (payload && payload.reason) || '会话档位不可用（服务端未返回可用内容）',
+    };
+  }
+  const data = payload.data;
+  return {
+    ready: true,
+    tier: String(data.tier || ''),
+    source: String(data.source || 'global'),
+    globalTier: String(data.global_tier || ''),
+    tiers: Array.isArray(data.tiers) ? data.tiers : [],
+    reason: '',
+  };
+}
+
+/** 取当前会话的生效档位（覆盖优先、否则跟随全局）；无会话时给显式提示而非默认值。 */
+async function refreshTier() {
+  const sid = state.sessionId;
+  if (!sid) {
+    state.tier = { ready: false, reason: '发送第一条消息后可切换本会话档位' };
+    notify();
+    return;
+  }
+  try {
+    const payload = await getJson(`/api/chat/session/tier?id=${encodeURIComponent(sid)}`);
+    if (state.sessionId !== sid) return; // 期间已切会话：丢弃过期结果
+    state.tier = tierStateFrom(payload);
+  } catch (error) {
+    if (state.sessionId !== sid) return;
+    state.tier = { ready: false, reason: `会话档位暂时无法读取：${error.message}` };
+  }
+  notify();
+}
+
+/** 切换本会话档位；空值＝恢复跟随全局（进程内瞬态，下一步生效）。 */
+async function changeTier(value) {
+  if (!state.sessionId) return;
+  try {
+    const payload = await postJson('/api/chat/session/tier', {
+      session_id: state.sessionId,
+      tier: value,
+    });
+    if (payload && payload.status === 'ok') {
+      state.tier = tierStateFrom(payload);
+      showToast(value ? '本会话档位已切换，下一步生效' : '已恢复跟随全局档位');
+    } else {
+      state.tier = tierStateFrom(payload);
+      showToast(payload && payload.reason ? payload.reason : '档位切换未生效', {
+        type: 'error',
+      });
+    }
+  } catch (error) {
+    showToast(`档位切换失败：${error.message}`, { type: 'error' });
+  }
+  notify();
+}
+
 // ── 会话生命周期 ────────────────────────────────────────────────────────────
 
 /** 新建对话：清空活动会话，下一条消息由服务端建一个新会话。 */
@@ -97,6 +169,7 @@ export function startNewSession() {
   state.sending = false;
   persistActiveSession();
   notify();
+  refreshTier();
 }
 
 /** 切到一个已有会话：从后端取回默认链路的消息并回放。 */
@@ -139,6 +212,7 @@ export async function openSession(sessionId) {
   } finally {
     state.loading = false;
     notify();
+    refreshTier();
   }
 }
 
@@ -166,8 +240,10 @@ function replaceMessage(target, replacement) {
 
 function adoptSession(payload) {
   if (payload && payload.session_id) {
+    const changed = state.sessionId !== payload.session_id;
     state.sessionId = payload.session_id;
     persistActiveSession();
+    if (changed) refreshTier(); // 首条消息建会后才可切换档位（T-AGT-028.1）
   }
 }
 
@@ -1072,11 +1148,60 @@ export function mountChat(container, { variant = 'rail' } = {}) {
   const commandMenu = el('ul', 'chat__commands');
   commandMenu.hidden = true;
 
-  root.append(stream, form, commandMenu);
+  // 会话级授权档位（T-AGT-028.1 / 01 §7）：只改本会话，进程内瞬态、下一步生效。
+  const tierBar = el('div', 'chat__tier');
+  const tierLabel = el('label', 'chat__tier-label', '授权档位');
+  tierLabel.htmlFor = 'chat-tier';
+  const tierSelect = el('select', 'chat__tier-select');
+  tierSelect.id = 'chat-tier';
+  const tierNote = el('span', 'chat__tier-note');
+  tierBar.append(tierLabel, tierSelect, tierNote);
+
+  let tierSignature = '';
+
+  function renderTier() {
+    const info = state.tier || {};
+    const signature = info.ready
+      ? `ok|${info.source}|${info.tier}|${info.globalTier}|${info.tiers.join(',')}`
+      : `x|${info.reason || ''}`;
+    if (signature === tierSignature) return; // 取值未变不重建选项（别打断正在展开的选择器）
+    tierSignature = signature;
+    tierSelect.replaceChildren();
+    if (!info.ready) {
+      const option = el('option', '', '档位不可用');
+      option.value = '';
+      tierSelect.append(option);
+      tierSelect.value = '';
+      tierSelect.disabled = true;
+      tierSelect.title = info.reason || '';
+      tierNote.textContent = info.reason || '';
+      return;
+    }
+    const follow = el('option', '', `跟随全局（${info.globalTier}）`);
+    follow.value = '';
+    tierSelect.append(follow);
+    for (const tier of info.tiers) {
+      const option = el('option', '', TIER_LABELS[tier] || tier);
+      option.value = tier;
+      tierSelect.append(option);
+    }
+    tierSelect.value = info.source === 'session' ? info.tier : '';
+    tierSelect.disabled = !state.sessionId;
+    tierSelect.title =
+      '只作用于当前会话：不落盘、不改全局配置、不产生变更记录，下一步生效（进程结束即失效）';
+    tierNote.textContent = info.source === 'session' ? '本会话覆盖' : '跟随全局';
+  }
+
+  tierSelect.addEventListener('change', () => {
+    changeTier(tierSelect.value);
+  });
+
+  root.append(tierBar, stream, form, commandMenu);
   container.replaceChildren(root);
 
   const view = {
     render() {
+      renderTier();
       renderTranscript(stream);
       input.disabled = state.sending;
       sendButton.disabled = state.sending;

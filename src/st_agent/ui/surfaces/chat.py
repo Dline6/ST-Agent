@@ -313,6 +313,49 @@ class ChatSurface(SurfaceBase):
             lambda f: f.read_session(str(session_id or "")),
         )
 
+    def api_chat_session_tier(self, session_id: str) -> dict[str, Any]:
+        """该会话**生效**的运行期授权档位（[01 §7]；会话级覆盖优先，否则跟随全局）。
+
+        `01 §7`（[`T-AGT-028.1`]）：覆盖是**进程内瞬态**——读面只给档位与来源，不产生
+        变更记录；未装配授权面即 `unavailable` + 点名（不伪造一个档位）。
+        """
+        face = self.chat
+        if face is None or not hasattr(face, "session_tier"):
+            return envelope_payload(
+                ResultEnvelope.unavailable(
+                    "未接入会话档位面：对话门面或 session_tier 取数口缺席"
+                    "（装配归组合根）",
+                    last_updated_at=_now(),
+                )
+            )
+        return self._call_face(
+            "chat-session-tier", face, "会话档位面",
+            lambda f: f.session_tier(str(session_id or "")),
+        )
+
+    def api_chat_set_session_tier(self, body: dict[str, Any]) -> dict[str, Any]:
+        """切换（或恢复跟随全局）某会话的运行期授权档位（[01 §7] / [`T-AGT-028.1`]）。
+
+        请求体 `{session_id, tier}`；`tier` 为空 ＝ 清除该会话的覆盖、恢复跟随全局。
+        写的是**本进程内**的会话覆盖，不动全局条目 `agent.authorization` 与
+        `agent-change/` 留痕。
+        """
+        face = self.chat
+        if face is None or not hasattr(face, "set_session_tier"):
+            return envelope_payload(
+                ResultEnvelope.unavailable(
+                    "未接入会话档位面：对话门面或 set_session_tier 写口缺席"
+                    "（装配归组合根）",
+                    last_updated_at=_now(),
+                )
+            )
+        return self._call_face(
+            "chat-session-tier-set", face, "会话档位写面",
+            lambda f: f.set_session_tier(
+                str(body.get("session_id") or ""), body.get("tier"),
+            ),
+        )
+
     def _chat_traces(self, raw: Any) -> list[dict[str, Any]]:
         """对话返程里的各视角链 → 出站载荷（逐条过必填槽 + 中性化门）。"""
         out: list[dict[str, Any]] = []

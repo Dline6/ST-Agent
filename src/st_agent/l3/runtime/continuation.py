@@ -138,6 +138,7 @@ def resume_agent_run(
     now: datetime | None = None,
     ttl: timedelta = CONTINUATION_TTL,
     new_run_id: str | None = None,
+    continue_after_approval: bool = True,
     emit: Any = None,
     cancel: Any = None,
 ) -> ResumeOutcome:
@@ -149,6 +150,10 @@ def resume_agent_run(
     :param now: 当前时刻（过期判定用；缺省取本地时区当前时刻）
     :param ttl: 续跑依据有效期（缺省 :data:`CONTINUATION_TTL`）
     :param new_run_id: **开跑前**已铸好的本次运行标识（[T-AGT-022.1]）；缺省由收口时铸。
+    :param continue_after_approval: ``approve`` 执行完待确认步后**是否续跑循环**——缺省 ``True``
+        （``collaborative`` / ``autonomous``：一次确认放行本步后继续，[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）；
+        传 ``False`` 即 ``manual`` 档的「每步单独批、不自动续跑」——执行完该步以
+        ``manual_step_done`` 收口，不发起下一轮模型调用。
     :param emit: 运行事件回调（同 :func:`run_agent_loop` 的 ``emit``；缺省不产生事件）。
     :param cancel: 协作式取消事件（同 :func:`run_agent_loop` 的 ``cancel``；缺省不可取消）。
     """
@@ -243,6 +248,40 @@ def resume_agent_run(
             return ResumeOutcome(
                 envelope=ResultEnvelope.validation_failed(str(exc)),
                 source_run_id=record.agent_run_id,
+            )
+        if not continue_after_approval:
+            # manual 档：每步单独批、**不自动续跑**（05 §10）——本步执行完就收口，
+            # 不发起下一轮模型调用；下一步由用户另行发起。
+            outcome = LoopOutcome(
+                task=record.task,
+                endpoint_id=endpoint_id,
+                termination="manual_step_done",
+                reason=(
+                    "manual 档（每步单独批、不自动续跑）：已按确认执行本步，循环在此停下；"
+                    "下一步由用户另行发起（05 §10）"
+                ),
+                session_id=session_id,
+                steps=prior_steps,
+                llm_calls=0,
+                trace=initial_trace,
+                plan=plan,
+                plan_updated=plan_updated,
+                max_steps=max_steps,
+                max_llm_calls=max_llm_calls,
+                budget_chars=budget_chars,
+                max_result_chars=max_result_chars,
+                executed_steps=1,
+            )
+            manual_report = conclude_agent_run(
+                store, outcome, agent_run_id=new_run_id, now=moment,
+                resumed_from=record.agent_run_id,
+            )
+            return ResumeOutcome(
+                envelope=manual_report.envelope,
+                report=manual_report,
+                source_run_id=record.agent_run_id,
+                stale=stale,
+                note=_join_note(record.ask_note, f"已续跑自 {record.agent_run_id}"),
             )
 
     outcome = run_agent_loop(

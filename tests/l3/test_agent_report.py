@@ -319,6 +319,7 @@ NO_STEP_STATUS = {
     "step_limit": "empty",
     "llm_call_limit": "empty",
     "cancelled": "empty",
+    "manual_step_done": "empty",
 }
 
 WITH_STEP_STATUS = {
@@ -334,6 +335,7 @@ WITH_STEP_STATUS = {
     "endpoint_unavailable": "ok",
     "llm_failed": "ok",
     "cancelled": "ok",
+    "manual_step_done": "ok",
 }
 
 
@@ -346,7 +348,7 @@ def test_termination_literal_is_fully_mapped():
     assert reasons == {
         "finished", "step_limit", "llm_call_limit", "gate_absent", "needs_confirmation",
         "needs_user_input", "denied", "endpoint_unavailable", "llm_failed", "unknown_tool",
-        "catalog_empty", "cancelled",
+        "catalog_empty", "cancelled", "manual_step_done",
     }
 
 

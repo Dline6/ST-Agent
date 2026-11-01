@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -76,6 +77,39 @@ class InvestigationOutcome:
     def agent_run_id(self) -> str:
         """本次循环的留痕标识（未运行时为空串）。"""
         return "" if self.report is None else self.report.agent_run_id
+
+
+class _SessionBoundDecisions:
+    """把运行期授权判据按**会话**绑定（会话级覆盖，[01 §7](../../docs/技术架构-v2/01-平台共享契约.md)）。
+
+    L3 的闸门只认 ``decide(action_id)`` 这一种鸭子口，故会话标识在**组合根**绑定，
+    闸门与循环**零改动**：判据仍只住 L6 一处（档位 × 清单风险类），此处只是把它按
+    ``session_id`` 取用。
+
+    **是否传会话按判据面的签名判**（而不是能力标记）：包装层的 ``__getattr__`` 透传会把
+    标记一并带出，却未必接受这个关键字——那样失败会被闸门当成「判不出」而整体拒绝。
+    签名不含 ``session_id`` 的端口（测试替身 / 包装层）原样透传，行为与绑定前一致。
+    """
+
+    def __init__(self, decisions: Any, session_id: str | None) -> None:
+        self._decisions = decisions
+        self._session_id = (session_id or "").strip()
+        self._accepts_session = _accepts_session_kwarg(getattr(decisions, "decide", None))
+
+    def decide(self, action_id: str) -> Any:
+        if self._session_id and self._accepts_session:
+            return self._decisions.decide(action_id, session_id=self._session_id)
+        return self._decisions.decide(action_id)
+
+
+def _accepts_session_kwarg(decide: Any) -> bool:
+    """判据端口是否接受 ``session_id`` 关键字（签名判定；读不出即按不接受处理）。"""
+    if not callable(decide):
+        return False
+    try:
+        return "session_id" in inspect.signature(decide).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 class _AgentInvestigator:
@@ -183,7 +217,7 @@ class _AgentInvestigator:
                 protocol=self._protocol,
                 runner=self._runner,
                 tools=self._skills.tool_catalog(),
-                gate=ActionGate(self._authorization),
+                gate=self._gate_for(session),
                 approved_permissions=self._permissions or (),
                 max_steps=self._bounds.steps(),
                 max_llm_calls=self._bounds.llm_calls(),
@@ -249,7 +283,7 @@ class _AgentInvestigator:
                 protocol=self._protocol,
                 runner=self._runner,
                 tools=self._skills.tool_catalog(),
-                gate=ActionGate(self._authorization),
+                gate=self._gate_for(session),
                 approved_permissions=self._permissions or (),
                 max_steps=self._bounds.steps(),
                 max_llm_calls=self._bounds.llm_calls(),
@@ -261,6 +295,7 @@ class _AgentInvestigator:
                 nested_recorder=self._nested_recorder,
                 now=now,
                 new_run_id=run_id,
+                continue_after_approval=self._continues_after_approval(session),
                 emit=events.emit,
                 cancel=run.cancel_event,
             )
@@ -315,6 +350,30 @@ class _AgentInvestigator:
             return False
         handle.request_cancel()
         return True
+
+    def _gate_for(self, session_id: str | None) -> ActionGate:
+        """按**会话**绑定判据端口的闸门（会话级覆盖，[01 §7]）。
+
+        未注入授权面时仍交 ``None``——闸门按 fail-closed 拒绝并给出「未注入判据面」的成因，
+        比让适配器抛 ``AttributeError`` 更贴合「装配缺口如实呈现」的既有口径。
+        """
+        if self._authorization is None:
+            return ActionGate(None)
+        return ActionGate(_SessionBoundDecisions(self._authorization, session_id))
+
+    def _continues_after_approval(self, session_id: str | None) -> bool:
+        """`manual` 档「每步单独批、不自动续跑」的判定（[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+
+        档位读面缺席或读不出 ⇒ 按 ``True``（协作档形态）：闸门本身会对每个动作 fail-closed，
+        此处不另造一套档位判断。
+        """
+        effective = getattr(self._authorization, "effective_tier", None)
+        if not callable(effective):
+            return True
+        try:
+            return effective(session_id) != "manual"
+        except Exception:  # noqa: BLE001 —— 档位读不出时由闸门 fail-closed，不用它决定形态
+            return True
 
     def _context_inputs(self, session_id: str | None, task: str) -> tuple[Any, Any, str]:
         """取近端历史与记忆切片（[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)）。
