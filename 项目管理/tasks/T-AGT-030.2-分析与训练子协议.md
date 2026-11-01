@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-029.1]
 status: done
 decisions: [D-154, D-160]
-verify: 执行日志 [T-AGT-030.2]——analyze / train / explain 三动作接入循环（分歧图卡 / 训练会话回灌 / 当前链卡片），与 .1 同批收口；范围 1461 passed、定向 90 passed、verify_docs --strict PASS、dev 面 trace_timeline 渲染正常；实现 commit 待回填
+verify: 执行日志 [T-AGT-030.2]——analyze / train / explain 三动作接入循环（分歧图卡 / 训练会话回灌 / 当前链卡片），与 .1 同批收口；范围 1461 passed、定向 90 passed、verify_docs --strict PASS、dev 面 trace_timeline 渲染正常；实现 commit 83072c7
 ---
 
 # T-AGT-030.2 · 分析与训练子协议

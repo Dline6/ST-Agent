@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-029.1]
 status: done
 decisions: [D-154, D-160]
-verify: 执行日志 [T-AGT-030.1]——配置草稿卡 / 裁决卡两动作接入循环，`card_ready` 交还首卡，五动作 autonomous-ok；范围 1461 passed（首轮并集 2794/1 的预算回归已修）、定向 90 passed、verify_docs --strict PASS、dev 面 config_draft_card 渲染正常；实现 commit 待回填
+verify: 执行日志 [T-AGT-030.1]——配置草稿卡 / 裁决卡两动作接入循环，`card_ready` 交还首卡，五动作 autonomous-ok；范围 1461 passed（首轮并集 2794/1 的预算回归已修）、定向 90 passed、verify_docs --strict PASS、dev 面 config_draft_card 渲染正常；实现 commit 83072c7
 ---
 
 # T-AGT-030.1 · 配置与记忆子协议
