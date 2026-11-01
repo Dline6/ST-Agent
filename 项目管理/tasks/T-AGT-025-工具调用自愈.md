@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-020]
 status: done
 decisions: [D-154, D-157]
-verify: 见执行日志 [T-AGT-025]（范围套件 1426 passed；定向 93 passed；verify_docs --strict PASS；commit 待回填）
+verify: 见执行日志 [T-AGT-025]（范围套件 1426 passed；定向 93 passed；verify_docs --strict PASS；commit e7ed13b）
 ---
 
 # T-AGT-025 · 工具调用自愈
