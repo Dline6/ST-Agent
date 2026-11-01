@@ -19,6 +19,7 @@ from st_agent.l0.storage.format import (
     STORE_MARKER,
     StoreMode,
     read_mode,
+    read_partition_set,
     write_marker,
 )
 from st_agent.l0.storage.partition import (
@@ -57,6 +58,7 @@ __all__ = [
     "StoreCorruptionReport",
     "StoreMode",
     "read_mode",
+    "read_partition_set",
     "validate_partition_name",
     "write_marker",
 ]
