@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-024.1, T-AGT-023.1]
 status: done
 decisions: [D-154]
-verify: 见执行日志 [T-AGT-024.2]（范围套件 2187 passed / 2 errors；定向 81 passed；真浏览器走查：停止后证据表 1 行 + 终止行，stop 200）
+verify: 见执行日志 [T-AGT-024.2]（范围套件 2187 passed / 2 errors；定向 81 passed；真浏览器走查：停止后证据表 1 行 + 终止行，stop 200；commit 5ad0e67）
 ---
 
 # T-AGT-024.2 · 停止端点与停止按钮

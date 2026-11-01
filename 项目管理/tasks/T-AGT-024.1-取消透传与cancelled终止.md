@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-022.1]
 status: done
 decisions: [D-154]
-verify: 见执行日志 [T-AGT-024.1]（范围套件 2187 passed / 2 errors；定向 56 passed；真浏览器走查见 [T-AGT-024.2]）
+verify: 见执行日志 [T-AGT-024.1]（范围套件 2187 passed / 2 errors；定向 56 passed；commit 5ad0e67）
 ---
 
 # T-AGT-024.1 · 取消透传与 cancelled 终止
