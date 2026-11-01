@@ -589,6 +589,8 @@ class DialogFacade:
                     outcome.adjudications[0], now=self._now(),
                 )
                 description = described.data if described.status == "ok" else None
+            elif outcome.investigation is not None:
+                description = self._card_description(outcome.investigation)
             return {"reply": outcome.envelope, "session_id": sid,
                     "needs_confirmation": False, "description": description,
                     "clarification": None, "traces": traces,
@@ -603,7 +605,8 @@ class DialogFacade:
                 new_run_id=new_run_hint,
             )
             return {"reply": outcome.envelope, "session_id": sid,
-                    "needs_confirmation": False, "description": None,
+                    "needs_confirmation": False,
+                    "description": self._card_description(outcome),
                     "clarification": None, "traces": [],
                     "agent_continuation": self._continuation_payload(
                         outcome.investigation)}
@@ -617,7 +620,8 @@ class DialogFacade:
                     "description": None, "clarification": None, "traces": [],
                     "agent_continuation": None}
         return {"reply": outcome.envelope, "session_id": outcome.session_id or sid,
-                "needs_confirmation": False, "description": None,
+                "needs_confirmation": False,
+                "description": self._card_description(outcome.investigation),
                 "clarification": None, "traces": [],
                 "agent_continuation": self._continuation_payload(
                     outcome.investigation)}
@@ -639,6 +643,12 @@ class DialogFacade:
                 "needs_confirmation": True, "description": None,
                 "clarification": clarification, "traces": [],
                 "agent_continuation": None}
+
+    @staticmethod
+    def _card_description(holder: Any) -> Any:
+        """子协议动作交还的首张描述件（无卡 → ``None``，不伪造一张）。"""
+        cards = tuple(getattr(holder, "cards", ()) or ())
+        return cards[0] if cards else None
 
     @staticmethod
     def _continuation_payload(investigation: Any) -> dict[str, Any] | None:

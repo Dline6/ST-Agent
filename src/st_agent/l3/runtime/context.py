@@ -73,7 +73,7 @@ __all__ = [
     "summarize_result",
 ]
 
-DEFAULT_WORK_CONTEXT_BUDGET = 12000
+DEFAULT_WORK_CONTEXT_BUDGET = 16000
 """工作上下文的默认规模预算（**字符数**近似）。
 
 取与 [`:data:`DEFAULT_CONTEXT_BUDGET <../chat/session.py>`] 同一量级（§1 未定默认值）
@@ -85,6 +85,11 @@ DEFAULT_WORK_CONTEXT_BUDGET = 12000
 目录为 **19 个能力**（12 官方 Skill + 7 内置原语），其模型可见形态实测约 **7.75k 字符**
 ——6000 的余量不足 1.3k，历史与记忆在出厂配置下会被整条舍弃。12000 留出约 4.2k 给两者
 （与 D-144 时 6000 留出的余量同量级）；仍远低于 `investigate.context_budget` 的 32000 上限。
+
+2026-11-02 再提到 **16000**（[D-160](../../../项目管理/决策日志.md)）：五个子协议动作
+（`sk_configure` / `sk_memory_op` / `sk_analyze` / `sk_train` / `sk_explain`）进场后，出厂
+工具目录为 **35 个能力**，模型可见形态实测 **12030 字符**——12000 下历史与记忆会被整条
+舍弃；16000 留出约 3.9k，维持与 D-144 / D-145 同量级的余量。
 """
 
 TRUNCATED_PREVIEW_CHARS = 200
@@ -247,6 +252,9 @@ class WorkContext(BaseModel):
     unknown_tool_note: str = ""
     """上一次请求了**目录外工具**时的回灌说明（点名未知工具 + 指向本轮目录；
     无回灌即空）。[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的工具调用自愈。"""
+    subprotocol_note: str = ""
+    """上一次**子协议动作**的显式说明（失败原因 / 训练复述 / 无卡说明；无即空）。
+    动作由 L3 拦截承接、不进 ``steps``，故以本段回灌给模型（[05 §3.1](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。"""
     subagent_note: str = ""
     """**子 Agent 的结论与引用**（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
     子步骤不进主上下文，只这一段的结论 + ``skill_run_id`` 引用；无派生即空。"""
@@ -300,6 +308,9 @@ class WorkContext(BaseModel):
             lines.append("")
         if self.unknown_tool_note:
             lines.append(f"工具调用反馈：{self.unknown_tool_note}")
+            lines.append("")
+        if self.subprotocol_note:
+            lines.append(f"子协议动作反馈：{self.subprotocol_note}")
             lines.append("")
         if self.subagent_note:
             lines.append("子 Agent 结果（子上下文不进本窗，仅回传结论与引用）：")
@@ -428,6 +439,7 @@ def assemble_work_context(
     tool_search_note: str = "",
     subagent_note: str = "",
     unknown_tool_note: str = "",
+    subprotocol_note: str = "",
     tool_lazy_chars: int | None = None,
 ) -> ResultEnvelope:
     """装配循环工作上下文（纯函数，GWT-6）。
@@ -450,6 +462,8 @@ def assemble_work_context(
     :param subagent_note: 子 Agent 回传的结论与引用（子步骤不进主上下文；恒保留）
     :param unknown_tool_note: 上一次请求目录外工具时的回灌说明（点名声明的未知工具 +
         指向本轮目录；无回灌即空）——[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的工具调用自愈
+    :param subprotocol_note: 上一次子协议动作的显式说明（失败原因 / 训练复述 / 无卡说明；
+        无即空）——动作由 L3 拦截承接、不进 ``steps``，以本段回灌（[05 §3.1](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）
     :param tool_lazy_chars: 惰性态阈值（目录工具段的字符数）；``None`` 即取本次预算
     :returns: ``ok``（载荷为 :class:`WorkContext`）或 ``empty``（目录为空）；入参非法抛
         :class:`~st_agent.l3.errors.AgentRuntimeValidationError`
@@ -505,6 +519,7 @@ def assemble_work_context(
         tool_search_note=str(tool_search_note or ""),
         subagent_note=str(subagent_note or ""),
         unknown_tool_note=str(unknown_tool_note or ""),
+        subprotocol_note=str(subprotocol_note or ""),
     )
     return ResultEnvelope.ok(
         context.model_copy(update={"size_chars": size, "over_budget": size > budget_chars})
@@ -528,6 +543,7 @@ def _fit_budget(
     tool_search_note: str,
     subagent_note: str,
     unknown_tool_note: str,
+    subprotocol_note: str,
 ) -> tuple[WorkContext, int]:
     """按声明顺序取舍直至装下（或无可再舍），返回上下文与最终规模。
 
@@ -547,7 +563,7 @@ def _fit_budget(
             dropped=tuple(dropped), budget_chars=budget_chars, size_chars=0,
             lazy_tools=lazy_tools, retrieved_tools=retrieved_tools,
             tool_search_note=tool_search_note, subagent_note=subagent_note,
-            unknown_tool_note=unknown_tool_note,
+            unknown_tool_note=unknown_tool_note, subprotocol_note=subprotocol_note,
         )
 
     context = build()

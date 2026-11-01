@@ -299,6 +299,7 @@ def build_agent_output(
     | ``finished`` | ``ok``（证据包；无步亦可——模型直接作答是合法结果） |
     | ``needs_user_input`` | ``ok``（结构化问项；零步也照出——问项本身就是交付物） |
     | ``step_limit`` / ``llm_call_limit`` / ``needs_confirmation`` / ``denied`` / ``cancelled`` / ``manual_step_done`` | 有步 → ``ok`` + 终止标注；无步 → ``empty`` + 原因（``needs_confirmation`` / ``denied`` 无步时按 :func:`_handback_reason` **显式交还**） |
+    | ``card_ready`` | ``ok``（运行表；卡片本体经 ``LoopOutcome.cards`` 交表现层，零步也照出） |
     | ``unknown_tool`` / ``gate_absent`` | 有步 → ``ok``；无步 → ``failed`` + 留痕指针 |
     | ``endpoint_unavailable`` | ``unavailable`` + 中性降级告知（fail-closed，GWT-6） |
     | ``llm_failed`` | 端点侧的信封**原样透出**（不重包、不改 status、不吞 reason） |
@@ -314,7 +315,11 @@ def build_agent_output(
     log_ref = agent_log_ref_of(agent_run_id)
     if outcome.termination == "llm_failed" and outcome.failure is not None:
         return outcome.failure
-    if not outcome.steps and not outcome.finished and outcome.termination != "needs_user_input":
+    if (
+        not outcome.steps
+        and not outcome.finished
+        and outcome.termination not in ("needs_user_input", "card_ready")
+    ):
         return _without_steps(outcome, log_ref, moment)
     description = describe_agent_run(outcome, agent_run_id=agent_run_id, now=now)
     if description.status != "ok":

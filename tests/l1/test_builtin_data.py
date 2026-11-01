@@ -309,6 +309,7 @@ def test_seed_table_contains_the_data_control_and_file_primitives():
         "sk_web_search", "sk_web_fetch",
         "sk_run_command", "sk_result_read",
         "sk_spawn_agent",
+        "sk_configure", "sk_memory_op", "sk_analyze", "sk_train", "sk_explain",
         "sk_mcp_list_resources", "sk_mcp_read_resource",
     ]
 

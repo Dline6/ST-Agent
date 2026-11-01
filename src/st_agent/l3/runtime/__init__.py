@@ -103,6 +103,12 @@ from st_agent.l3.runtime.report import (
 )
 from st_agent.l3.runtime.registry_adapter import InvestigateFamily, investigate_family
 from st_agent.l3.runtime.runs import ActiveRun, ActiveRunRegistry, RunAlreadyActiveError
+from st_agent.l3.runtime.subprotocols import (
+    SUBPROTOCOL_TOOLS,
+    SubprotocolPorts,
+    SubprotocolResult,
+    handle as handle_subprotocol,
+)
 from st_agent.l3.runtime.events import (
     EVENT_LOG_PREFIX,
     RUN_EVENT_TYPES,
@@ -142,6 +148,7 @@ __all__ = [
     "RUN_EVENT_TYPES",
     "SKILL_ACTION_PREFIX",
     "SPAWN_AGENT_TOOL",
+    "SUBPROTOCOL_TOOLS",
     "TRUNCATED_PREVIEW_CHARS",
     "ActionGate",
     "ActiveRun",
@@ -167,6 +174,8 @@ __all__ = [
     "RunEventLog",
     "RunEventType",
     "SubAgentRun",
+    "SubprotocolPorts",
+    "SubprotocolResult",
     "TerminationReason",
     "render_subagent_note",
     "ToolCallProtocol",
@@ -180,6 +189,7 @@ __all__ = [
     "build_agent_output",
     "conclude_agent_run",
     "event_log_ref_of",
+    "handle_subprotocol",
     "investigate_family",
     "load_agent_run",
     "load_continuation",

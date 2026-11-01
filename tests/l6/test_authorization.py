@@ -161,6 +161,12 @@ class TestGwt4RiskGrading:
             ("skill.sk_result_read", "autonomous-ok"),
             # 子 Agent 派生无副作用（子步逐步过同一闸门）——T-AGT-018.2 / [D-151]
             ("skill.sk_spawn_agent", "autonomous-ok"),
+            # 子协议动作只产卡 / 读卡 / 产未确认复述，不落值——T-AGT-030
+            ("skill.sk_configure", "autonomous-ok"),
+            ("skill.sk_memory_op", "autonomous-ok"),
+            ("skill.sk_analyze", "autonomous-ok"),
+            ("skill.sk_train", "autonomous-ok"),
+            ("skill.sk_explain", "autonomous-ok"),
             # MCP resources 只读（Server 权限另在 mcp-permission 账本批准）——T-AGT-019 / 03 §5.5
             ("skill.sk_mcp_list_resources", "autonomous-ok"),
             ("skill.sk_mcp_read_resource", "autonomous-ok"),
@@ -193,6 +199,11 @@ class TestGwt4RiskGrading:
         assert prefixes.index("skill.sk_file_grep") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_result_read") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_spawn_agent") < prefixes.index("skill.")
+        for action in (
+            "skill.sk_configure", "skill.sk_memory_op", "skill.sk_analyze",
+            "skill.sk_train", "skill.sk_explain",
+        ):
+            assert prefixes.index(action) < prefixes.index("skill.")
         assert prefixes.index("skill.sk_mcp_list_resources") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_mcp_read_resource") < prefixes.index("skill.")
         assert prefixes.index("skill.sk_data_sync") < prefixes.index("skill.")
