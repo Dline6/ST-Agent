@@ -27,8 +27,6 @@ from st_agent.l3.intent import (
     INTENT_PARAM_SPECS,
     INTENT_TARGETS,
     MATCH_MIN_OVERLAP,
-    TARGET_REQUIRED_INTENTS,
-    TARGET_UNRESOLVED_REASON,
     UNSPECIFIED_LABEL,
     IntentDraft,
     IntentProtocol,
@@ -93,8 +91,10 @@ class TestGwt1IntentClassification:
     def test_vocabulary_matches_05_3_1(self) -> None:
         assert tuple(INTENT_TARGETS) == INTENT_KINDS
 
-    def test_understander_draft_passes_through(self, skills: SkillRegistry) -> None:
-        draft = IntentDraft(intent="query", target="sk_probe_watch", understood={"a": 1})
+    def test_understander_draft_passes_through(
+        self, skills: SkillRegistry, seeded: str
+    ) -> None:
+        draft = IntentDraft(intent="query", target=seeded, understood={"a": 1})
         result = _protocol(skills, draft=draft).understand("看看今天的行情")
         assert result.status == "ok"
         assert result.data.intent == "query"
@@ -417,8 +417,8 @@ class TestIntentLevelParams:
     def test_other_targetless_intents_gain_no_phantom_questions(
         self, skills: SkillRegistry
     ) -> None:
-        """未声明的意图（如无 target 的 `query`）行为**逐字节不变**：不凭空产问项。"""
-        protocol = self._protocol(checked_draft(intent="query", target=None), skills)
+        """未声明的意图（如无 target 的 `explain`）行为**逐字节不变**：不凭空产问项。"""
+        protocol = self._protocol(checked_draft(intent="explain", target=None), skills)
         draft = protocol.understand("看看").data
         assert draft.open_questions == ()
         round_ = protocol.clarify(draft)
@@ -467,7 +467,7 @@ class TestInvestigateConfirmation:
         assert round_.questions == () and round_.envelope.status == "empty"
 
 
-# ─────────── T-L3-007：目标解析与可派发性守门（05 §3.1 / §3.2） ───────────
+# ─────── T-L3-007 / T-AGT-021：目标解析与解析不出升级（05 §3.1 / §3.2） ───────
 
 
 class _RecordingMatcher:
@@ -515,20 +515,22 @@ class TestGwt1TargetResolution:
         assert draft.target == seeded and draft.via_matcher is False
         assert matcher.calls == []
 
-    def test_unregistered_target_is_dropped_then_rematched(
+    def test_unregistered_target_is_dropped_then_upgraded(
         self, skills: SkillRegistry
     ) -> None:
-        """GWT-2：理解端口给的目标**未注册**＝未给出——不把假标识带上卡。"""
+        """GWT-2'：理解端口给的目标**未注册**＝未给出——不把假标识带上卡，改判 investigate。"""
         matcher = _RecordingMatcher(None)
+        text = "配置一个并不存在的能力"
         protocol = IntentProtocol(
             understander=_Understander(ResultEnvelope.ok(checked_draft(
                 intent="configure", target="sk_ghost_skill_v9.9",
             ))),
             matcher=matcher, descriptors=skills,
         )
-        draft = protocol.understand("配置一个并不存在的能力").data
-        assert draft.target is None and draft.via_matcher is False
-        assert matcher.calls == [("配置一个并不存在的能力", MATCH_MIN_OVERLAP)]
+        draft = protocol.understand(text).data
+        assert draft.intent == "investigate" and draft.target == text
+        assert draft.via_matcher is False
+        assert matcher.calls == [(text, MATCH_MIN_OVERLAP)]
 
     def test_missing_descriptors_keep_the_target_as_given(
         self, skills: SkillRegistry
@@ -556,33 +558,52 @@ class TestGwt1TargetResolution:
         assert matcher.calls[0][1] == 1
 
 
-class TestGwt2DispatchabilityGate:
-    def test_target_required_routes_are_undispatchable_without_target(
+class TestGwt2UnresolvedTargetUpgrade:
+    """T-AGT-021（05 §3.2）：解析不出不再出空态 / 澄清轮，改判 `investigate`。
+
+    任务由确认卡的 `target` 承载（`investigate` 无意图级参数声明，卡上仍只有
+    「意图」一条目）——与 `_AgentInvestigator` 的既有取值链一致。
+    """
+
+    def test_unresolved_query_upgrades_to_investigate(
         self, skills: SkillRegistry
     ) -> None:
-        protocol = IntentProtocol(descriptors=skills)
-        for intent in TARGET_REQUIRED_INTENTS:
-            assert protocol.undispatchable(checked_draft(intent=intent, target=None))
-            assert not protocol.undispatchable(
-                checked_draft(intent=intent, target="sk_x_v1.0"))
-
-    def test_other_routes_are_never_gated(self, skills: SkillRegistry) -> None:
-        protocol = IntentProtocol(descriptors=skills)
-        for intent in ("analyze", "memory_op", "explain", "train", "investigate"):
-            assert not protocol.undispatchable(
-                checked_draft(intent=intent, target=None))
-
-    def test_withheld_round_carries_the_reason_and_directions(
-        self, skills: SkillRegistry
-    ) -> None:
-        protocol = IntentProtocol(descriptors=skills)
-        draft = checked_draft(
-            intent="query", target=None, directions=("查询退市风险",),
+        """GWT-1：用户原话作任务，原快速路径抽出的参数 / 方向不进卡。"""
+        text = "最近ST股票有没有什么热门板块?"
+        matcher = _RecordingMatcher(None)
+        protocol = IntentProtocol(
+            understander=_Understander(ResultEnvelope.ok(checked_draft(
+                intent="query", target=None, understood={"action": "查询"},
+                directions=("热门板块",),
+            ))),
+            matcher=matcher, descriptors=skills,
         )
-        round_ = protocol.withheld_round(draft)
-        assert round_.envelope.status == "empty"
-        assert TARGET_UNRESOLVED_REASON in round_.envelope.reason
-        assert round_.questions == () and round_.directions == ("查询退市风险",)
+        draft = protocol.understand(text).data
+        assert draft.intent == "investigate" and draft.target == text
+        assert draft.understood == {} and draft.open_questions == ()
+        assert draft.directions == () and draft.via_matcher is False
+        assert matcher.calls == [(text, MATCH_MIN_OVERLAP)]
+        card = protocol.confirm(draft)
+        assert card.intent == "investigate" and card.target == text
+        assert len(card.items) == 1 and card.values == {}
+
+    def test_unresolved_configure_also_upgrades(self, skills: SkillRegistry) -> None:
+        text = "把盯盘阈值配置一下"
+        protocol = IntentProtocol(
+            understander=_Understander(ResultEnvelope.ok(checked_draft(
+                intent="configure", target=None,
+            ))),
+            descriptors=skills,
+        )
+        draft = protocol.understand(text).data
+        assert draft.intent == "investigate" and draft.target == text
+
+    def test_shortcut_without_target_upgrades(self, skills: SkillRegistry) -> None:
+        """A2：指令模板也走升级——不留「可确认、派发必然失败」的卡。"""
+        protocol = IntentProtocol(commands=CommandRegistry(), descriptors=skills)
+        draft = protocol.understand("/盯盘").data
+        assert draft.intent == "investigate" and draft.target == "/盯盘"
+        assert draft.via_shortcut == "盯盘"
 
 
 class TestGwt3UndeclaredParams:

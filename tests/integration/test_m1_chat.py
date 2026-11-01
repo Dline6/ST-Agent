@@ -91,17 +91,18 @@ def test_gwt2b_unresolved_target_is_filled_by_the_real_matcher(tmp_path: Path) -
     assert "缺少目标" not in (outcome.envelope.reason or "")
 
 
-def test_gwt2c_unmatchable_text_yields_no_confirmation(tmp_path: Path) -> None:
-    """T-L3-007 GWT-2：匹配不上就**不产确认卡**——失败挡在确认之前，不伪造目标。"""
+def test_gwt2c_unmatchable_text_upgrades_to_investigate(tmp_path: Path) -> None:
+    """T-AGT-021 GWT-1：匹配不上不再回空态——升格 `investigate` 卡，用户原话作任务。"""
     rig = seeded_m1(
         tmp_path / ROOT_NAME,
         rules=[("zzzz", IntentDraft(intent="query", target=None))],
     )
     turn = rig.m1.chat.post("zzzz qqqq")
-    assert turn.needs_confirmation is False
-    assert turn.confirmation is None
-    assert turn.clarification.envelope.status == "empty"
-    assert "未识别到可派发的目标" in turn.clarification.envelope.reason
+    assert turn.needs_confirmation is True
+    assert turn.confirmation is not None
+    assert turn.confirmation.intent == "investigate"
+    assert turn.confirmation.target == "zzzz qqqq"
+    assert len(turn.confirmation.items) == 1  # investigate 仍只有「意图」一条目
 
 
 # ─────────────────────────────── GWT-3 配置草稿 ───────────────────────────────
