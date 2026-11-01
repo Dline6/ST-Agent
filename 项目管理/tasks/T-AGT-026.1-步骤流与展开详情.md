@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-023.2]
 status: done
 decisions: [D-154, D-158]
-verify: 见执行日志 [T-AGT-026.1]（范围套件 2202 passed / 2 例既有环境性 ERROR；定向 249 项；真浏览器走查；verify_docs --strict PASS）
+verify: 见执行日志 [T-AGT-026.1]（范围套件 2202 passed / 2 例既有环境性 ERROR；定向 249 项；真浏览器走查；verify_docs --strict PASS；commit 7f29443）
 ---
 
 # T-AGT-026.1 · 步骤流与展开详情
