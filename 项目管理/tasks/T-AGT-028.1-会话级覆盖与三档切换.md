@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-020]
 status: done
 decisions: [D-154, D-159]
-verify: 执行日志 [T-AGT-028.1]——会话覆盖判据单点（L6）+ 组合根按签名绑会话 + GET/POST 会话档位端点 + 右栏档位选择器；范围 2545 passed / 2 errors（既有环境性）；verify_docs --strict PASS；实现 commit 待回填
+verify: 执行日志 [T-AGT-028.1]——会话覆盖判据单点（L6）+ 组合根按签名绑会话 + GET/POST 会话档位端点 + 右栏档位选择器；范围 2545 passed / 2 errors（既有环境性）；verify_docs --strict PASS；实现 commit f8432a3
 ---
 
 # T-AGT-028.1 · 会话级覆盖与三档切换

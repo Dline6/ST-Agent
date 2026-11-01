@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-028.1]
 status: done
 decisions: [D-154, D-159]
-verify: 执行日志 [T-AGT-028.2]——manual 每步单独批且不自动续跑（manual_step_done）、collaborative 确认后继续、红线三档皆 denied；同批范围 2545 passed / 2 errors；verify_docs --strict PASS；实现 commit 待回填
+verify: 执行日志 [T-AGT-028.2]——manual 每步单独批且不自动续跑（manual_step_done）、collaborative 确认后继续、红线三档皆 denied；同批范围 2545 passed / 2 errors；verify_docs --strict PASS；实现 commit f8432a3
 ---
 
 # T-AGT-028.2 · manual 与 collaborative 差异补齐
