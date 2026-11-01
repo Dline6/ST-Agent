@@ -93,6 +93,8 @@ class ResumeOutcome(BaseModel):
     stale: bool = False
     """依据是否已过期（过期时信封显式提示，且``report`` 为 ``None``）。"""
     note: str = ""
+    cards: tuple[Any, ...] = ()
+    """本次续跑产出的描述件（``card_ready`` 时给出；其余为空）。"""
 
     @property
     def agent_run_id(self) -> str:
@@ -139,6 +141,7 @@ def resume_agent_run(
     ttl: timedelta = CONTINUATION_TTL,
     new_run_id: str | None = None,
     continue_after_approval: bool = True,
+    subprotocols: Any = None,
     emit: Any = None,
     cancel: Any = None,
 ) -> ResumeOutcome:
@@ -154,6 +157,7 @@ def resume_agent_run(
         （``collaborative`` / ``autonomous``：一次确认放行本步后继续，[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）；
         传 ``False`` 即 ``manual`` 档的「每步单独批、不自动续跑」——执行完该步以
         ``manual_step_done`` 收口，不发起下一轮模型调用。
+    :param subprotocols: 子协议动作的执行端口（同 :func:`run_agent_loop` 的 ``subprotocols``）。
     :param emit: 运行事件回调（同 :func:`run_agent_loop` 的 ``emit``；缺省不产生事件）。
     :param cancel: 协作式取消事件（同 :func:`run_agent_loop` 的 ``cancel``；缺省不可取消）。
     """
@@ -311,6 +315,7 @@ def resume_agent_run(
         nested_recorder=nested_recorder,
         parent_trace_id=record.parent_trace_id,
         prior_sub_agents=tuple(record.sub_agents),
+        subprotocols=subprotocols,
         emit=emit,
         cancel=cancel,
     )
@@ -331,6 +336,7 @@ def resume_agent_run(
         source_run_id=record.agent_run_id,
         stale=stale,
         note=_join_note(record.ask_note, f"已续跑自 {record.agent_run_id}"),
+        cards=tuple(outcome.cards),
     )
 
 

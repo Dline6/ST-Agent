@@ -113,6 +113,14 @@ DEFAULT_RISK_GRADING: tuple[EvolutionRiskRule, ...] = (
     # 不起命令；子循环内的每一步仍逐步过同一张清单与同一闸门，故放行的是「派生」
     # 而不是「子 Agent 内的动作」。
     EvolutionRiskRule(prefix="skill.sk_spawn_agent", risk_class="autonomous-ok"),
+    # 可自主——**子协议动作**（T-AGT-030 / [05 §3.1]）：只产卡 / 读卡 / 产未确认复述，
+    # 不落值；配置接受、记忆裁决、训练落账仍走各自既有确认路径。显式登记，不靠
+    # 「未被单独列出」落到 `skill.` 通则。
+    EvolutionRiskRule(prefix="skill.sk_configure", risk_class="autonomous-ok"),
+    EvolutionRiskRule(prefix="skill.sk_memory_op", risk_class="autonomous-ok"),
+    EvolutionRiskRule(prefix="skill.sk_analyze", risk_class="autonomous-ok"),
+    EvolutionRiskRule(prefix="skill.sk_train", risk_class="autonomous-ok"),
+    EvolutionRiskRule(prefix="skill.sk_explain", risk_class="autonomous-ok"),
     # 可自主——**只读的 MCP 资源访问**（T-AGT-019 / 03 §5.5）：清单与内容都经注入的
     # MCP 注册表消费，不改盘；远程 Server 的数据外发在注册时已显式确认，调用经
     # L0 网关审计。Server 自身的权限仍在 mcp-permission 账本逐项批准。

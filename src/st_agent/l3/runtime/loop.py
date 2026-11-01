@@ -64,6 +64,10 @@ from st_agent.l3.runtime.protocol import (
     DEFAULT_TURN_PURPOSE,
     ToolCallProtocol,
 )
+from st_agent.l3.runtime.subprotocols import (
+    SUBPROTOCOL_TOOLS,
+    handle as handle_subprotocol,
+)
 from st_agent.l3.runtime.tool_search import (
     TOOL_SEARCH_TOOL,
     ToolSearchRecord,
@@ -83,6 +87,7 @@ __all__ = [
     "NestedRunRef",
     "PLAN_UPDATE_TOOL",
     "SPAWN_AGENT_TOOL",
+    "SUBPROTOCOL_TOOLS",
     "GateDecision",
     "GateVerdict",
     "LoopOutcome",
@@ -178,6 +183,7 @@ TerminationReason = Literal[
     "catalog_empty",
     "cancelled",
     "manual_step_done",
+    "card_ready",
 ]
 """循环的终止原因（**穷尽列举**——产出与留痕据此如实标注，不造未列出的原因）。
 
@@ -188,6 +194,10 @@ TerminationReason = Literal[
 [`T-AGT-028.2`](../../../项目管理/tasks/T-AGT-028.2-manual与collaborative差异补齐.md)）：按用户确认
 执行完待确认的那一步后**主动停下**，不发起下一轮模型调用——它与 ``needs_confirmation``（待确认、
 该步未执行）和 ``finished``（模型给出结束）都不同。
+
+``card_ready`` 是**子协议动作成功产卡**（[05 §3.1](../../../docs/技术架构-v2/05-L3-对话主入口.md) /
+[`T-AGT-030`](../../../项目管理/tasks/T-AGT-030-子协议动作化.md)）：循环把卡片交还用户确认，
+不是模型给结束、也没有待确认的未执行步；**不可续跑**（用户对卡片另行处置）。
 """
 
 BOUND_REASONS: tuple[str, ...] = ("step_limit", "llm_call_limit")
@@ -282,6 +292,12 @@ class LoopOutcome(BaseModel):
     """交还时给的方向候选（[05 §3.2](../../../../docs/技术架构-v2/05-L3-对话主入口.md)：不强行猜）。"""
     ask_note: str = ""
     """提问交还的说明（如问项超预算被截断的显式记录；无则空）。"""
+    cards: tuple[Any, ...] = ()
+    """成功交还的描述件（``card_ready`` 时给出；其余终止为空）。
+
+    子协议动作（`sk_configure` / `sk_memory_op` / `sk_analyze` / `sk_explain`）产出的
+    `UiDescription` 载荷；表现层把它放进响应的 `description` 走同一个渲染注册表。
+    """
     max_steps: int = DEFAULT_MAX_STEPS
     """本次生效的步数上界（留痕用；取值可注入，故如实记录实际生效值）。"""
     max_llm_calls: int = DEFAULT_MAX_LLM_CALLS
@@ -374,6 +390,7 @@ def run_agent_loop(
     nested_recorder: NestedRecorder | None = None,
     parent_trace_id: str = "",
     prior_sub_agents: Sequence[SubAgentRun] = (),
+    subprotocols: Any = None,
     emit: Callable[[str, Mapping[str, Any]], None] | None = None,
     cancel: threading.Event | None = None,
 ) -> LoopOutcome:
@@ -413,6 +430,9 @@ def run_agent_loop(
     :param parent_trace_id: 子循环的父链 ``trace_id``（主循环留空；只进留痕，不改 Trace 结构）
     :param prior_sub_agents: 续跑承接的**子 Agent 摘要**（取自旧 ``agent_run`` 留痕；
         子步骤不重建，但结论、引用与留痕链接仍进工作上下文与本次留痕）
+    :param subprotocols: 子协议动作的执行端口（鸭子类型，含 ``configs`` / ``adjudicator`` /
+        ``deliberations`` / ``trainings``；组合根注入）。缺省 ``None`` ⇒ 五个动作显式
+        不可用并回灌说明，循环照常运行（[05 §3.1](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）
     :param emit: 运行事件回调（``(事件类型, 载荷) -> None``；[D-154](../../../项目管理/决策日志.md) B5）。
         缺省 ``None`` 即不产生事件——存量调用方逐字节不变；事件类型与落盘由
         :mod:`st_agent.l3.runtime.events` 定义，本模块只发**客观字段**
@@ -469,6 +489,8 @@ def run_agent_loop(
     """最近**连续**请求目录外工具的轮次（模型改选即清零；见 MAX_UNKNOWN_TOOL_ROUNDS）。"""
     unknown_tool_note = ""
     """下一轮工作上下文的回灌说明（点名未知工具 + 指向本轮目录；无回灌即空）。"""
+    subprotocol_note = ""
+    """上一次子协议动作的回灌说明（失败原因 / 训练复述 / 无卡说明；无即空）。"""
     sub_runs: list[SubAgentRun] = list(prior_sub_agents)
     subagent_notes: list[str] = [render_subagent_note(sub) for sub in prior_sub_agents]
     parallel_notes: list[str] = []
@@ -504,6 +526,7 @@ def run_agent_loop(
         questions: Sequence[AskQuestion] = (),
         directions: Sequence[str] = (),
         ask_note: str = "",
+        cards: Sequence[Any] = (),
     ) -> LoopOutcome:
         """装配终止产出——**计划与上下文状态随每次终止照实带走**。"""
         result = _outcome(
@@ -515,6 +538,7 @@ def run_agent_loop(
             max_result_chars=max_result_chars,
             plan=current_plan, plan_updated=plan_given, plan_error=plan_error,
             questions=tuple(questions), directions=tuple(directions), ask_note=ask_note,
+            cards=tuple(cards),
             tool_searches=tuple(searches),
             parent_trace_id=parent_trace_id, executed_steps=executed,
             parallel_used=parallel_used, parallel_note="；".join(parallel_notes),
@@ -527,6 +551,7 @@ def run_agent_loop(
             "executed_steps": executed,
             "llm_calls": llm_calls,
             "steps": len(result.steps),
+            "cards": len(result.cards),
         })
         return result
 
@@ -560,6 +585,8 @@ def run_agent_loop(
             )
 
         # ── ① 出动作（工作上下文每轮重装：任务 + 计划 + 目录 + 已执行动作与结果） ──
+        note_for_context = subprotocol_note
+        subprotocol_note = ""              # 回灌是一次性的：本轮装配后即消费
         assembled = assemble_work_context(
             task, tuple(tools), steps,
             history=history, memory=memory,
@@ -569,6 +596,7 @@ def run_agent_loop(
             retrieved_tools=tuple(retrieved), tool_search_note=tool_search_note,
             subagent_note="\n".join(subagent_notes),
             unknown_tool_note=unknown_tool_note,
+            subprotocol_note=note_for_context,
             tool_lazy_chars=tool_lazy_chars,
         )
         if assembled.status != "ok":
@@ -614,7 +642,10 @@ def run_agent_loop(
                 unknown.append(call)
                 continue
             planned.append((call, entry))
-            if call.name not in (PLAN_UPDATE_TOOL, ASK_USER_TOOL, SPAWN_AGENT_TOOL):
+            if (
+                call.name not in (PLAN_UPDATE_TOOL, ASK_USER_TOOL, SPAWN_AGENT_TOOL)
+                and call.name not in SUBPROTOCOL_TOOLS
+            ):
                 executable_count += 1
 
         # ── 上界（步数）：有动作要执行才判；一轮多调用按**多个动作**计 ──
@@ -851,6 +882,30 @@ def run_agent_loop(
                 subagent_notes.append(render_subagent_note(sub))
                 continue
 
+            if call.name in SUBPROTOCOL_TOOLS:
+                handled = handle_subprotocol(
+                    call.name, dict(call.arguments), trace=chain, ports=subprotocols,
+                )
+                if handled.card_ready:
+                    reason = (
+                        f"{handled.note}；" if handled.note else ""
+                    ) + (
+                        f"子协议动作 {call.name} 已产出卡片，循环终止并交还确认"
+                        "（05 §3.1；卡片随响应描述交还）"
+                    )
+                    if rest:
+                        reason += f"；同轮其余 {rest} 个调用未执行（不静默丢）"
+                    return finish("card_ready", reason=reason, cards=handled.cards)
+                subprotocol_note = handled.note or (
+                    f"子协议动作 {call.name} 未产出卡片"
+                    f"（{handled.envelope.status}）"
+                )
+                if rest:
+                    subprotocol_note = _join_note(
+                        subprotocol_note, f"同轮其余 {rest} 个调用未执行",
+                    )
+                continue
+
             batch.append((call, entry))
 
         if not batch:
@@ -1033,6 +1088,7 @@ def _outcome(
     questions: Sequence[AskQuestion] = (),
     directions: Sequence[str] = (),
     ask_note: str = "",
+    cards: Sequence[Any] = (),
     tool_searches: Sequence[ToolSearchRecord] = (),
     parent_trace_id: str = "",
     executed_steps: int = 0,
@@ -1051,6 +1107,7 @@ def _outcome(
         failure=failure,
         plan=tuple(plan), plan_updated=plan_updated, plan_error=plan_error,
         questions=tuple(questions), directions=tuple(directions), ask_note=ask_note,
+        cards=tuple(cards),
         tool_searches=tuple(tool_searches),
         parent_trace_id=parent_trace_id, executed_steps=executed_steps,
         parallel_used=parallel_used, parallel_note=parallel_note,

@@ -72,6 +72,8 @@ class InvestigationOutcome:
     """本次循环所属会话；``None`` 即无历史的单次查证（唯与 ``context_note`` 一起看才不歧义）。"""
     context_note: str = ""
     """上下文形态的显式标注（无会话 / 无历史为空等）——[05 §4] 要求「产出中标注」。"""
+    cards: tuple[Any, ...] = ()
+    """子协议动作交还的描述件（``card_ready`` 时给出；其余为空）。"""
 
     @property
     def agent_run_id(self) -> str:
@@ -143,6 +145,7 @@ class _AgentInvestigator:
         permissions: Any = None,
         nested_recorder: Any = None,
         runs: ActiveRunRegistry | None = None,
+        subprotocols: Any = None,
     ) -> None:
         self._store = store
         self._runner = runner
@@ -155,6 +158,7 @@ class _AgentInvestigator:
         self._reader = reader
         self._permissions = permissions
         self._runs = runs if runs is not None else ActiveRunRegistry()
+        self._subprotocols = subprotocols
 
         if nested_recorder is None:
             def _record(outcome: Any) -> NestedRunRef:
@@ -171,6 +175,14 @@ class _AgentInvestigator:
     def runs(self) -> ActiveRunRegistry:
         """活动 run 注册表（进程内瞬态；供运行控制面 / 集成套件按 id 取控制句柄）。"""
         return self._runs
+
+    def bind_subprotocols(self, ports: Any) -> None:
+        """绑定子协议动作的执行端口（组合根在 L3 面造好后注入；幂等覆盖）。
+
+        L1 的工具目录在 L1 装配期就已含五个动作描述体，但它们的执行面（配置草稿 /
+        裁决卡 / L4 / L6）在 L3 之后才存在——故用后置绑定，不在装配期占位。
+        """
+        self._subprotocols = ports
 
     def investigate(
         self,
@@ -227,6 +239,7 @@ class _AgentInvestigator:
                 memory=memory,
                 parallel_safe=True,
                 nested_recorder=self._nested_recorder,
+                subprotocols=self._subprotocols,
                 emit=events.emit,
                 cancel=run.cancel_event,
             )
@@ -238,7 +251,7 @@ class _AgentInvestigator:
             self._runs.finish(run_id)
         return InvestigationOutcome(
             envelope=report.envelope, report=report, trace=outcome.trace,
-            session_id=session, context_note=note,
+            session_id=session, context_note=note, cards=tuple(outcome.cards),
         )
 
     def resume(
@@ -296,6 +309,7 @@ class _AgentInvestigator:
                 now=now,
                 new_run_id=run_id,
                 continue_after_approval=self._continues_after_approval(session),
+                subprotocols=self._subprotocols,
                 emit=events.emit,
                 cancel=run.cancel_event,
             )

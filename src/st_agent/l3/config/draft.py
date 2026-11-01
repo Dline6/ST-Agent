@@ -41,7 +41,11 @@ from st_agent.contracts.capability_types import ParameterSpec
 from st_agent.contracts.neutrality import NeutralityGuard
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.l3.errors import ConfigValidationError
-from st_agent.l3.intent.protocol import IntentConfirmation
+from st_agent.l3.intent.protocol import (
+    UNSPECIFIED_LABEL,
+    ConfirmationItem,
+    IntentConfirmation,
+)
 
 __all__ = [
     "CONFIG_DRAFT_ABSENT_REASON",
@@ -255,6 +259,84 @@ class ConfigDraftProtocol:
             as_of=_now(),
         )
 
+    # ───────────────────────── §10 循环合成面（T-AGT-030.1） ─────────────────────────
+
+    def compose(
+        self,
+        *,
+        target: str,
+        values: Mapping[str, Any] | None = None,
+        structure: Mapping[str, Any] | None = None,
+    ) -> ResultEnvelope:
+        """循环内 `sk_configure` 动作的合成面（[05 §5](../../../../docs/技术架构-v2/05-L3-对话主入口.md) / [§10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+
+        与 :meth:`generate` 走**同一套**参数核验、未澄清项生成与中性校验，差别只有一处：
+        不要求「已确认的意图卡」——**草稿卡本身即循环交还的确认面**。目标 / 取值由模型
+        调用给出，本面据此合成确认条目（生成文案逐条过 [01 §6](../../../../docs/技术架构-v2/01-平台共享契约.md)），
+        再交给 :meth:`generate`，不出现第二套草稿生成逻辑。
+        """
+        name = (target or "").strip()
+        if not name:
+            return ResultEnvelope.validation_failed(
+                "配置草稿缺少目标 Skill / 工作流，无法生成（05 §5）"
+            )
+        draft_values = dict(values or {})
+        items, error = self._compose_items(name, draft_values)
+        if error:
+            return ResultEnvelope.validation_failed(error)
+        carrier = IntentConfirmation(
+            envelope=ResultEnvelope.ok([item.line() for item in items]),
+            intent="configure",
+            target=name,
+            items=items,
+            values=draft_values,
+            # 内部载体：循环路径不经过派发前的意图确认卡，草稿卡是交还的确认面。
+            confirmed=True,
+        )
+        return self.generate(carrier, structure=structure)
+
+    def _compose_items(
+        self, target: str, values: Mapping[str, Any]
+    ) -> tuple[tuple[ConfirmationItem, ...], str]:
+        """目标 / 取值 → 检查过的确认条目（生成文案逐条过 §6；值原样承载）。"""
+        specs = {spec.name: spec for spec in self._specs(target)}
+        items: list[ConfirmationItem] = []
+        item, error = self._compose_item(f"配置目标 {target}", target, "intent")
+        if error or item is None:
+            return (), error
+        items.append(item)
+        for name, value in values.items():
+            spec = specs.get(name)
+            prompt = (spec.description if spec is not None else "") or ""
+            text = f"参数 {name}（{prompt}）" if prompt else f"参数 {name}"
+            item, error = self._compose_item(text, value, "stated", param=name)
+            if error or item is None:
+                return (), error
+            items.append(item)
+        return tuple(items), ""
+
+    def _compose_item(
+        self,
+        text: str,
+        value: Any,
+        source: Literal["intent", "stated"],
+        *,
+        param: str | None = None,
+    ) -> tuple[ConfirmationItem | None, str]:
+        verdict = self._guard.check_output(text)
+        if not verdict.passed:
+            hits = "、".join(f"{f.kind}:{f.matched}" for f in verdict.findings)
+            return None, f"草稿生成文案未过中性校验（{hits}）：{text!r}"
+        return (
+            ConfirmationItem(
+                param=param,
+                text=text,
+                value=UNSPECIFIED_LABEL if value is None else str(value),
+                source=source,
+            ),
+            "",
+        )
+
     # ───────────────────────── 内部 ─────────────────────────
 
     def _specs(self, target: str) -> tuple[ParameterSpec, ...]:
@@ -263,6 +345,11 @@ class ConfigDraftProtocol:
         try:
             descriptor = self._descriptors.get(target)
         except Exception:
+            # 目标可能是工具目录里的 **base**（不带版本），而 `get` 只认完整 skill_id；
+            # 取同 base 的最高版本，未命中即无声明（不臆造参数）。
+            latest = getattr(self._descriptors, "get_latest", None)
+            descriptor = latest(target) if callable(latest) else None
+        if descriptor is None:
             return ()
         return tuple(getattr(descriptor, "parameters", ()) or ())
 

@@ -58,6 +58,7 @@ from st_agent.l3.runtime import (
     AgentRunReport,
     LoopBounds,
     NativeToolCallProtocol,
+    SubprotocolPorts,
     conclude_agent_run,
     investigate_family,
     run_agent_loop,
@@ -435,6 +436,13 @@ def build_m5_runtime(
         root, passphrase, market_query=market_query, dotenv_path=dotenv_path,
         investigations_of=investigations_of, **kwargs
     )
+    # 子协议动作的执行面在 L3 面（M4 栈）造好后才存在：后置绑定到循环端口，L1 不 import L3。
+    holder[0].bind_subprotocols(SubprotocolPorts(
+        configs=m4.m1.configs,
+        adjudicator=m4.m1.adjudicator,
+        deliberations=m4.m2.analyze,
+        trainings=m4.l6.training,
+    ))
     memory = MemoryPositionsFacade(reader=m4.m1.reader, market=market_query)
     data_sync = DataSyncRunner(
         store=m4.m1.store,

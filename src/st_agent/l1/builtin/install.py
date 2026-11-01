@@ -13,7 +13,7 @@
 
 **本叶不接组合根**：安装入口由 :func:`st_agent.l1.runtime.build_l1_runtime` 与官方
 Pack 同点调用；种子表 :data:`BUILTIN_PRIMITIVES` 目前含本地数据面、取数 / 同步、
-文档取数、循环控制、文件面、开放网络、本地命令、结果回读与 MCP resources 共 18 条原语。
+文档取数、循环控制、子协议动作、文件面、开放网络、本地命令、结果回读与 MCP resources 共 23 条原语。
 """
 
 from __future__ import annotations
@@ -38,6 +38,7 @@ from st_agent.l1.builtin.models import BuiltinPrimitive
 from st_agent.l1.builtin.plan_update import PLAN_UPDATE
 from st_agent.l1.builtin.results import RESULT_READ
 from st_agent.l1.builtin.spawn import SPAWN_AGENT
+from st_agent.l1.builtin.subprotocols import SUB_PROTOCOL_PRIMITIVES
 from st_agent.l1.builtin.web import WEB_FETCH, WEB_SEARCH
 from st_agent.l1.skills.errors import SkillExistsError, SkillValidationError
 from st_agent.l1.skills.ids import skill_id_for
@@ -47,13 +48,17 @@ __all__ = ["BUILTIN_PRIMITIVES", "install_builtins"]
 BUILTIN_PRIMITIVES: tuple[BuiltinPrimitive, ...] = (
     LOCAL_SQL, DATA_STATUS, DATA_SYNC, DATA_FETCH, DOCS, PLAN_UPDATE, ASK_USER,
     FILE_READ, FILE_GLOB, FILE_GREP, FILE_WRITE, WEB_SEARCH, WEB_FETCH,
-    RUN_COMMAND, RESULT_READ, SPAWN_AGENT, MCP_LIST_RESOURCES, MCP_READ_RESOURCE,
+    RUN_COMMAND, RESULT_READ, SPAWN_AGENT, *SUB_PROTOCOL_PRIMITIVES,
+    MCP_LIST_RESOURCES, MCP_READ_RESOURCE,
 )
-"""内置原语种子表（本地数据面四条 + 循环控制面三条 + 文档取数一条 + 文件面四条 + 开放网络两条 + 本地命令一条 + 结果回读一条 + MCP resources 两条）。
+"""内置原语种子表（本地数据面四条 + 循环控制面三条 + 子协议动作五条 + 文档取数一条 + 文件面四条 + 开放网络两条 + 本地命令一条 + 结果回读一条 + MCP resources 两条）。
 
 一行一条能力。权限必须逐条显式给出（见 ``models.BuiltinPrimitive.permissions``）。
 循环控制面三条（``sk_plan_update`` / ``sk_ask_user`` / ``sk_spawn_agent``）在循环内由 L3
 拦截执行，登记的目的是让它们进入**同一个**工具目录（注册面＝可见面），不是第二条执行路径。
+子协议动作五条（``sk_configure`` / ``sk_memory_op`` / ``sk_analyze`` / ``sk_train`` /
+``sk_explain``）同属循环控制面：只产卡 / 读卡 / 产未确认复述，由 L3 在循环内拦截承接
+（05 §3.1 子协议动作化）。
 ``sk_data_sync`` / ``sk_data_fetch`` 的执行面（``DataSyncRunner``）由 M5 组合根后置
 注入（``L1Runtime.bind_data_sync``），未注入时原语显式 ``unavailable``。
 文件面四条经 ``FileWorkspace`` 访问工作区分区与导入收件目录，按 01 §10 声明
