@@ -411,6 +411,9 @@ def build_m4_runtime(
         events=bus, feedback_sink=bus,
         trainings=l6.training, callbacks=l6.training,
         investigations=investigations, bounds=bounds,
+        # 对话窗口的会话级档位覆盖读 / 写面（T-AGT-028.1）：与循环判据**同一实例**，
+        # 故窗口里改的档位与闸门下一次判据取用的是同一份（01 §7）。
+        authorization=l6.agent_authorization,
     )
     eco = _build_eco(
         runtime, l2, l4, index_host=index_host, index_fetch=index_fetch, now=now,

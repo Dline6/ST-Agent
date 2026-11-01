@@ -801,6 +801,21 @@ body {
 .chat__envelope .state { font-size: var(--text-caption); line-height: var(--leading-caption); font-weight: 400; color: var(--fg-muted); }
 .chat__envelope .state--error { color: var(--error); font-weight: 600; }
 
+/* 会话级授权档位（T-AGT-028.1 / 01 §7）：只影响本会话、进程内瞬态，故做成弱化的状态行。 */
+.chat__tier {
+  flex: 0 0 auto;
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-1) 0; margin-bottom: var(--space-1);
+  border-bottom: 1px solid var(--line);
+}
+.chat__tier-label { color: var(--fg-muted); font-size: var(--text-caption); line-height: var(--leading-caption); }
+.chat__tier-select {
+  padding: var(--space-1); font: inherit;
+  color: var(--fg); background: var(--card);
+  border: 1px solid var(--line-strong); border-radius: var(--radius-control);
+}
+.chat__tier-select:disabled { color: var(--fg-faint); border-color: var(--line); }
+.chat__tier-note { color: var(--fg-faint); font-size: var(--text-caption); line-height: var(--leading-caption); }
 .chat__composer { display: flex; gap: var(--space-2); margin: var(--space-2) 0 var(--space-1); }
 .chat__input {
   flex: 1 1 auto; padding: var(--space-2); font: inherit;

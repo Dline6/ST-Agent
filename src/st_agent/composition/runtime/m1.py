@@ -187,6 +187,7 @@ def _build_l3(
     callbacks: Any = None,
     investigations: Any = None,
     bounds: Any = None,
+    authorization: Any = None,
 ) -> _L3Stack:
     """叠 L3（会话落 `chat_history`）并装载官方资源包（01 §13）。
 
@@ -211,6 +212,9 @@ def _build_l3(
     :param bounds: 循环双上界的 owner（:class:`~st_agent.l3.runtime.bounds.LoopBounds`）；
         缺省 ``None`` ⇒ 本层自建一面。M5 组合根传入**同一实例**，使「注册进 01 §7 的
         登记项」与「循环取用的生效上界」是**同一份**（不出现两个各读一遍的句柄）。
+    :param authorization: 运行期授权面（L6 的 `RuntimeAuthorization`，鸭子类型）——给了则
+        对话窗口可读 / 写**会话级档位覆盖**（[01 §7](../../docs/技术架构-v2/01-平台共享契约.md)）；
+        缺省 ``None`` ⇒ 窗口档位控件显式不可用（M1–M3 无 L6，不伪造）。
 
     同批把 L3 的 `investigate.*` 族（循环双上界的 01 §7 配置项，`T-AGT-007`）注入
     01 §7 统一配置注册表：L1 不 import L3（[铁律 7](../../项目管理/工程宪法.md)），
@@ -267,7 +271,8 @@ def _build_l3(
 
     chat = DialogFacade(
         sessions=sessions, reader=l2.reader, writer=l2.writer, intent=intent,
-        bus=bus, adjudicator=adjudicator, feedback=feedback, callbacks=callbacks, now=now,
+        bus=bus, adjudicator=adjudicator, feedback=feedback, callbacks=callbacks,
+        authorization=authorization, now=now,
     )
     return _L3Stack(
         sessions=sessions, commands=commands, intent=intent, configs=configs,

@@ -45,6 +45,8 @@ from st_agent.l3.render import (
     describe_draft,
     describe_trace,
 )
+from st_agent.l6.authorization import TIERS
+from st_agent.l6.errors import AuthorizationError
 
 from st_agent.composition.common import (
     _now,
@@ -117,6 +119,7 @@ class DialogFacade:
         adjudicator: ConflictAdjudicator,
         feedback: FeedbackCollector,
         callbacks: Any = None,
+        authorization: Any = None,
         now: Any = _now,
     ) -> None:
         self._sessions = sessions
@@ -127,6 +130,7 @@ class DialogFacade:
         self._adjudicator = adjudicator
         self._feedback = feedback
         self._callbacks = callbacks
+        self._authorization = authorization
         self._now = now
         self._pending: dict[str, IntentDraft] = {}
 
@@ -270,6 +274,73 @@ class DialogFacade:
         if port is None:
             raise ValueError("未注入自主查证循环端口，无法停止运行（05 §10）")
         return bool(port.stop(str(agent_run_id or "")))
+
+    # ───────────────────── 会话级运行期授权档位（T-AGT-028.1 / 01 §7） ─────────────────────
+
+    def session_tier(self, session_id: str) -> ResultEnvelope:
+        """读该会话**生效**的运行期授权档位（覆盖优先，否则跟随全局；[01 §7]）。
+
+        覆盖是**进程内瞬态**（不落盘、无 `change_id`），故响应只给读面事实与来源，
+        不给变更记录——「改了什么」在会话内即时可见，不写全局账。
+        """
+        sid = str(session_id or "").strip()
+        error = self._session_tier_error(sid)
+        if error is not None:
+            return error
+        try:
+            return ResultEnvelope.ok(self._tier_payload(sid), as_of=self._now())
+        except AuthorizationError as exc:
+            return ResultEnvelope.failed(f"运行期授权读不出，会话级档位不可用：{exc}")
+
+    def set_session_tier(self, session_id: str, tier: Any) -> ResultEnvelope:
+        """设置（或清除）一个会话的运行期授权档位；`tier` 为空 ＝ **恢复跟随全局**。
+
+        **只改本进程内该会话的覆盖**：全局条目 `agent.authorization` 与 `agent-change/`
+        留痕一概不动（[01 §7](../../docs/技术架构-v2/01-平台共享契约.md)）。
+        """
+        sid = str(session_id or "").strip()
+        error = self._session_tier_error(sid)
+        if error is not None:
+            return error
+        raw = str(tier or "").strip()
+        try:
+            if raw:
+                self._authorization.set_session_tier(sid, raw)
+            else:
+                self._authorization.clear_session_tier(sid)
+            return ResultEnvelope.ok(self._tier_payload(sid), as_of=self._now())
+        except AuthorizationError as exc:
+            return ResultEnvelope.validation_failed(str(exc))
+
+    def _session_tier_error(self, session_id: str) -> ResultEnvelope | None:
+        """会话级档位的公共前置：会话存在 + 授权面已装配（否则显式不可用，不伪造档位）。"""
+        if not session_id:
+            return ResultEnvelope.validation_failed("缺少会话标识（需 session_id）")
+        if self._authorization is None:
+            return ResultEnvelope.unavailable(
+                "未接入运行期授权面（组合根装配）——会话级档位不可用",
+                last_updated_at=self._now(),
+            )
+        try:
+            self._sessions.load(session_id)
+        except SessionNotFoundError:
+            return ResultEnvelope.validation_failed(f"会话不存在：{session_id}")
+        except SessionValidationError as exc:
+            return ResultEnvelope.failed(f"会话记录损坏，无法解析：{exc}")
+        return None
+
+    def _tier_payload(self, session_id: str) -> dict[str, Any]:
+        """该会话的档位读面：生效值 + 来源 + 全局值 + 合法三档（渲染面只呈现，不自造词表）。"""
+        auth = self._authorization
+        global_tier = auth.tier()
+        override = auth.session_tier(session_id)
+        return {
+            "session_id": session_id,
+            "tier": global_tier if override is None else override,
+            "source": "global" if override is None else "session",
+            "global_tier": global_tier,
+            "tiers": list(TIERS),
+        }
 
     # ───────────────────── §1 会话历史（历史读面与助手轮落盘） ─────────────────────
 

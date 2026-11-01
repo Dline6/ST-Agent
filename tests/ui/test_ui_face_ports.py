@@ -27,6 +27,9 @@ _STATUS_PATHS = tuple(f"/api/{face}/status" for face in _FACES)
 
 _EXPECTED_POST_ROUTES = frozenset({
     "/api/chat",
+    # 会话级授权档位（[`T-AGT-028.1`]）：窗口内切换 / 恢复跟随全局——显式动作，非幂等读面；
+    # 只改进程内该会话的覆盖，不动全局条目与 `agent-change/` 留痕（[01 §7]）。
+    "/api/chat/session/tier",
     # 壳意图（[`T-UI-027.1`]）：`Ctrl+W` / `Ctrl+Q` 到后端，再由后端沿 stdout 控制管道
     # 回传壳。它是**显式动作**（收托盘 / 退出），不是幂等读面，故进写表。
     "/api/shell/intent",

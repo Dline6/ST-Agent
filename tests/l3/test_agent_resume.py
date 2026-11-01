@@ -278,3 +278,51 @@ def test_load_continuation_rejects_a_finished_run(rig):
     with pytest.raises(Exception) as excinfo:
         load_continuation(rig[0], record.agent_run_id)
     assert "不是可续跑状态" in str(excinfo.value)
+
+
+# ───────────────────── T-AGT-028.2 · manual 档不自动续跑 ─────────────────────
+
+
+def test_manual_approval_executes_the_step_and_stops(rig):
+    """`manual`：批准后**只执行该步即收口**——不发起下一轮模型调用（05 §10）。"""
+    store, _runner, _tools = rig
+    record = _blocked_record(rig)
+    protocol = ScriptedProtocol([finish()])
+
+    result = _resume(
+        rig, record, protocol, decision="approve", now=NOW,
+        continue_after_approval=False,
+    )
+
+    assert result.envelope.status == "ok"
+    assert result.report is not None
+    resumed = result.report.record
+    assert resumed.termination == "manual_step_done"
+    assert [step.tool_name for step in resumed.steps] == [SK_A, SK_B]
+    assert resumed.resumed_from == record.agent_run_id
+    assert len(_skill_runs(store)) == 2          # 待确认步真的执行了，前序未重跑
+    assert protocol._replies                     # 模型脚本未被消费 ⇒ 没有下一轮模型调用
+
+
+def test_collaborative_approval_keeps_going_until_the_model_finishes(rig):
+    """`collaborative`（缺省续跑形态）：确认放行本步后循环继续，直到模型给出结束。"""
+    _store, _runner, _tools = rig
+    record = _blocked_record(rig)
+    protocol = ScriptedProtocol([finish()])
+
+    result = _resume(rig, record, protocol, decision="approve", now=NOW)
+
+    assert result.report is not None
+    assert result.report.record.termination == "finished"
+    assert not protocol._replies                 # 这轮模型调用发生了
+
+
+def test_manual_step_done_is_not_a_resumable_handback(rig):
+    """`manual_step_done` 不是待确认交还：续跑载荷不因此再出确认卡（无 pending）。"""
+    record = _blocked_record(rig)
+    result = _resume(
+        rig, record, ScriptedProtocol([finish()]), decision="approve", now=NOW,
+        continue_after_approval=False,
+    )
+    assert result.report is not None
+    assert result.report.record.pending is None

@@ -112,6 +112,9 @@ _GET_ROUTES: dict[str, Callable[[UiApp, str], dict]] = {
     # （[11-sitemap §2.2]：路径集仍是有限字面量集合，不引入动态段）。
     "/api/chat/sessions": lambda app, _q: app.api_chat_sessions(),
     "/api/chat/session": lambda app, q: app.api_chat_session(_query(q, "id")),
+    # 会话级授权档位（[`T-AGT-028.1`]）：该会话的**生效档位**与来源——一条只读面；
+    # 覆盖是进程内瞬态（[01 §7]），写面在下面 `_POST_ROUTES`。
+    "/api/chat/session/tier": lambda app, q: app.api_chat_session_tier(_query(q, "id")),
     # 工作区（[`T-UI-013`]）：钉住物的**描述序列**读面——**一条只读**。写面（钉住 / 取消
     # 钉住 / 重解析）在下面 `_POST_ROUTES`，因为三条都是**显式动作**、非幂等读面。
     "/api/workspace/pins": lambda app, _q: app.api_workspace_pins(),
@@ -193,6 +196,9 @@ _GET_ROUTES: dict[str, Callable[[UiApp, str], dict]] = {
 
 _POST_ROUTES: dict[str, Callable[[UiApp, dict], dict]] = {
     "/api/chat": lambda app, body: app.api_chat(body),
+    # 会话级授权档位（[`T-AGT-028.1`]）：窗口内切换 / 恢复跟随全局——**显式动作**、非幂等读面；
+    # 只改进程内该会话的覆盖，不动全局条目与 `agent-change/` 留痕（[01 §7]）。
+    "/api/chat/session/tier": lambda app, body: app.api_chat_set_session_tier(body),
     # 反思中心的写面（`T-UI-004.2`）：反馈采集与提案处置
     "/api/reflection/feedback": lambda app, body: app.api_reflection_feedback(body),
     "/api/reflection/proposals/decide": lambda app, body: app.api_reflection_decide(body),
