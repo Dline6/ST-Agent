@@ -83,6 +83,11 @@ def _assert_pending(payload, tool_name: str) -> dict:
     assert cont is not None, "应再次交还待确认步"
     assert cont["kind"] == "pending_step"
     assert cont["pending"]["tool_name"] == tool_name
+    # 交还卡的两段客观事实（T-AGT-026.3）：为什么交还 + 已收集的证据引用
+    assert cont["reason"], "交还必须写明原因"
+    for step in cont["evidence"]:
+        assert {"tool_name", "skill_id", "status", "skill_run_id", "log_ref"} <= set(step)
+        assert "data" not in step, "证据只做指向，不复制结果载荷"
     return cont
 
 
@@ -126,6 +131,10 @@ class TestGwt1LoopFillsLocalGaps:
             session_id=first.investigation.session_id,
         )
         cont1 = _assert_pending(p1, "sk_data_fetch")
+        assert [step["tool_name"] for step in cont1["evidence"]] == [
+            "sk_data_status", "sk_data_fetch",
+        ]
+        assert all(step["status"] == "ok" for step in cont1["evidence"])
         rec2 = load_agent_run(rig.store, cont1["agent_run_id"])
         assert rec2.resumed_from == first.investigation.agent_run_id
         assert [step.tool_name for step in rec2.steps] == [

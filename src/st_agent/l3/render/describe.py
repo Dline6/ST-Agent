@@ -281,7 +281,13 @@ def describe_agent_run(
             "at_bound": bool(getattr(view, "at_bound", False)),
             "gate_reason": getattr(view, "gate_reason", "") or "",
             "columns": [dict(column) for column in AGENT_RUN_COLUMNS],
-            "rows": [_agent_step_row(index, step) for index, step in enumerate(steps, 1)],
+            "rows": [
+                _agent_step_row(
+                    index, step,
+                    truncated_of=getattr(view, "result_truncated", None),
+                )
+                for index, step in enumerate(steps, 1)
+            ],
             "step_notes": [
                 {"index": index, "note": step.envelope.reason or ""}
                 for index, step in enumerate(steps, 1)
@@ -354,14 +360,23 @@ def describe_agent_run(
     )
 
 
-def _agent_step_row(index: int, step: Any) -> dict[str, Any]:
-    """一步 → 表行（客观字段；结果**照实**标状态，不把失败呈现为成功）。"""
+def _agent_step_row(
+    index: int, step: Any, *, truncated_of: Any = None,
+) -> dict[str, Any]:
+    """一步 → 表行（客观字段；结果**照实**标状态，不把失败呈现为成功）。
+
+    「结果已截断」与运行事件、留痕**同一判定**：视图给出 `result_truncated` 时按生效阈值
+    实时判定（鸭子类型，不 import 循环模块），否则沿用步骤原件上的标记。
+    """
+    truncated = bool(getattr(step, "truncated", False))
+    if callable(truncated_of):
+        truncated = bool(truncated_of(step))
     return {
         "index": index,
         "tool_name": step.tool_name,
         "skill_id": step.skill_id,
         "status": step.envelope.status,
-        "truncated": bool(step.truncated),
+        "truncated": truncated,
         "log_ref": step.log_ref,
     }
 

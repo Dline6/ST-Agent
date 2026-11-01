@@ -290,3 +290,35 @@ def test_resume_carries_the_subagent_conclusion_and_audit_link(runner, tools, st
     context = resumed_protocol.contexts[0]
     assert record.sub_agents[0].answer in context.subagent_note
     assert record.sub_agents[0].evidence[0].ref in context.subagent_note
+
+
+def test_sub_agent_event_carries_nested_steps_and_conclusion(runner, tools, store):
+    """运行面板的嵌套展示（T-AGT-026.1）：子 Agent 的步骤引用 + 结论 + 引用与留痕。"""
+    events: list = []
+    protocol = FakeProtocol([
+        call("sk_spawn_agent", {"task": CHILD_TASK}, call_id="spawn_1"),
+        batch(SK_A),
+        finish("子 Agent 结论：无高危公告"),
+        finish("主结论"),
+    ])
+
+    outcome = drive(
+        runner, tools, protocol, store=store,
+        emit=lambda kind, payload: events.append((kind, dict(payload))),
+    )
+
+    payload = [body for kind, body in events if kind == "sub_agent"][0]
+    sub = outcome.sub_agents[0]
+    assert payload["task"] == CHILD_TASK
+    assert payload["agent_run_id"] == sub.agent_run_id
+    assert payload["trace_id"] == sub.trace_id
+    assert payload["termination"] == "finished"
+    assert payload["answer"] == "子 Agent 结论：无高危公告"
+    assert payload["evidence"]
+    assert payload["step_list"] == [{
+        "tool": SK_A,
+        "skill_id": f"{SK_A}_v1.0",
+        "status": "ok",
+        "skill_run_id": sub.evidence[0].ref,
+        "truncated": False,
+    }]

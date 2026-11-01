@@ -38,7 +38,11 @@ from st_agent.contracts.identifiers import AgentRunId
 from st_agent.contracts.result_envelope import EvidenceRef, ResultEnvelope
 from st_agent.l3.errors import AgentRunNotFoundError, AgentRuntimeValidationError
 from st_agent.l3.render.describe import describe_agent_run
-from st_agent.l3.runtime.context import AskQuestion, PlanStep
+from st_agent.l3.runtime.context import (
+    AskQuestion,
+    PlanStep,
+    result_will_truncate,
+)
 from st_agent.l3.runtime.loop import LoopOutcome, SubAgentRun, TerminationReason
 from st_agent.l3.runtime.tool_search import ToolSearchRecord
 
@@ -233,7 +237,9 @@ def record_agent_run(
             AgentRunStepRef(
                 tool_name=step.tool_name, skill_id=step.skill_id,
                 skill_run_id=step.skill_run_id, status=step.envelope.status,
-                truncated=step.truncated, log_ref=step.log_ref,
+                truncated=result_will_truncate(
+                    step.envelope, outcome.max_result_chars),
+                log_ref=step.log_ref,
             )
             for step in outcome.steps
         ),

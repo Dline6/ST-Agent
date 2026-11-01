@@ -56,6 +56,8 @@ from st_agent.l3.runtime.context import (
     WorkStep,
     assemble_work_context,
     new_work_step,
+    result_will_truncate,
+    summarize_result,
 )
 from st_agent.l3.runtime.protocol import (
     DEFAULT_TURN_INITIATOR,
@@ -281,6 +283,8 @@ class LoopOutcome(BaseModel):
     budget_chars: int = DEFAULT_WORK_CONTEXT_BUDGET
     """本次生效的**工作上下文预算**（[01 §7](../../../../docs/技术架构-v2/01-平台共享契约.md)
     的 `investigate.context_budget`；记实际生效值，供留痕核对）。"""
+    max_result_chars: int = RESULT_TRUNCATE_CHARS
+    """本次生效的单条结果截断阈值（留痕据此如实标「已截断」，与运行事件同一判定）。"""
     dropped: tuple[str, ...] = ()
     """被预算**舍弃**的上下文项（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)：
     超限如实取舍并标注；末次装配的取值）。"""
@@ -304,6 +308,15 @@ class LoopOutcome(BaseModel):
     def at_bound(self) -> bool:
         """是否因**达到上界**而终止（[D-090](../../../项目管理/决策日志.md) ⑥ 的如实标注）。"""
         return self.termination in BOUND_REASONS
+
+    def result_truncated(self, step: WorkStep) -> bool:
+        """该步结果进上下文时是否会被截断（事件 / 留痕 / 产出表**同一判定**）。
+
+        循环里的 ``WorkStep`` 原件**不被改写**（``truncated`` 仍为假）；本方法按本次生效的
+        ``max_result_chars`` 实时判定，供留痕与描述件如实标「结果已截断」
+        （[`T-AGT-026.1`](../../../../项目管理/tasks/T-AGT-026.1-步骤流与展开详情.md)）。
+        """
+        return result_will_truncate(step.envelope, self.max_result_chars)
 
     @property
     def finished(self) -> bool:
@@ -493,6 +506,7 @@ def run_agent_loop(
             failure=failure,
             max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
             dropped=dropped, budget_chars=budget_chars,
+            max_result_chars=max_result_chars,
             plan=current_plan, plan_updated=plan_given, plan_error=plan_error,
             questions=tuple(questions), directions=tuple(directions), ask_note=ask_note,
             tool_searches=tuple(searches),
@@ -806,9 +820,25 @@ def run_agent_loop(
                 _emit("sub_agent", {
                     "task": sub.task,
                     "agent_run_id": sub.agent_run_id,
+                    "trace_id": sub.trace_id,
                     "termination": sub.termination,
+                    "reason": sub.reason,
+                    "answer": sub.answer,
+                    "evidence": [item.ref for item in sub.evidence],
                     "steps": sub.steps,
                     "llm_calls": sub.llm_calls,
+                    # 运行面板的嵌套展示（T-AGT-026.1）：子步骤的客观引用，不复制结果载荷
+                    "step_list": [
+                        {
+                            "tool": step.tool_name,
+                            "skill_id": step.skill_id,
+                            "status": step.envelope.status,
+                            "skill_run_id": step.skill_run_id,
+                            "truncated": result_will_truncate(
+                                step.envelope, max_result_chars),
+                        }
+                        for step in child.steps
+                    ],
                 })
                 executed += child_steps
                 llm_calls += child.llm_calls
@@ -845,7 +875,9 @@ def run_agent_loop(
                     )
                 values, object_inputs = split_arguments(entry, dict(call.arguments))
                 _emit("step_started", {
+                    "call_id": call.call_id,
                     "tool": call.name, "skill_id": entry.skill_id,
+                    "arguments": dict(call.arguments),
                 })
                 run = runner.run(
                     entry.skill_id,
@@ -866,10 +898,12 @@ def run_agent_loop(
                 )
                 steps.append(work)
                 _emit("step_finished", {
+                    "call_id": call.call_id,
                     "tool": call.name, "skill_id": entry.skill_id,
                     "skill_run_id": work.skill_run_id,
                     "status": run.envelope.status,
-                    "truncated": work.truncated,
+                    "truncated": result_will_truncate(run.envelope, max_result_chars),
+                    "summary": summarize_result(run.envelope),
                     "log_ref": work.log_ref,
                 })
                 chain = run.trace
@@ -890,7 +924,11 @@ def run_agent_loop(
             for call, entry in batch
         ]
         for call, entry, _values, _inputs, _approved in prepared:
-            _emit("step_started", {"tool": call.name, "skill_id": entry.skill_id})
+            _emit("step_started", {
+                "call_id": call.call_id,
+                "tool": call.name, "skill_id": entry.skill_id,
+                "arguments": dict(call.arguments),
+            })
         with ThreadPoolExecutor(max_workers=len(prepared)) as pool:
             futures = [
                 pool.submit(
@@ -928,10 +966,12 @@ def run_agent_loop(
             )
             steps.append(work)
             _emit("step_finished", {
+                "call_id": call.call_id,
                 "tool": call.name, "skill_id": entry.skill_id,
                 "skill_run_id": work.skill_run_id,
                 "status": run.envelope.status,
-                "truncated": work.truncated,
+                "truncated": result_will_truncate(run.envelope, max_result_chars),
+                "summary": summarize_result(run.envelope),
                 "log_ref": work.log_ref,
             })
         chain = merged
@@ -980,6 +1020,7 @@ def _outcome(
     context_note: str = "",
     dropped: tuple[str, ...] = (),
     budget_chars: int = DEFAULT_WORK_CONTEXT_BUDGET,
+    max_result_chars: int = RESULT_TRUNCATE_CHARS,
     plan: Sequence[PlanStep] = (),
     plan_updated: bool = False,
     plan_error: str = "",
@@ -1000,6 +1041,7 @@ def _outcome(
         pending=pending, gate_reason=gate_reason,
         max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
         context_note=context_note, dropped=dropped, budget_chars=budget_chars,
+        max_result_chars=max_result_chars,
         failure=failure,
         plan=tuple(plan), plan_updated=plan_updated, plan_error=plan_error,
         questions=tuple(questions), directions=tuple(directions), ask_note=ask_note,

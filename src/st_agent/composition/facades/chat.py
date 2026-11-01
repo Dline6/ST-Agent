@@ -587,6 +587,7 @@ class DialogFacade:
                     "agent_run_id": source, "kind": "stale", "task": "", "plan": [],
                     "pending": None, "questions": [], "directions": [],
                     "ask_note": str(getattr(investigation, "note", "") or ""),
+                    "reason": "", "evidence": [],
                     "stale": True,
                 }
             return None
@@ -618,6 +619,19 @@ class DialogFacade:
             ],
             "directions": [str(item) for item in tuple(getattr(record, "directions", ()) or ())],
             "ask_note": getattr(record, "ask_note", "") or "",
+            # 交还卡的两段客观事实（T-AGT-026.3 / 05 §10）：为什么交还、已收集了什么
+            "reason": getattr(record, "reason", "") or "",
+            "evidence": [
+                {
+                    "tool_name": step.tool_name,
+                    "skill_id": step.skill_id,
+                    "status": step.status,
+                    "skill_run_id": step.skill_run_id,
+                    "log_ref": step.log_ref,
+                    "truncated": bool(step.truncated),
+                }
+                for step in tuple(getattr(record, "steps", ()) or ())
+            ],
             "stale": bool(getattr(investigation, "stale", False)),
         }
 
