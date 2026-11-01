@@ -408,12 +408,44 @@ def test_endpoint_without_tool_support_never_calls_llm(runner, tools):
     assert "工具调用" in outcome.reason
 
 
-def test_unknown_tool_terminates_without_execution(runner, tools, store):
-    outcome = drive(runner, tools, FakeProtocol([call("sk_not_in_catalog")]))
-    assert outcome.termination == "unknown_tool"
+def test_unknown_tool_is_fed_back_and_the_loop_continues(runner, tools, store):
+    """GWT-1：目录外工具 → 回灌说明（含工具名与目录指示）→ 下一轮正常结束。"""
+    protocol = FakeProtocol([call("sk_not_in_catalog"), finish()])
+    outcome = drive(runner, tools, protocol)
+    assert outcome.termination == "finished"
     assert outcome.steps == ()
-    assert "不在工具目录内" in outcome.reason
+    note = protocol.contexts[1].unknown_tool_note
+    assert "sk_not_in_catalog" in note
+    assert "工具目录" in note
     assert store.list_files("execution_log") == ()
+
+
+def test_repeated_unknown_tool_terminates_after_one_retry(runner, tools, store):
+    """GWT-2：连续两轮未知 → 终止并如实标注「已回灌仍未改选」。"""
+    protocol = FakeProtocol([call("sk_not_in_catalog")], repeat_last=True)
+    outcome = drive(runner, tools, protocol)
+    assert outcome.termination == "unknown_tool"
+    assert outcome.llm_calls == 2
+    assert outcome.steps == ()
+    assert "连续 2 轮" in outcome.reason and "回灌" in outcome.reason
+    assert store.list_files("execution_log") == ()
+
+
+def test_mixed_batch_with_unknown_tool_executes_nothing(runner, tools, store):
+    """回灌轮整轮不执行：同轮的已知调用也不跑（与「任一被拒即整批不执行」同口径）。"""
+    protocol = FakeProtocol([
+        TurnResult(tool_calls=(
+            ToolCall(call_id="c1", name=SK_A, arguments={}),
+            ToolCall(call_id="c2", name="sk_not_in_catalog", arguments={}),
+        )),
+        finish(),
+    ])
+    gate = FakeGate()
+    outcome = drive(runner, tools, protocol, gate=gate)
+    assert outcome.termination == "finished"
+    assert outcome.steps == ()
+    assert gate.seen == []
+    assert "sk_not_in_catalog" in protocol.contexts[1].unknown_tool_note
 
 
 def test_llm_failure_is_carried_through(runner, tools):
