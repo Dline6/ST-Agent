@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-023.1]
 status: done
 decisions: [D-154, D-155]
-verify: 前端 EventSource 接入 + 运行态/回读实测；见 [执行日志](../执行日志.md) `[T-AGT-023.2]`
+verify: e4d9022；前端 EventSource 接入 + 运行态/回读实测；见 [执行日志](../执行日志.md) `[T-AGT-023.2]`
 ---
 
 # T-AGT-023.2 · 前端事件接入

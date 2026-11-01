@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-022.2]
 status: done
 decisions: [D-154, D-155]
-verify: SSE 端点 + 后台派发实测；见 [执行日志](../执行日志.md) `[T-AGT-023.1]`
+verify: e4d9022；SSE 端点 + 后台派发实测；见 [执行日志](../执行日志.md) `[T-AGT-023.1]`
 ---
 
 # T-AGT-023.1 · SSE 端点与断线重连
