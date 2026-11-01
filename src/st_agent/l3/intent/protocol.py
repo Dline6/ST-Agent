@@ -4,6 +4,9 @@
 追问（预算 ≤3、每题可跳过、跳过取默认值）；无法收敛给 ≤3 个方向；收敛后产出
 **意图确认卡**（「已理解 N 项」），用户确认后交 [`dispatch.bus`](../dispatch/bus.py) 派发。
 
+**解析不出升级**（§3.2）：`query` / `configure` 的目标解析不出时**改判为 `investigate`**
+（用户原话作任务），由循环在能力目录内自行选步——不再出空态 / 澄清轮。
+
 **理解经注入**（假设 A1）：文本 → 七类意图的「理解」由**注入的理解端口**承担
 （鸭子类型 ``understand(text) -> ResultEnvelope``，载荷为 :class:`IntentDraft`）；
 缺省不注入即 fail-closed（``unavailable`` + 原因），**不硬猜**。本模块另交付一个
@@ -94,14 +97,9 @@ NO_DIRECTIONS_REASON = "未能确定意图，且理解结果未给出方向候�
 
 UNDERSTANDER_ABSENT_REASON = "未注入意图理解端口，无法把输入收敛为意图（05 §3.1）"
 
-TARGET_UNRESOLVED_REASON = (
-    "未识别到可派发的目标 Skill（05 §3.2）：换一种说法，或用 `/` 开头的快捷指令指定"
-)
-"""目标解析不出时的守门原因（需要单个 Skill 的去向不产确认卡）。"""
-
 TARGET_REQUIRED_INTENTS: frozenset[str] = frozenset({"query", "configure"})
 """派发目标是**单个 Skill** 的去向（[05 §3.1](../../../../docs/技术架构-v2/05-L3-对话主入口.md)
-表的 `query` / `configure`）——目标未解析出即**不可派发**，故走 §3.2 的可派发性守门。"""
+表的 `query` / `configure`）——目标解析不出即按 §3.2 的「解析不出升级」改判 `investigate`。"""
 
 MATCH_MIN_OVERLAP = 2
 """目标补位的最低重叠数（字符 bigram，口径同 :meth:`~st_agent.l1.runner.SkillRunner.match`）。
@@ -403,7 +401,11 @@ class IntentProtocol:
         return ResultEnvelope.ok(self._filled(draft), as_of=result.as_of)
 
     def _from_command(self, raw: str) -> ResultEnvelope:
-        """§8 短路：命中指令直接取意图模板与参数预填（已预填参数不再追问）。"""
+        """§8 短路：命中指令直接取意图模板与参数预填（已预填参数不再追问）。
+
+        指令模板落到需要单个 Skill 的去向而目标仍解析不出时，同走 §3.2 的升级
+        （否则会留下「可确认、派发却必然失败」的卡）。
+        """
         assert self._commands is not None
         resolution = self._commands.resolve(raw)
         if resolution.envelope.status != "ok" or resolution.command is None:
@@ -414,11 +416,14 @@ class IntentProtocol:
         open_questions = tuple(
             s.name for s in specs if s.name not in command.param_defaults
         )
-        return ResultEnvelope.ok(checked_draft(
+        draft = checked_draft(
             intent=command.intent, target=target,
             understood=dict(command.param_defaults),
             open_questions=open_questions, via_shortcut=command.name,
-        ))
+        )
+        if draft.intent in TARGET_REQUIRED_INTENTS and not (target or "").strip():
+            draft = self._upgraded(draft, raw)
+        return ResultEnvelope.ok(draft)
 
     def _filled(self, draft: IntentDraft) -> IntentDraft:
         """补齐 ``open_questions``（理解端口可只给 target 与已提取值）。
@@ -443,8 +448,8 @@ class IntentProtocol:
         """解析派发目标（[05 §3.1] 的「目标 Skill 的解析」）。
 
         需要单个 Skill 的去向（`query` / `configure`）在理解端口给不出**可用**目标时，
-        对**用户原话**做一次 best-1 确定性匹配补位；补不出即把目标留空——确认卡由
-        :meth:`undispatchable` / :meth:`withheld_round` 守门，**不把失败推到派发**。
+        对**用户原话**做一次 best-1 确定性匹配补位；补不出即按 §3.2「解析不出升级」
+        改判为 `investigate`——以用户原话作任务交给循环，不再出空态 / 澄清轮。
         """
         if draft.intent not in TARGET_REQUIRED_INTENTS:
             return draft
@@ -456,7 +461,20 @@ class IntentProtocol:
             return draft.model_copy(
                 update={"target": matched, "via_matcher": True}
             )
-        return draft.model_copy(update={"target": None, "via_matcher": False})
+        return self._upgraded(draft, raw)
+
+    def _upgraded(self, draft: IntentDraft, raw: str) -> IntentDraft:
+        """解析不出目标 → 升格 `investigate`（[05 §3.2] 的「解析不出升级」）。
+
+        任务由确认卡的 `target` 承载（`investigate` 无意图级参数声明，卡上仍只有
+        「意图」一条目）；原去向抽出的参数 / 待问项 / 方向候选一并清空——它们属于
+        那条没能确定的快速路径，留在卡上会让用户以为这些值会生效。快捷指令来源保留。
+        """
+        return draft.model_copy(update={
+            "intent": "investigate", "target": raw,
+            "understood": {}, "open_questions": (), "directions": (),
+            "via_matcher": False,
+        })
 
     def _registered(self, skill_id: str) -> bool:
         """目标标识是否**已注册**（形态非法 / 未注册一律视为未给出）。
@@ -471,29 +489,6 @@ class IntentProtocol:
         except Exception:
             return False
         return True
-
-    def undispatchable(self, draft: IntentDraft) -> bool:
-        """该草稿是否**不可派发**（需要单个 Skill 的去向却无目标；§3.2 守门判据）。
-
-        交互层据此**不产确认卡**——一张可确认的卡不得处于「派发必然失败」的状态。
-        """
-        return (
-            draft.intent in TARGET_REQUIRED_INTENTS
-            and not (draft.target or "").strip()
-        )
-
-    def withheld_round(self, draft: IntentDraft) -> ClarificationRound:
-        """守门轮：把「目标解析不出」作为一条带原因的澄清轮交回（不产确认卡）。
-
-        ``directions`` 取自**草稿**（理解端口给过方向候选时原样展示），``questions``
-        为空——目标未定，目标侧的参数问项无从取自描述体（[05 §3.2] 的问项来源）。
-        """
-        return ClarificationRound(
-            envelope=ResultEnvelope.empty(TARGET_UNRESOLVED_REASON, as_of=_now()),
-            intent=draft.intent, target=None, questions=(),
-            directions=tuple(draft.directions[:DIRECTION_LIMIT]),
-            via_shortcut=draft.via_shortcut,
-        )
 
     def _match(self, query: str, *, min_overlap: int = 1) -> str | None:
         if self._matcher is None:
