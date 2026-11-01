@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-020]
 status: done
 decisions: [D-154]
-verify: "执行日志 [T-AGT-022.1]；新增 6 例；范围套件 1407 passed；commit 待回填"
+verify: "执行日志 [T-AGT-022.1]；新增 6 例；范围套件 1407 passed；commit abbd421"
 ---
 
 # T-AGT-022.1 · 开跑铸号与活动 run 注册表

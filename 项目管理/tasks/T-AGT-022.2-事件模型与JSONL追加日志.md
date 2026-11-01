@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-022.1]
 status: done
 decisions: [D-154]
-verify: "执行日志 [T-AGT-022.2]；新增 9 例；范围套件 1407 passed；commit 待回填"
+verify: "执行日志 [T-AGT-022.2]；新增 9 例；范围套件 1407 passed；commit abbd421"
 ---
 
 # T-AGT-022.2 · 事件模型与 JSONL 追加日志
