@@ -139,6 +139,7 @@ def resume_agent_run(
     ttl: timedelta = CONTINUATION_TTL,
     new_run_id: str | None = None,
     emit: Any = None,
+    cancel: Any = None,
 ) -> ResumeOutcome:
     """按用户的选择续跑一次交还（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
 
@@ -149,6 +150,7 @@ def resume_agent_run(
     :param ttl: 续跑依据有效期（缺省 :data:`CONTINUATION_TTL`）
     :param new_run_id: **开跑前**已铸好的本次运行标识（[T-AGT-022.1]）；缺省由收口时铸。
     :param emit: 运行事件回调（同 :func:`run_agent_loop` 的 ``emit``；缺省不产生事件）。
+    :param cancel: 协作式取消事件（同 :func:`run_agent_loop` 的 ``cancel``；缺省不可取消）。
     """
     if decision not in ("approve", "answer", "rerun", "cancel"):
         raise AgentRuntimeValidationError(f"未知的续跑选择 {decision!r}")
@@ -271,6 +273,7 @@ def resume_agent_run(
         parent_trace_id=record.parent_trace_id,
         prior_sub_agents=tuple(record.sub_agents),
         emit=emit,
+        cancel=cancel,
     )
     if decision == "answer":
         outcome = outcome.model_copy(update={

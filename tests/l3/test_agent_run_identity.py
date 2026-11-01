@@ -79,7 +79,7 @@ class _ProbeProtocol:
     def tool_calls_supported(self) -> bool:
         return True
 
-    def invoke_turn(self, context, *, initiator: str, purpose: str) -> TurnResult:
+    def invoke_turn(self, context, *, initiator: str, purpose: str, cancel=None) -> TurnResult:
         self._seen.append(
             tuple(
                 (run.agent_run_id, run.session_id, run.started_at, run.cancel_requested)
@@ -96,8 +96,24 @@ class _ExplodingProtocol:
     def tool_calls_supported(self) -> bool:
         return True
 
-    def invoke_turn(self, context, *, initiator: str, purpose: str) -> TurnResult:
+    def invoke_turn(self, context, *, initiator: str, purpose: str, cancel=None) -> TurnResult:
         raise AssertionError("同会话冲突时不应进入循环")
+
+
+class _CancellingProtocol:
+    """在「模型轮」里经注册表句柄请求取消——验控制面与循环共享**同一事件**（T-AGT-024.1 A3）。"""
+
+    def __init__(self, runs: ActiveRunRegistry) -> None:
+        self._runs = runs
+
+    def tool_calls_supported(self) -> bool:
+        return True
+
+    def invoke_turn(self, context, *, initiator: str, purpose: str, cancel=None) -> TurnResult:
+        handle = self._runs.get(self._runs.active_ids()[0])
+        assert cancel is handle.cancel_event          # 组合根把句柄的事件原样交给循环
+        handle.request_cancel()
+        return TurnResult(text="不应被当作模型给出的结束")
 
 
 # ───────────────────────── GWT-1 / GWT-2 ─────────────────────────
@@ -129,10 +145,35 @@ def test_gwt2_handle_carries_identity_and_cancel_marker(store):
     assert handle.session_id == SESSION
     assert handle.started_at is not None
     assert handle.cancel_requested is False
+    assert runs.get(handle.agent_run_id).cancel_event is handle.cancel_event  # 同一事件，不另存副本
     handle.request_cancel()
     assert runs.get(handle.agent_run_id).cancel_requested is True
     assert runs.finish(handle.agent_run_id) is True
     assert runs.get(handle.agent_run_id) is None
+
+
+def test_cancel_request_reaches_the_running_loop(store):
+    """控制面置位 → 循环按 ``cancelled`` 收口；一步未执行即如实空态。"""
+    runs = ActiveRunRegistry()
+    port = _port(store, protocol=_CancellingProtocol(runs), runs=runs)
+
+    result = port.investigate(_Card(), session_id=SESSION)
+
+    assert result.report is not None
+    assert result.report.record.termination == "cancelled"
+    assert result.envelope.status == "empty"
+    assert runs.get(result.agent_run_id) is None    # 收口后照常移除
+
+
+def test_stop_requests_cancel_on_active_run_only(store):
+    """停止口：在册即置位并回真；不在册回假（no-op），不伪造一次停止。"""
+    runs = ActiveRunRegistry()
+    port = _port(store, protocol=_ProbeProtocol(runs, []), runs=runs)
+    handle = runs.register("agr_00000000000000000003")
+
+    assert port.stop(handle.agent_run_id) is True
+    assert handle.cancel_requested is True
+    assert port.stop("agr_missing") is False
 
 
 # ───────────────────────── GWT-3 ─────────────────────────

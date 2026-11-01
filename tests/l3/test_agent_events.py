@@ -51,7 +51,7 @@ class _Protocol:
     def tool_calls_supported(self) -> bool:
         return True
 
-    def invoke_turn(self, context, *, initiator: str, purpose: str) -> TurnResult:
+    def invoke_turn(self, context, *, initiator: str, purpose: str, cancel=None) -> TurnResult:
         return self._turns.pop(0)
 
 

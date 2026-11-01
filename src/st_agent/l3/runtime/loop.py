@@ -22,10 +22,14 @@
   「结束」**不算**触界（GWT-4 / GWT-5）。两条取值**可注入**（:func:`run_agent_loop` 的
   ``max_steps`` / ``max_llm_calls``，带默认值），不做成模块常量——上界是预算，预算应由
   装配方决定（缺省值只为「不传也能跑」）。
+- **安全停止**（[D-154](../../../项目管理/决策日志.md) B6）——``cancel`` 事件置位后，循环只在
+  **边界**终止（LLM 调用前 / 返回后 / 批执行前 / 串行每步前），已开始的工具**跑完再停**、
+  不强杀；终止原因 ``cancelled``，已执行步骤（含写操作）**如实带走、不回滚**。
 """
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal
@@ -161,8 +165,13 @@ TerminationReason = Literal[
     "llm_failed",
     "unknown_tool",
     "catalog_empty",
+    "cancelled",
 ]
-"""循环的终止原因（**穷尽列举**——产出与留痕据此如实标注，不造未列出的原因）。"""
+"""循环的终止原因（**穷尽列举**——产出与留痕据此如实标注，不造未列出的原因）。
+
+``cancelled`` 是**安全停止**（[D-154](../../../项目管理/决策日志.md) B6）：已开始的工具
+跑完再停、不启动下一步；已执行的写操作**不回滚**，在产出里照实列出。
+"""
 
 BOUND_REASONS: tuple[str, ...] = ("step_limit", "llm_call_limit")
 """「达到上界」这一类终止原因（[D-090](../../../项目管理/决策日志.md) ⑥ 的如实标注口径）。"""
@@ -338,6 +347,7 @@ def run_agent_loop(
     parent_trace_id: str = "",
     prior_sub_agents: Sequence[SubAgentRun] = (),
     emit: Callable[[str, Mapping[str, Any]], None] | None = None,
+    cancel: threading.Event | None = None,
 ) -> LoopOutcome:
     """驱动自主查证循环（四段一轮，直至模型给出「结束」或触界）。
 
@@ -378,6 +388,11 @@ def run_agent_loop(
     :param emit: 运行事件回调（``(事件类型, 载荷) -> None``；[D-154](../../../项目管理/决策日志.md) B5）。
         缺省 ``None`` 即不产生事件——存量调用方逐字节不变；事件类型与落盘由
         :mod:`st_agent.l3.runtime.events` 定义，本模块只发**客观字段**
+    :param cancel: **协作式**取消事件（[D-154](../../../项目管理/决策日志.md) B6 /
+        [`T-AGT-024.1`](../../../项目管理/tasks/T-AGT-024.1-取消透传与cancelled终止.md)）；
+        缺省 ``None`` 即不可取消，存量调用方逐字节不变。置位后循环在**下一处边界**
+        终止：LLM 调用前 / 调用返回后 / 批执行前 / 串行每步前——**已开始的工具跑完再停**，
+        不强杀在途动作；终止原因 `cancelled`，已执行步骤照实带走（不回滚）
     :returns: :class:`LoopOutcome`——终止原因、已执行步骤、链、以及被拦下未执行的那一步
 
     入参非法（上界非正 / 任务为空 / 目录形态坏）抛
@@ -405,6 +420,8 @@ def run_agent_loop(
         raise AgentRuntimeValidationError("子 Agent 的落痕端口须为可调用对象（或 None）")
     if emit is not None and not callable(emit):
         raise AgentRuntimeValidationError("运行事件回调须为可调用对象（或 None）")
+    if cancel is not None and not callable(getattr(cancel, "is_set", None)):
+        raise AgentRuntimeValidationError("取消事件须提供 is_set()（threading.Event 形态，或 None）")
 
     chain = trace if trace is not None else Trace(trace_id=TraceId.generate())
     steps: list[WorkStep] = list(prior_steps)
@@ -429,6 +446,20 @@ def run_agent_loop(
         """发一条运行事件（``emit`` 缺省即无操作；载荷只由本模块给定客观字段）。"""
         if emit is not None:
             emit(kind, dict(payload or {}))
+
+    def _cancelled() -> bool:
+        """是否已请求停止（无事件即永不取消）。"""
+        return cancel is not None and cancel.is_set()
+
+    def _stop_reason(unstarted: int = 0) -> str:
+        """安全停止的中性说明（已执行步骤照实带走、不回滚；同轮未启动的调用点名）。"""
+        pieces = [
+            "已开始的动作跑完再停，不启动下一步",
+            f"已执行 {len(steps)} 步如实列出，写操作不回滚",
+        ]
+        if unstarted:
+            pieces.append(f"同轮其余 {unstarted} 个调用未执行（不静默丢）")
+        return "；".join(pieces)
 
     def finish(
         termination: TerminationReason,
@@ -484,6 +515,10 @@ def run_agent_loop(
         )
 
     while True:
+        # ── 取消（LLM 调用前）：已请求停止即不再发起下一轮 ──
+        if _cancelled():
+            return finish("cancelled", reason=_stop_reason())
+
         # ── 上界（LLM 调用次数）：问之前判 ──
         if llm_calls >= max_llm_calls:
             return finish(
@@ -506,7 +541,9 @@ def run_agent_loop(
             return finish("catalog_empty", reason=assembled.reason or "")
         context: WorkContext = assembled.data
         dropped = context.dropped
-        turn = protocol.invoke_turn(context, initiator=initiator, purpose=purpose)
+        turn = protocol.invoke_turn(
+            context, initiator=initiator, purpose=purpose, cancel=cancel,
+        )
         llm_calls += 1
         _emit("model_turn", {
             "index": llm_calls,
@@ -514,6 +551,9 @@ def run_agent_loop(
             "final": not turn.tool_calls,
             "failed": turn.envelope is not None,
         })
+        # ── 取消（LLM 调用后）：在途调用已按事件中断，不再使用本轮产出 ──
+        if _cancelled():
+            return finish("cancelled", reason=_stop_reason())
         if turn.envelope is not None:
             return finish(
                 "llm_failed",
@@ -714,6 +754,7 @@ def run_agent_loop(
                     allow_sub_agents=False,
                     nested_recorder=None,
                     parent_trace_id=chain.trace_id.value,
+                    cancel=cancel,
                 )
                 ref = nested_recorder(child)
                 evidence = tuple(
@@ -757,6 +798,9 @@ def run_agent_loop(
                 "step_limit",
                 reason=f"已达到步数上界（{max_steps}），终止",
             )
+        # ── 取消（批执行前）：整批尚未开始，一步都不执行 ──
+        if _cancelled():
+            return finish("cancelled", reason=_stop_reason(len(batch)))
 
         # ── ③④ 执行与回填 —— 并发安全须由装配方**显式声明**，未声明即退回串行并标注 ──
         if len(batch) == 1 or not parallel_safe:
@@ -765,7 +809,12 @@ def run_agent_loop(
                     f"本轮 {len(batch)} 个调用按顺序串行执行"
                     "（底层未声明并发安全，显式退回串行）"
                 )
-            for call, entry in batch:
+            for position, (call, entry) in enumerate(batch):
+                # ── 取消（串行每步前）：当前工具已跑完，不再启动下一步 ──
+                if _cancelled():
+                    return finish(
+                        "cancelled", reason=_stop_reason(len(batch) - position),
+                    )
                 values, object_inputs = split_arguments(entry, dict(call.arguments))
                 _emit("step_started", {
                     "tool": call.name, "skill_id": entry.skill_id,
@@ -799,6 +848,9 @@ def run_agent_loop(
                 executed += 1
             continue
 
+        # ── 取消（并行提交前）：整批尚未提交，一步都不执行 ──
+        if _cancelled():
+            return finish("cancelled", reason=_stop_reason(len(batch)))
         parallel_used = True
         parallel_notes.append(f"本轮 {len(batch)} 个调用已并行执行")
         prepared = [

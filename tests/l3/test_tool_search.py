@@ -199,7 +199,7 @@ class ScriptedProtocol:
     def tool_calls_supported(self) -> bool:
         return True
 
-    def invoke_turn(self, context, *, initiator: str, purpose: str) -> TurnResult:
+    def invoke_turn(self, context, *, initiator: str, purpose: str, cancel=None) -> TurnResult:
         self.contexts.append(context)
         return self._replies.pop(0)
 

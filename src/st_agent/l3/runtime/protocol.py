@@ -22,6 +22,7 @@ prompt 文本，**由端口按自身形态选**（[`:meth:`WorkContext.render_pr
 
 from __future__ import annotations
 
+import threading
 from typing import Any, Protocol
 
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -81,8 +82,19 @@ class ToolCallProtocol(Protocol):
         """端点是否声明支持本协议所需的工具调用（缺省为假时循环 fail-closed）。"""
         ...
 
-    def invoke_turn(self, context: WorkContext, *, initiator: str, purpose: str) -> TurnResult:
-        """问一轮：把工作上下文与工具目录交出去，拿回工具调用或「结束」。"""
+    def invoke_turn(
+        self,
+        context: WorkContext,
+        *,
+        initiator: str,
+        purpose: str,
+        cancel: threading.Event | None = None,
+    ) -> TurnResult:
+        """问一轮：把工作上下文与工具目录交出去，拿回工具调用或「结束」。
+
+        ``cancel`` 是**协作式**取消事件：实现应在发到端点后按事件状态尽早收口
+        （[`T-AGT-024.1`](../../../项目管理/tasks/T-AGT-024.1-取消透传与cancelled终止.md)）。
+        """
         ...
 
 
@@ -126,8 +138,15 @@ class NativeToolCallProtocol:
             return False
         return bool(endpoint.capability.supports_function_calling)
 
-    def invoke_turn(self, context: WorkContext, *, initiator: str, purpose: str) -> TurnResult:
-        """发起一轮原生工具调用（工具条目走 ``tools`` 入参）。"""
+    def invoke_turn(
+        self,
+        context: WorkContext,
+        *,
+        initiator: str,
+        purpose: str,
+        cancel: threading.Event | None = None,
+    ) -> TurnResult:
+        """发起一轮原生工具调用（工具条目走 ``tools`` 入参；取消事件透传 L0 的调用面）。"""
         specs = context.tool_specs()
         text_parts: list[str] = []
         calls: list[ToolCall] = []
@@ -139,6 +158,7 @@ class NativeToolCallProtocol:
             initiator=initiator,
             purpose=purpose,
             tools=specs or None,
+            cancel=cancel,
         ):
             if event.kind == "chunk":
                 text_parts.append(event.text)

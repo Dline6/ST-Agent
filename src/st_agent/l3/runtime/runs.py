@@ -53,19 +53,24 @@ class RunAlreadyActiveError(AgentRuntimeValidationError):
 class ActiveRun:
     """活动 run 的**控制句柄**（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
 
-    本期只承载身份与「取消已请求」标记——取消向执行面的透传与 ``cancelled`` 终止归
-    [`T-AGT-024.1`](../../../项目管理/tasks/T-AGT-024.1-取消透传与cancelled终止.md)，
-    那时在**本句柄上**扩展，不另造第二个注册表。
+    承载身份与**取消事件**：停止请求经 :meth:`request_cancel` 置位，循环在 LLM 调用与
+    动作边界读取同一事件（[`T-AGT-024.1`](../../../项目管理/tasks/T-AGT-024.1-取消透传与cancelled终止.md)）。
+    事件在 `register` 时创建，控制面与后台线程**共享同一对象**——不另造第二来源。
     """
 
     agent_run_id: str
     session_id: str | None = None
     started_at: datetime = field(default_factory=_now)
-    cancel_requested: bool = False
+    cancel_event: threading.Event = field(default_factory=threading.Event)
 
     def request_cancel(self) -> None:
-        """标记「取消已请求」；循环在步骤边界读取该标记（透传归 ``T-AGT-024.1``）。"""
-        self.cancel_requested = True
+        """置位取消事件（**协作式**：实际终止发生在下一个 LLM / 动作边界）。"""
+        self.cancel_event.set()
+
+    @property
+    def cancel_requested(self) -> bool:
+        """是否已请求取消（读事件状态；只读视图，不另存一份标记）。"""
+        return self.cancel_event.is_set()
 
 
 class ActiveRunRegistry:
