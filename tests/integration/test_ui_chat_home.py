@@ -77,13 +77,14 @@ def test_commands_on_the_real_root(m5) -> None:
 def test_chat_reply_carries_the_clarification_key_and_a_description(tmp_path) -> None:
     """`POST /api/chat` 的返回恒携 `clarification` 键；`dispatch` 返程带生成式 UI 描述。
 
-    用 M1 组合根（规则更全）走一段「输入 → 确认 → 派发」反向流。
+    用 M1 组合根（规则更全）走一段「`/` 指令 → 确认 → 派发」的反向流；默认自然语言入口在
+    未装配循环端口的根上为 `unavailable`（[D-154] A1，另见 `test_m11_default_entry`）。
     """
     from rig_m1 import seeded_m1_plaintext
 
     runtime = seeded_m1_plaintext(tmp_path / ROOT_NAME).m1
     with serve(dev=False, chat=runtime.chat) as running:
-        posted = _post(running, {"action": "post", "text": "查 sh.600000 退市风险"})
+        posted = _post(running, {"action": "post", "text": "/盯盘"})
         assert posted["status"] == "ok"
         assert posted["needs_confirmation"] is True
         assert "clarification" in posted  # 澄清轮的线面（可为 null）
