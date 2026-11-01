@@ -102,6 +102,16 @@ from st_agent.l3.runtime.report import (
     record_agent_run,
 )
 from st_agent.l3.runtime.registry_adapter import InvestigateFamily, investigate_family
+from st_agent.l3.runtime.runs import ActiveRun, ActiveRunRegistry, RunAlreadyActiveError
+from st_agent.l3.runtime.events import (
+    EVENT_LOG_PREFIX,
+    RUN_EVENT_TYPES,
+    RunEvent,
+    RunEventLog,
+    RunEventType,
+    event_log_ref_of,
+    read_run_events,
+)
 
 __all__ = [
     "AGENT_DECISION_METHOD",
@@ -119,6 +129,7 @@ __all__ = [
     "DEFAULT_TURN_INITIATOR",
     "DEFAULT_TURN_PURPOSE",
     "DEFAULT_WORK_CONTEXT_BUDGET",
+    "EVENT_LOG_PREFIX",
     "GATE_VERDICTS",
     "INVESTIGATE_CONFIG_PREFIX",
     "MAX_LLM_CALLS_CEILING",
@@ -128,10 +139,13 @@ __all__ = [
     "PLAN_UPDATE_TOOL",
     "RESULT_TRUNCATE_CHARS",
     "RESUMABLE_TERMINATIONS",
+    "RUN_EVENT_TYPES",
     "SKILL_ACTION_PREFIX",
     "SPAWN_AGENT_TOOL",
     "TRUNCATED_PREVIEW_CHARS",
     "ActionGate",
+    "ActiveRun",
+    "ActiveRunRegistry",
     "AgentPendingStep",
     "AgentRunRecord",
     "AgentRunReport",
@@ -148,6 +162,10 @@ __all__ = [
     "PlanStep",
     "ResumeDecision",
     "ResumeOutcome",
+    "RunAlreadyActiveError",
+    "RunEvent",
+    "RunEventLog",
+    "RunEventType",
     "SubAgentRun",
     "TerminationReason",
     "render_subagent_note",
@@ -161,6 +179,7 @@ __all__ = [
     "assemble_work_context",
     "build_agent_output",
     "conclude_agent_run",
+    "event_log_ref_of",
     "investigate_family",
     "load_agent_run",
     "load_continuation",
@@ -168,6 +187,7 @@ __all__ = [
     "loop_bounds_config_entries",
     "new_agent_run_id",
     "new_work_step",
+    "read_run_events",
     "record_agent_run",
     "resume_agent_run",
     "run_agent_loop",

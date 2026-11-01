@@ -337,6 +337,7 @@ def run_agent_loop(
     nested_recorder: NestedRecorder | None = None,
     parent_trace_id: str = "",
     prior_sub_agents: Sequence[SubAgentRun] = (),
+    emit: Callable[[str, Mapping[str, Any]], None] | None = None,
 ) -> LoopOutcome:
     """驱动自主查证循环（四段一轮，直至模型给出「结束」或触界）。
 
@@ -374,6 +375,9 @@ def run_agent_loop(
     :param parent_trace_id: 子循环的父链 ``trace_id``（主循环留空；只进留痕，不改 Trace 结构）
     :param prior_sub_agents: 续跑承接的**子 Agent 摘要**（取自旧 ``agent_run`` 留痕；
         子步骤不重建，但结论、引用与留痕链接仍进工作上下文与本次留痕）
+    :param emit: 运行事件回调（``(事件类型, 载荷) -> None``；[D-154](../../../项目管理/决策日志.md) B5）。
+        缺省 ``None`` 即不产生事件——存量调用方逐字节不变；事件类型与落盘由
+        :mod:`st_agent.l3.runtime.events` 定义，本模块只发**客观字段**
     :returns: :class:`LoopOutcome`——终止原因、已执行步骤、链、以及被拦下未执行的那一步
 
     入参非法（上界非正 / 任务为空 / 目录形态坏）抛
@@ -399,6 +403,8 @@ def run_agent_loop(
             raise AgentRuntimeValidationError(f"{name} 须为布尔值，得到 {value!r}")
     if nested_recorder is not None and not callable(nested_recorder):
         raise AgentRuntimeValidationError("子 Agent 的落痕端口须为可调用对象（或 None）")
+    if emit is not None and not callable(emit):
+        raise AgentRuntimeValidationError("运行事件回调须为可调用对象（或 None）")
 
     chain = trace if trace is not None else Trace(trace_id=TraceId.generate())
     steps: list[WorkStep] = list(prior_steps)
@@ -419,6 +425,11 @@ def run_agent_loop(
     parallel_notes: list[str] = []
     parallel_used = False
 
+    def _emit(kind: str, payload: Mapping[str, Any] | None = None) -> None:
+        """发一条运行事件（``emit`` 缺省即无操作；载荷只由本模块给定客观字段）。"""
+        if emit is not None:
+            emit(kind, dict(payload or {}))
+
     def finish(
         termination: TerminationReason,
         *,
@@ -432,7 +443,7 @@ def run_agent_loop(
         ask_note: str = "",
     ) -> LoopOutcome:
         """装配终止产出——**计划与上下文状态随每次终止照实带走**。"""
-        return _outcome(
+        result = _outcome(
             task, endpoint_id, termination, chain, steps, llm_calls,
             reason=reason, answer=answer, pending=pending, gate_reason=gate_reason,
             failure=failure,
@@ -445,6 +456,23 @@ def run_agent_loop(
             parallel_used=parallel_used, parallel_note="；".join(parallel_notes),
             sub_agents=tuple(sub_runs),
         )
+        _emit("run_finished", {
+            "termination": termination,
+            "reason": reason,
+            "at_bound": result.at_bound,
+            "executed_steps": executed,
+            "llm_calls": llm_calls,
+            "steps": len(result.steps),
+        })
+        return result
+
+    _emit("run_started", {
+        "task": task,
+        "endpoint_id": endpoint_id,
+        "session_id": session_id,
+        "max_steps": max_steps,
+        "max_llm_calls": max_llm_calls,
+    })
 
     if not protocol.tool_calls_supported():
         return finish(
@@ -480,6 +508,12 @@ def run_agent_loop(
         dropped = context.dropped
         turn = protocol.invoke_turn(context, initiator=initiator, purpose=purpose)
         llm_calls += 1
+        _emit("model_turn", {
+            "index": llm_calls,
+            "tool_calls": len(turn.tool_calls),
+            "final": not turn.tool_calls,
+            "failed": turn.envelope is not None,
+        })
         if turn.envelope is not None:
             return finish(
                 "llm_failed",
@@ -489,6 +523,7 @@ def run_agent_loop(
 
         # 模型给出「结束」：本轮文本是交付物的来源（中间轮次的文本不在此列）
         if not turn.tool_calls:
+            _emit("text_delta", {"text": turn.text})
             return finish("finished", answer=turn.text)
 
         # ── 本轮多调用：先解析（检索入口惰性态不过闸门；未知工具在预算判定后终止）──
@@ -538,6 +573,12 @@ def run_agent_loop(
                 tool_search_note = _apply_tool_search(
                     call, tuple(tools), retrieved, searches,
                 )
+                record = searches[-1]
+                _emit("tool_search", {
+                    "query": record.query,
+                    "matched": list(record.matched),
+                    "note": record.note,
+                })
                 continue
 
             # 控制动作可能在本轮内消耗预算（如派生子 Agent），故每个动作前**再看一次**上界
@@ -567,6 +608,12 @@ def run_agent_loop(
                 )
                 if rest:
                     reason += f"；同轮其余 {rest} 个调用未执行（不静默丢）"
+                _emit("gate_pending", {
+                    "tool": call.name,
+                    "skill_id": entry.skill_id,
+                    "verdict": decision.verdict,
+                    "reason": decision.reason,
+                })
                 return finish(
                     termination, reason=reason,
                     pending=call, gate_reason=decision.reason,
@@ -576,6 +623,7 @@ def run_agent_loop(
                 normalized, error = normalize_plan(dict(call.arguments).get("plan"))
                 if error:
                     plan_error = error
+                    _emit("plan_updated", {"plan": [], "error": error})
                 else:
                     plan_error = ""
                     plan_given = True
@@ -583,6 +631,10 @@ def run_agent_loop(
                         PlanStep(title=item["title"], status=item["status"])
                         for item in normalized
                     )
+                    _emit("plan_updated", {
+                        "plan": [step.model_dump() for step in current_plan],
+                        "error": "",
+                    })
                 continue
 
             if call.name == ASK_USER_TOOL:
@@ -594,6 +646,11 @@ def run_agent_loop(
                 ask_note = ask.note or ask.error
                 if rest:
                     ask_note = _join_note(ask_note, f"同轮其余 {rest} 个调用未执行")
+                _emit("ask_user", {
+                    "questions": [item.model_dump() for item in questions],
+                    "directions": list(ask.directions),
+                    "note": ask_note,
+                })
                 return finish(
                     "needs_user_input",
                     reason=ask.error or "模型请求用户补充信息，循环终止并交还结构化问项",
@@ -677,6 +734,13 @@ def run_agent_loop(
                     llm_calls=child.llm_calls,
                 )
                 sub_runs.append(sub)
+                _emit("sub_agent", {
+                    "task": sub.task,
+                    "agent_run_id": sub.agent_run_id,
+                    "termination": sub.termination,
+                    "steps": sub.steps,
+                    "llm_calls": sub.llm_calls,
+                })
                 executed += child_steps
                 llm_calls += child.llm_calls
                 subagent_notes.append(render_subagent_note(sub))
@@ -703,6 +767,9 @@ def run_agent_loop(
                 )
             for call, entry in batch:
                 values, object_inputs = split_arguments(entry, dict(call.arguments))
+                _emit("step_started", {
+                    "tool": call.name, "skill_id": entry.skill_id,
+                })
                 run = runner.run(
                     entry.skill_id,
                     values,
@@ -713,13 +780,21 @@ def run_agent_loop(
                     initiator=initiator,
                     purpose=purpose,
                 )
-                steps.append(new_work_step(
+                work = new_work_step(
                     tool_name=call.name,
                     skill_id=entry.skill_id,
                     arguments=dict(call.arguments),
                     skill_run_id=run.skill_run_id,
                     envelope=run.envelope,
-                ))
+                )
+                steps.append(work)
+                _emit("step_finished", {
+                    "tool": call.name, "skill_id": entry.skill_id,
+                    "skill_run_id": work.skill_run_id,
+                    "status": run.envelope.status,
+                    "truncated": work.truncated,
+                    "log_ref": work.log_ref,
+                })
                 chain = run.trace
                 executed += 1
             continue
@@ -734,6 +809,8 @@ def run_agent_loop(
             )
             for call, entry in batch
         ]
+        for call, entry, _values, _inputs, _approved in prepared:
+            _emit("step_started", {"tool": call.name, "skill_id": entry.skill_id})
         with ThreadPoolExecutor(max_workers=len(prepared)) as pool:
             futures = [
                 pool.submit(
@@ -762,13 +839,21 @@ def run_agent_loop(
                 )
             for step in run.trace.steps[base_len:]:
                 merged = merged.append_step(step)
-            steps.append(new_work_step(
+            work = new_work_step(
                 tool_name=call.name,
                 skill_id=entry.skill_id,
                 arguments=dict(call.arguments),
                 skill_run_id=run.skill_run_id,
                 envelope=run.envelope,
-            ))
+            )
+            steps.append(work)
+            _emit("step_finished", {
+                "tool": call.name, "skill_id": entry.skill_id,
+                "skill_run_id": work.skill_run_id,
+                "status": run.envelope.status,
+                "truncated": work.truncated,
+                "log_ref": work.log_ref,
+            })
         chain = merged
         executed += len(batch)
 

@@ -15,15 +15,19 @@ from st_agent.l3.errors import (
 )
 from st_agent.l3.runtime import (
     ActionGate,
+    ActiveRunRegistry,
     AgentRunReport,
     LoopBounds,
     NativeToolCallProtocol,
     NestedRunRef,
+    RunAlreadyActiveError,
+    RunEventLog,
     ResumeOutcome,
     agent_log_ref_of,
     conclude_agent_run,
     investigate_family,
     load_agent_run,
+    new_agent_run_id,
     resume_agent_run,
     run_agent_loop,
 )
@@ -102,6 +106,7 @@ class _AgentInvestigator:
         reader: Any = None,
         permissions: Any = None,
         nested_recorder: Any = None,
+        runs: ActiveRunRegistry | None = None,
     ) -> None:
         self._store = store
         self._runner = runner
@@ -113,6 +118,7 @@ class _AgentInvestigator:
         self._sessions = sessions
         self._reader = reader
         self._permissions = permissions
+        self._runs = runs if runs is not None else ActiveRunRegistry()
 
         if nested_recorder is None:
             def _record(outcome: Any) -> NestedRunRef:
@@ -124,6 +130,11 @@ class _AgentInvestigator:
 
             nested_recorder = _record
         self._nested_recorder = nested_recorder
+
+    @property
+    def runs(self) -> ActiveRunRegistry:
+        """活动 run 注册表（进程内瞬态；供运行控制面 / 集成套件按 id 取控制句柄）。"""
+        return self._runs
 
     def investigate(
         self,
@@ -147,26 +158,42 @@ class _AgentInvestigator:
                 session_id=session,
                 context_note=note,
             )
-        budget_chars = self._bounds.budget_chars()
-        outcome = run_agent_loop(
-            task=task,
-            endpoint_id=self._endpoint_id,
-            protocol=self._protocol,
-            runner=self._runner,
-            tools=self._skills.tool_catalog(),
-            gate=ActionGate(self._authorization),
-            approved_permissions=self._permissions or (),
-            max_steps=self._bounds.steps(),
-            max_llm_calls=self._bounds.llm_calls(),
-            budget_chars=budget_chars,
-            session_id=session,
-            history=history,
-            memory=memory,
-            parallel_safe=True,
-            nested_recorder=self._nested_recorder,
-        )
-        outcome = outcome.model_copy(update={"context_note": note})
-        report = conclude_agent_run(self._store, outcome, now=now)
+        agent_run_id = new_agent_run_id()
+        try:
+            self._runs.register(agent_run_id, session)
+        except RunAlreadyActiveError as exc:
+            return InvestigationOutcome(
+                envelope=ResultEnvelope.validation_failed(str(exc)),
+                session_id=session,
+                context_note=note,
+            )
+        try:
+            events = RunEventLog(self._store, agent_run_id)
+            budget_chars = self._bounds.budget_chars()
+            outcome = run_agent_loop(
+                task=task,
+                endpoint_id=self._endpoint_id,
+                protocol=self._protocol,
+                runner=self._runner,
+                tools=self._skills.tool_catalog(),
+                gate=ActionGate(self._authorization),
+                approved_permissions=self._permissions or (),
+                max_steps=self._bounds.steps(),
+                max_llm_calls=self._bounds.llm_calls(),
+                budget_chars=budget_chars,
+                session_id=session,
+                history=history,
+                memory=memory,
+                parallel_safe=True,
+                nested_recorder=self._nested_recorder,
+                emit=events.emit,
+            )
+            outcome = outcome.model_copy(update={"context_note": note})
+            report = conclude_agent_run(
+                self._store, outcome, agent_run_id=agent_run_id, now=now,
+            )
+        finally:
+            self._runs.finish(agent_run_id)
         return InvestigationOutcome(
             envelope=report.envelope, report=report, trace=outcome.trace,
             session_id=session, context_note=note,
@@ -194,7 +221,13 @@ class _AgentInvestigator:
         except (AgentRunNotFoundError, AgentRuntimeValidationError) as exc:
             return ResumeOutcome(envelope=ResultEnvelope.validation_failed(str(exc)))
         history, memory, note = self._context_inputs(session, record.task)
+        agent_run_id = new_agent_run_id()
         try:
+            self._runs.register(agent_run_id, session)
+        except RunAlreadyActiveError as exc:
+            return ResumeOutcome(envelope=ResultEnvelope.validation_failed(str(exc)))
+        try:
+            events = RunEventLog(self._store, agent_run_id)
             result = resume_agent_run(
                 self._store,
                 record.agent_run_id,
@@ -215,9 +248,13 @@ class _AgentInvestigator:
                 parallel_safe=True,
                 nested_recorder=self._nested_recorder,
                 now=now,
+                new_run_id=agent_run_id,
+                emit=events.emit,
             )
         except AgentRuntimeValidationError as exc:
             return ResumeOutcome(envelope=ResultEnvelope.validation_failed(str(exc)))
+        finally:
+            self._runs.finish(agent_run_id)
         if note:
             result = result.model_copy(update={"note": _join(result.note, note)})
         return result
