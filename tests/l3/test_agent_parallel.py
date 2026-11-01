@@ -61,7 +61,7 @@ class FakeProtocol:
     def tool_calls_supported(self) -> bool:
         return True
 
-    def invoke_turn(self, context, *, initiator: str, purpose: str) -> TurnResult:
+    def invoke_turn(self, context, *, initiator: str, purpose: str, cancel=None) -> TurnResult:
         self.contexts.append(context)
         return self._script.pop(0) if self._script else TurnResult(text="（脚本已尽）")
 

@@ -284,31 +284,38 @@ function watchRunMessage(message, retry) {
   activeRun = { runId: message.runId, close: handle.close };
 }
 
-/** 只取事件里的客观字段（tool / status / plan / termination），不自造文案。 */
+/** 只取事件里的客观字段（tool / status / plan / termination），不自造文案。
+ *
+ * 帧的 `data` 是整条 RunEvent（`seq` / `event` / `agent_run_id` / `at` / `payload`），
+ * 事件载荷在 `payload` 下——直接读顶层会全是空字段（走查实测，2026-11-01 修正）。
+ */
 function applyRunEvent(message, type, data) {
+  const body = data && typeof data.payload === 'object' && data.payload !== null
+    ? data.payload
+    : (data || {});
   if (type === 'run_started') {
-    if (data.task) message.note = `运行中：${String(data.task).slice(0, 60)}`;
+    if (body.task) message.note = `运行中：${String(body.task).slice(0, 60)}`;
     return;
   }
   if (type === 'step_started') {
-    message.steps.push({ tool: String(data.tool || ''), status: 'running' });
-    message.note = `正在执行：${data.tool || ''}`;
+    message.steps.push({ tool: String(body.tool || ''), status: 'running' });
+    message.note = `正在执行：${body.tool || ''}`;
     return;
   }
   if (type === 'step_finished') {
     const step = [...message.steps].reverse().find(
-      (item) => item.tool === data.tool && item.status === 'running',
+      (item) => item.tool === body.tool && item.status === 'running',
     );
-    if (step) step.status = String(data.status || 'finished');
-    message.note = `已完成：${data.tool || ''}（${data.status || ''}）`;
+    if (step) step.status = String(body.status || 'finished');
+    message.note = `已完成：${body.tool || ''}（${body.status || ''}）`;
     return;
   }
   if (type === 'plan_updated') {
-    message.plan = Array.isArray(data.plan) ? data.plan : [];
+    message.plan = Array.isArray(body.plan) ? body.plan : [];
     return;
   }
   if (type === 'gate_pending') {
-    message.note = `等待确认：${data.tool || ''}`;
+    message.note = `等待确认：${body.tool || ''}`;
     return;
   }
   if (type === 'ask_user') {
@@ -316,8 +323,30 @@ function applyRunEvent(message, type, data) {
     return;
   }
   if (type === 'run_finished') {
-    message.note = `运行结束（${data.termination || ''}）`;
+    message.note = `运行结束（${body.termination || ''}）`;
   }
+}
+
+/** 请求安全停止：只置标记，实际终止在下一个边界（T-AGT-024.2 / 05 §10）。 */
+async function requestStop(message) {
+  if (!message || !message.runId || message.stopping) return;
+  message.stopping = true;
+  message.note = '正在停止…';
+  notify();
+  try {
+    const payload = await postJson(
+      `/api/chat/run/${encodeURIComponent(message.runId)}/stop`, {},
+    );
+    if (payload && payload.status === 'empty') {
+      // 运行已结束：如实告知，不再假装「已请求停止」。
+      message.note = String(payload.reason || '该运行已结束');
+      message.stopping = false;
+    }
+  } catch (error) {
+    message.stopping = false;
+    message.note = `停止请求失败：${error.message}`;
+  }
+  notify();
 }
 
 /** 运行结束：回读会话直到最终轮落盘，再整体替换（不重复渲染）。 */
@@ -434,6 +463,14 @@ function renderMessage(message) {
       }
       box.append(list);
     }
+    // 安全停止（T-AGT-024.2）：只请求、不承诺立即终止；停止中禁用避免重复提交。
+    const stop = el('button', 'chat__action', message.stopping ? '停止中…' : '停止');
+    stop.type = 'button';
+    stop.disabled = Boolean(message.stopping);
+    stop.addEventListener('click', () => requestStop(message));
+    const actions = el('div', 'chat__actions');
+    actions.append(stop);
+    box.append(actions);
     node.append(box);
     return node;
   }
@@ -467,10 +504,24 @@ function agentTurn(payload) {
   if (payload.clarification) node.append(clarificationNode(payload.clarification));
   if (payload.needs_confirmation) node.append(confirmationNode(payload.data, node));
   if (payload.description) node.append(descriptionNode(payload.description, payload.traces));
+  // 产物信封本身即描述件（查证产出走这条：`data.component_type` 顶层）或旁挂的 `description`。
+  const outcome = runOutcomeNote(
+    payload.description ? payload.description : (isDescription ? payload : null),
+  );
+  if (outcome) node.append(outcome);
   if (payload.agent_continuation) {
     node.append(continuationNode(payload.agent_continuation));
   }
   return node;
+}
+
+/** 查证产出的终止标签（服务端下发生成文案槽；本层不携词表，停止后据此如实呈现）。 */
+function runOutcomeNote(envelope) {
+  const data = envelope && envelope.data;
+  const slots = data && typeof data === 'object' ? data.slots : null;
+  if (!slots || typeof slots !== 'object' || !slots.termination) return null;
+  const reason = slots.termination_reason ? `：${slots.termination_reason}` : '';
+  return el('p', 'chat__run-outcome', `${slots.termination}${reason}`);
 }
 
 /** 查证交还的续跑块（[05 §10]：待确认 / 待用户输入 → 一键续跑）。 */

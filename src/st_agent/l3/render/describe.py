@@ -221,6 +221,7 @@ AGENT_TERMINATION_LABELS: dict[str, str] = {
     "llm_failed": "LLM 调用失败",
     "unknown_tool": "模型请求的工具不在目录内",
     "catalog_empty": "工具目录为空",
+    "cancelled": "已按停止请求终止（安全停止）",
 }
 """终止原因的展示标签（生成文案，过 §6）。
 

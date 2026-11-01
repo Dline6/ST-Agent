@@ -293,6 +293,7 @@ def _query(raw: str, name: str) -> str:
 
 _SSE_PREFIX = "/api/chat/run/"
 _SSE_SUFFIX = "/events"
+_STOP_SUFFIX = "/stop"
 
 
 def _sse_run_id(path: str) -> str | None:
@@ -301,9 +302,19 @@ def _sse_run_id(path: str) -> str | None:
     契约（[00 §1.1] / [05 §10]）把运行端点写成带标识的**动态段**，故这里只放行这一条
     形状（标识不含 ``/``）——不做通用动态路由，路径集仍然可枚举。
     """
-    if not path.startswith(_SSE_PREFIX) or not path.endswith(_SSE_SUFFIX):
+    return _run_path_id(path, _SSE_SUFFIX)
+
+
+def _stop_run_id(path: str) -> str | None:
+    """``/api/chat/run/<id>/stop`` → ``<id>``；其余路径 → ``None``（同 :func:`_sse_run_id`）。"""
+    return _run_path_id(path, _STOP_SUFFIX)
+
+
+def _run_path_id(path: str, suffix: str) -> str | None:
+    """运行端点族的动态段解析（只认 ``/api/chat/run/<id><suffix>`` 这一种形状）。"""
+    if not path.startswith(_SSE_PREFIX) or not path.endswith(suffix):
         return None
-    middle = path[len(_SSE_PREFIX):-len(_SSE_SUFFIX)]
+    middle = path[len(_SSE_PREFIX):-len(suffix)]
     if not middle or "/" in middle:
         return None
     return middle
@@ -450,6 +461,21 @@ class UiRequestHandler(BaseHTTPRequestHandler):
 
         handler = _POST_ROUTES.get(path)
         if handler is None:
+            stop_run = _stop_run_id(path)
+            if stop_run is not None:
+                blocked = _restart_blocked(self.app, path)
+                if blocked is not None:
+                    self._drain_request_body()
+                    self._send_json(200, blocked)
+                    return
+                self._read_json_body()      # 读净请求体（同其余写面）
+                self._send_json(
+                    200,
+                    _dispatch_guarded(
+                        path, lambda: self.app.api_chat_run_stop(stop_run),
+                    ),
+                )
+                return
             self._drain_request_body()
             self._send_text(404, "未找到")
             return

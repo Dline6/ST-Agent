@@ -292,7 +292,7 @@ def build_agent_output(
     | --- | --- |
     | ``finished`` | ``ok``（证据包；无步亦可——模型直接作答是合法结果） |
     | ``needs_user_input`` | ``ok``（结构化问项；零步也照出——问项本身就是交付物） |
-    | ``step_limit`` / ``llm_call_limit`` / ``needs_confirmation`` / ``denied`` | 有步 → ``ok`` + 终止标注；无步 → ``empty`` + 原因（后两者无步时按 :func:`_handback_reason` **显式交还**） |
+    | ``step_limit`` / ``llm_call_limit`` / ``needs_confirmation`` / ``denied`` / ``cancelled`` | 有步 → ``ok`` + 终止标注；无步 → ``empty`` + 原因（后两者无步时按 :func:`_handback_reason` **显式交还**） |
     | ``unknown_tool`` / ``gate_absent`` | 有步 → ``ok``；无步 → ``failed`` + 留痕指针 |
     | ``endpoint_unavailable`` | ``unavailable`` + 中性降级告知（fail-closed，GWT-6） |
     | ``llm_failed`` | 端点侧的信封**原样透出**（不重包、不改 status、不吞 reason） |
@@ -378,7 +378,7 @@ def _without_steps(
         # 终止交还（T-AGT-005.2 / 05 §10）：状态仍是 empty（**非 ok**，不把半程结果
         # 呈现为已完成），但说明须**显式**——待确认的那一步、为什么没执行、已收集多少证据
         return ResultEnvelope.empty(_handback_reason(outcome, reason))
-    if termination in ("catalog_empty", "step_limit", "llm_call_limit"):
+    if termination in ("catalog_empty", "step_limit", "llm_call_limit", "cancelled"):
         return ResultEnvelope.empty(reason)
     return ResultEnvelope.failed(reason, log_ref=log_ref)
 

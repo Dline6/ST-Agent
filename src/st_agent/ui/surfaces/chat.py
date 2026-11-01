@@ -151,6 +151,38 @@ class ChatSurface(SurfaceBase):
             raise KeyError(f"运行不存在或没有事件记录：{run_id}")
         return sse_frames(face, run_id, after_seq=after_seq)
 
+    def api_chat_run_stop(self, agent_run_id: str) -> dict[str, Any]:
+        """请求**安全停止**一次在册运行（`POST /api/chat/run/<id>/stop`；[05 §10] / [T-AGT-024.2]）。
+
+        协作式：本端点只置取消标记并立即回「已请求停止」，实际终止发生在循环的下一个
+        LLM / 动作边界（[D-154] B6）。不在册（已结束 / 从未登记）回**显式 no-op**——
+        重复点击与结束后点击都是正常用法，不报错（GWT-2）。
+        """
+        face = self.chat
+        if face is None or not getattr(face, "run_available", False):
+            return envelope_payload(
+                ResultEnvelope.unavailable(
+                    "未接入自主查证循环端口，停止不可用（装配归组合根）",
+                    last_updated_at=_now(),
+                )
+            )
+        run_id = str(agent_run_id or "").strip()
+        if not run_id:
+            return envelope_payload(
+                ResultEnvelope.validation_failed(
+                    "缺少运行标识（需 /api/chat/run/<id>/stop）"
+                )
+            )
+        if not face.stop_run(run_id):
+            return envelope_payload(
+                ResultEnvelope.empty(
+                    f"运行 {run_id} 已不在运行中（可能已结束）；无需停止"
+                )
+            )
+        return envelope_payload(
+            ResultEnvelope.ok({"agent_run_id": run_id, "stopping": True})
+        )
+
     def _chat_turn_payload(self, body: dict[str, Any]) -> dict[str, Any]:
         """同步跑一轮对话（含最终 payload 装配与助手轮落盘）。"""
         if self.chat is None:

@@ -212,6 +212,13 @@ class DialogFacade:
         port = self._run_port
         return bool(port is not None and port.has_event_log(str(agent_run_id or "")))
 
+    def stop_run(self, agent_run_id: str) -> bool:
+        """请求安全停止一次在册运行（[D-154] B6；协作式，不在册即 ``False``）。"""
+        port = self._run_port
+        if port is None:
+            raise ValueError("未注入自主查证循环端口，无法停止运行（05 §10）")
+        return bool(port.stop(str(agent_run_id or "")))
+
     # ───────────────────── §1 会话历史（历史读面与助手轮落盘） ─────────────────────
 
     def record_reply(

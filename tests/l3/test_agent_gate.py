@@ -116,7 +116,7 @@ class ScriptedProtocol:
     def tool_calls_supported(self) -> bool:
         return self._supported
 
-    def invoke_turn(self, context, *, initiator: str, purpose: str) -> TurnResult:
+    def invoke_turn(self, context, *, initiator: str, purpose: str, cancel=None) -> TurnResult:
         return self._turns.pop(0) if self._turns else TurnResult(text="（脚本已尽）")
 
 

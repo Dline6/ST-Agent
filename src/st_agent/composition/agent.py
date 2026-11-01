@@ -167,7 +167,7 @@ class _AgentInvestigator:
             )
         run_id = str(agent_run_id or "").strip() or new_agent_run_id()
         try:
-            self._runs.register(run_id, session)
+            run = self._runs.register(run_id, session)
         except AgentRuntimeValidationError as exc:
             return InvestigationOutcome(
                 envelope=ResultEnvelope.validation_failed(str(exc)),
@@ -194,6 +194,7 @@ class _AgentInvestigator:
                 parallel_safe=True,
                 nested_recorder=self._nested_recorder,
                 emit=events.emit,
+                cancel=run.cancel_event,
             )
             outcome = outcome.model_copy(update={"context_note": note})
             report = conclude_agent_run(
@@ -233,7 +234,7 @@ class _AgentInvestigator:
             return ResumeOutcome(envelope=ResultEnvelope.validation_failed(str(exc)))
         run_id = str(new_run_id or "").strip() or new_agent_run_id()
         try:
-            self._runs.register(run_id, session)
+            run = self._runs.register(run_id, session)
         except AgentRuntimeValidationError as exc:
             return ResumeOutcome(envelope=ResultEnvelope.validation_failed(str(exc)))
         try:
@@ -261,6 +262,7 @@ class _AgentInvestigator:
                 now=now,
                 new_run_id=run_id,
                 emit=events.emit,
+                cancel=run.cancel_event,
             )
         except AgentRuntimeValidationError as exc:
             return ResumeOutcome(envelope=ResultEnvelope.validation_failed(str(exc)))
@@ -300,6 +302,18 @@ class _AgentInvestigator:
             read_run_events(self._store, agent_run_id)
         except (AgentRunNotFoundError, AgentRuntimeValidationError):
             return False
+        return True
+
+    def stop(self, agent_run_id: str) -> bool:
+        """请求**安全停止**一次在册运行（协作式；[D-154] B6）。
+
+        只置取消标记并立即返回——实际终止发生在循环的下一个 LLM / 动作边界；不在册即
+        ``False``（已结束或从未登记，属正常形态，不报错、不伪造一次停止）。
+        """
+        handle = self._runs.get(str(agent_run_id or ""))
+        if handle is None:
+            return False
+        handle.request_cancel()
         return True
 
     def _context_inputs(self, session_id: str | None, task: str) -> tuple[Any, Any, str]:

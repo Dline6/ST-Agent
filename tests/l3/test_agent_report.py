@@ -183,7 +183,7 @@ class _Protocol:
     def tool_calls_supported(self) -> bool:
         return True
 
-    def invoke_turn(self, context, *, initiator: str, purpose: str) -> TurnResult:
+    def invoke_turn(self, context, *, initiator: str, purpose: str, cancel=None) -> TurnResult:
         return self._plan.pop(0)
 
 
@@ -318,6 +318,7 @@ NO_STEP_STATUS = {
     "denied": "empty",
     "step_limit": "empty",
     "llm_call_limit": "empty",
+    "cancelled": "empty",
 }
 
 WITH_STEP_STATUS = {
@@ -332,6 +333,7 @@ WITH_STEP_STATUS = {
     "gate_absent": "ok",
     "endpoint_unavailable": "ok",
     "llm_failed": "ok",
+    "cancelled": "ok",
 }
 
 
@@ -344,7 +346,7 @@ def test_termination_literal_is_fully_mapped():
     assert reasons == {
         "finished", "step_limit", "llm_call_limit", "gate_absent", "needs_confirmation",
         "needs_user_input", "denied", "endpoint_unavailable", "llm_failed", "unknown_tool",
-        "catalog_empty",
+        "catalog_empty", "cancelled",
     }
 
 
