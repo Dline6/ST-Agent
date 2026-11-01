@@ -8,8 +8,8 @@ arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P0
 milestone: M11
 depends_on: [T-AGT-022.2]
-status: todo
-decisions: [D-154]
+status: done
+decisions: [D-154, D-155]
 verify:
 ---
 
@@ -24,10 +24,10 @@ verify:
 - GWT-1：由 `.1` / `.2` 合成，父节点不单独验收。
 
 ## 接口面
-（④ 对齐时补：子叶的并集。）
+（子叶的并集）`GET /api/chat/run/<id>/events` SSE（回放 + 续推 + `Last-Event-ID` + 心跳 + `stream_end`）；`_AgentInvestigator` 只读运行面；`DialogFacade.turn` 的 `action=dispatch|resume` 后台模式（`background: true` → 立即返回 `agent_run_id`）；`serve(..., agent_runs=...)` / `ui_ports["agent_runs"]`；前端 `run_events.js` 的 `watchRun` 与 `chat.js` 运行态。细节见 `.1` / `.2`。
 
 ## 可关闭的遗留
-（④ 对齐时逐册核过 L0 / L1 / L2 / L3 / L5 / L6 的未闭区后补；检查 8 兜底。）
+无（两叶子叶并集；逐册核过 L0 / L1 / L2 / L3 / L5 / L6 未闭区，唯一未闭 `L5-A1` 与本组无关）。
 
 ## 假设与前提
-（④ 对齐时补：子叶的并集。）
+（子叶的并集）后台 run 沿用 `T-AGT-022.1` 注册表与会话互斥；后台模式只对 `dispatch` / `resume` 生效、默认 `post` 保持同步；SSE 按 HTTP/1.0 close 定界流式；`run_finished` 即结束信号；助手轮最终落盘在后台线程完成、前端结束后回读会话；EventSource 自动重连带 `Last-Event-ID`。逐条影响与验证见 `.1` A1–A5 / `.2` A1–A4。

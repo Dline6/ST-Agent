@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
@@ -28,6 +29,7 @@ from st_agent.l3.runtime import (
     investigate_family,
     load_agent_run,
     new_agent_run_id,
+    read_run_events,
     resume_agent_run,
     run_agent_loop,
 )
@@ -143,32 +145,37 @@ class _AgentInvestigator:
         values: Mapping[str, Any] | None = None,
         now: Any = None,
         session_id: str | None = None,
+        agent_run_id: str | None = None,
     ) -> InvestigationOutcome:
-        """跑一次自主查证循环并把产出装成信封（[05 §10]；载荷见 :class:`InvestigationOutcome`）。"""
+        """跑一次自主查证循环并把产出装成信封（[05 §10]；载荷见 :class:`InvestigationOutcome`）。
+
+        :param agent_run_id: **开跑前**由调用方预铸的标识（后台运行的调用方据此立即寻址，
+        [D-154] B1）；缺省仍自行铸。预铸标识照常走注册表互斥，不另开口子。
+        """
         merged = {
             **dict(getattr(confirmation, "values", {}) or {}),
             **dict(values or {}),
         }
         session = (session_id or "").strip() or None
         task = str(merged.get("task") or getattr(confirmation, "target", "") or "").strip()
-        history, memory, note = self._context_inputs(session, task)
         if not task:
+            _history, _memory, note = self._context_inputs(session, task)
             return InvestigationOutcome(
                 envelope=ResultEnvelope.validation_failed(M5_ABSENT_TASK_REASON),
                 session_id=session,
                 context_note=note,
             )
-        agent_run_id = new_agent_run_id()
+        run_id = str(agent_run_id or "").strip() or new_agent_run_id()
         try:
-            self._runs.register(agent_run_id, session)
-        except RunAlreadyActiveError as exc:
+            self._runs.register(run_id, session)
+        except AgentRuntimeValidationError as exc:
             return InvestigationOutcome(
                 envelope=ResultEnvelope.validation_failed(str(exc)),
                 session_id=session,
-                context_note=note,
             )
         try:
-            events = RunEventLog(self._store, agent_run_id)
+            history, memory, note = self._context_inputs(session, task)
+            events = RunEventLog(self._store, run_id)
             budget_chars = self._bounds.budget_chars()
             outcome = run_agent_loop(
                 task=task,
@@ -190,10 +197,10 @@ class _AgentInvestigator:
             )
             outcome = outcome.model_copy(update={"context_note": note})
             report = conclude_agent_run(
-                self._store, outcome, agent_run_id=agent_run_id, now=now,
+                self._store, outcome, agent_run_id=run_id, now=now,
             )
         finally:
-            self._runs.finish(agent_run_id)
+            self._runs.finish(run_id)
         return InvestigationOutcome(
             envelope=report.envelope, report=report, trace=outcome.trace,
             session_id=session, context_note=note,
@@ -207,6 +214,7 @@ class _AgentInvestigator:
         answers: Any = None,
         now: Any = None,
         session_id: str | None = None,
+        new_run_id: str | None = None,
     ) -> ResumeOutcome:
         """接回一次交还（[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md) 的续跑）。
 
@@ -214,20 +222,23 @@ class _AgentInvestigator:
         执行面 / 闸门 / 判据面 / 双上界原样交给 :func:`resume_agent_run`——续跑与首次运行
         **同一条流水线**，不另造执行路径。留痕取不到、或 `decision` 不认识时回显式信封，
         不抛裸异常到对话面。
+
+        :param new_run_id: 续跑这次新开跑的标识（后台运行由调用方预铸，[D-154] B1）；
+        缺省仍自行铸。
         """
         session = (session_id or "").strip() or None
         try:
             record = load_agent_run(self._store, str(agent_run_id or ""))
         except (AgentRunNotFoundError, AgentRuntimeValidationError) as exc:
             return ResumeOutcome(envelope=ResultEnvelope.validation_failed(str(exc)))
-        history, memory, note = self._context_inputs(session, record.task)
-        agent_run_id = new_agent_run_id()
+        run_id = str(new_run_id or "").strip() or new_agent_run_id()
         try:
-            self._runs.register(agent_run_id, session)
-        except RunAlreadyActiveError as exc:
+            self._runs.register(run_id, session)
+        except AgentRuntimeValidationError as exc:
             return ResumeOutcome(envelope=ResultEnvelope.validation_failed(str(exc)))
         try:
-            events = RunEventLog(self._store, agent_run_id)
+            history, memory, note = self._context_inputs(session, record.task)
+            events = RunEventLog(self._store, run_id)
             result = resume_agent_run(
                 self._store,
                 record.agent_run_id,
@@ -248,16 +259,48 @@ class _AgentInvestigator:
                 parallel_safe=True,
                 nested_recorder=self._nested_recorder,
                 now=now,
-                new_run_id=agent_run_id,
+                new_run_id=run_id,
                 emit=events.emit,
             )
         except AgentRuntimeValidationError as exc:
             return ResumeOutcome(envelope=ResultEnvelope.validation_failed(str(exc)))
         finally:
-            self._runs.finish(agent_run_id)
+            self._runs.finish(run_id)
         if note:
             result = result.model_copy(update={"note": _join(result.note, note)})
         return result
+
+    # ───────────────────── 运行控制面的只读口（T-AGT-023.1） ─────────────────────
+
+    def new_run_id(self) -> str:
+        """预铸一个运行标识（调用方在开跑前寻址用；与循环内铸号同源）。"""
+        return new_agent_run_id()
+
+    def is_active(self, agent_run_id: str) -> bool:
+        """该运行是否仍在活动注册表内（结束后为 ``False``，属正常形态）。"""
+        return self._runs.get(str(agent_run_id or "")) is not None
+
+    def wait_started(self, agent_run_id: str, timeout: float = 5.0) -> bool:
+        """有界等待一次预铸的运行**可寻址**（已登记或已有事件日志）。"""
+        deadline = time.monotonic() + max(0.0, float(timeout))
+        while True:
+            if self.is_active(agent_run_id) or self.has_event_log(agent_run_id):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+
+    def events(self, agent_run_id: str, *, after_seq: int = 0) -> tuple[Any, ...]:
+        """按序回放一次运行的事件（缺日志即 ``AgentRunNotFoundError``）。"""
+        return read_run_events(self._store, agent_run_id, after_seq=after_seq)
+
+    def has_event_log(self, agent_run_id: str) -> bool:
+        """该运行是否已有事件日志（崩溃后回放的判据；不抛、不猜）。"""
+        try:
+            read_run_events(self._store, agent_run_id)
+        except (AgentRunNotFoundError, AgentRuntimeValidationError):
+            return False
+        return True
 
     def _context_inputs(self, session_id: str | None, task: str) -> tuple[Any, Any, str]:
         """取近端历史与记忆切片（[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)）。

@@ -154,8 +154,12 @@ class DialogFacade:
         answers: Mapping[str, Any] | None = None,
         values: Mapping[str, Any] | None = None,
         structure: Mapping[str, Any] | None = None,
+        agent_run_id: str | None = None,
     ) -> DispatchOutcome | ResultEnvelope:
-        """用户确认 → 派发（[05 §4]）。确认卡缺位 → `validation_failed`，不伪造。"""
+        """用户确认 → 派发（[05 §4]）。确认卡缺位 → `validation_failed`，不伪造。
+
+        :param agent_run_id: 后台运行调用方预铸的标识（[D-154] B1）；缺省由循环端口自行铸。
+        """
         draft = self._pending.get(session_id)
         if draft is None:
             return ResultEnvelope.validation_failed(
@@ -164,11 +168,49 @@ class DialogFacade:
         confirmation = self._intent.confirm(draft, answers).mark_confirmed()
         outcome = self._bus.dispatch(
             confirmation, values=values, structure=structure, now=self._now(),
-            session_id=session_id,
+            session_id=session_id, agent_run_id=agent_run_id,
         )
         if outcome.envelope.status == "ok":
             self._pending.pop(session_id, None)
         return outcome
+
+    # ───────────────────── 运行控制面的只读口（T-AGT-023.1） ─────────────────────
+
+    @property
+    def run_available(self) -> bool:
+        """循环端口是否装配（旧根为 ``False`` ⇒ SSE / 后台派发显式 ``unavailable``）。"""
+        return self._run_port is not None
+
+    @property
+    def _run_port(self) -> Any:
+        return getattr(self._bus, "investigations", None)
+
+    def new_run_id(self) -> str:
+        """预铸一个运行标识（后台派发在开跑前须先能寻址）。"""
+        port = self._run_port
+        if port is None:
+            raise ValueError("未注入自主查证循环端口，无法启动后台运行（05 §10）")
+        return port.new_run_id()
+
+    def is_active(self, agent_run_id: str) -> bool:
+        port = self._run_port
+        return bool(port is not None and port.is_active(str(agent_run_id or "")))
+
+    def wait_started(self, agent_run_id: str, timeout: float = 5.0) -> bool:
+        port = self._run_port
+        if port is None:
+            return False
+        return bool(port.wait_started(str(agent_run_id or ""), timeout=timeout))
+
+    def run_events(self, agent_run_id: str, *, after_seq: int = 0) -> tuple[Any, ...]:
+        port = self._run_port
+        if port is None:
+            raise ValueError("未注入自主查证循环端口，无法读取运行事件（05 §10）")
+        return tuple(port.events(str(agent_run_id or ""), after_seq=after_seq))
+
+    def has_event_log(self, agent_run_id: str) -> bool:
+        port = self._run_port
+        return bool(port is not None and port.has_event_log(str(agent_run_id or "")))
 
     # ───────────────────── §1 会话历史（历史读面与助手轮落盘） ─────────────────────
 
@@ -384,12 +426,15 @@ class DialogFacade:
         """
         action = str(body.get("action") or "post")
         sid = body.get("session_id")
+        run_hint = str(body.get("agent_run_id") or "").strip() or None
+        new_run_hint = str(body.get("new_run_id") or "").strip() or None
         if action == "dispatch":
             outcome = self.confirm_and_dispatch(
                 str(sid or ""),
                 answers=body.get("answers"),
                 values=body.get("values"),
                 structure=body.get("structure"),
+                agent_run_id=run_hint,
             )
             if isinstance(outcome, ResultEnvelope):  # 无待确认卡等前置失败
                 return {"reply": outcome, "session_id": sid, "needs_confirmation": False,
@@ -425,6 +470,7 @@ class DialogFacade:
                 decision=str(body.get("decision") or ""),
                 answers=body.get("answers"),
                 session_id=sid,
+                new_run_id=new_run_hint,
             )
             return {"reply": outcome.envelope, "session_id": sid,
                     "needs_confirmation": False, "description": None,

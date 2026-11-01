@@ -14,6 +14,7 @@
 // textContent 构造 DOM，不直写 HTML。
 
 import { getJson, postJson } from '../api.js';
+import { watchRun } from '../run_events.js';
 import { showToast } from '../components/toast.js';
 import { renderEnvelope } from '../render.js';
 
@@ -36,6 +37,14 @@ const views = new Set();
 const listeners = new Set();
 let commandsLoaded = false;
 let restored = false;
+/** 当前跟随的运行事件流（切会话 / 新对话时关闭，避免旧流写入别的会话）。 */
+let activeRun = null;
+
+function closeActiveRun() {
+  if (activeRun && typeof activeRun.close === 'function') activeRun.close();
+  if (activeRun) state.sending = false;
+  activeRun = null;
+}
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -81,6 +90,7 @@ export function activeSessionId() {
 
 /** 新建对话：清空活动会话，下一条消息由服务端建一个新会话。 */
 export function startNewSession() {
+  closeActiveRun();
   state.sessionId = null;
   state.messages = [];
   state.loadError = null;
@@ -96,6 +106,7 @@ export async function openSession(sessionId) {
     startNewSession();
     return;
   }
+  closeActiveRun();
   state.sessionId = id;
   state.messages = [];
   state.loadError = null;
@@ -188,29 +199,40 @@ async function send(text) {
   }
 }
 
-/** 确认卡派发：与发送同一套等待 / 失败口径，重试沿用同一派发体。 */
+/** 确认卡派发：后台开跑 + SSE 跟随；结束后回读会话渲染最终轮（T-AGT-023.2）。 */
 async function dispatch(body) {
   if (state.sending) return;
   state.sending = true;
   const pending = { role: 'agent', pending: true, note: '正在执行…' };
   state.messages.push(pending);
   notify();
-  const request = { action: 'dispatch', session_id: state.sessionId, ...body };
+  const request = {
+    action: 'dispatch', session_id: state.sessionId, background: true, ...body,
+  };
   try {
     const payload = await chatRequest(request);
     adoptSession(payload);
+    if (payload && payload.running && payload.agent_run_id) {
+      const running = {
+        role: 'agent', running: true, runId: payload.agent_run_id,
+        note: '运行中…', steps: [], plan: [],
+      };
+      replaceMessage(pending, running);
+      notify();
+      watchRunMessage(running, { retryBody: { ...body } });
+      return;                      // sending 保持到运行结束（避免重复提交）
+    }
     replaceMessage(pending, { role: 'agent', payload });
   } catch (error) {
     replaceMessage(pending, {
       role: 'agent', failed: true, reason: error.message, retryBody: { ...body },
     });
-  } finally {
-    state.sending = false;
-    notify();
   }
+  state.sending = false;
+  notify();
 }
 
-/** 续跑：与发送 / 派发同一套等待与失败口径；重试沿用同一续跑体。 */
+/** 续跑：与派发同一套后台 / 事件 / 回读口径；重试沿用同一续跑体。 */
 async function resume(cont, body) {
   if (state.sending || !cont || !cont.agent_run_id) return;
   state.sending = true;
@@ -221,21 +243,137 @@ async function resume(cont, body) {
     action: 'resume',
     agent_run_id: cont.agent_run_id,
     session_id: state.sessionId,
+    background: true,
     ...body,
   };
   try {
     const payload = await chatRequest(request);
     adoptSession(payload);
+    if (payload && payload.running && payload.agent_run_id) {
+      const running = {
+        role: 'agent', running: true, runId: payload.agent_run_id,
+        note: '续跑中…', steps: [], plan: [],
+      };
+      replaceMessage(pending, running);
+      notify();
+      watchRunMessage(running, { retryContinuation: { cont, body } });
+      return;
+    }
     replaceMessage(pending, { role: 'agent', payload });
   } catch (error) {
     replaceMessage(pending, {
       role: 'agent', failed: true, reason: error.message,
       retryContinuation: { cont, body },
     });
-  } finally {
-    state.sending = false;
-    notify();
   }
+  state.sending = false;
+  notify();
+}
+
+/** 跟随一次后台运行：按事件更新运行态；结束 / 失败时收口。 */
+function watchRunMessage(message, retry) {
+  const handle = watchRun(message.runId, {
+    onEvent: (type, data) => {
+      applyRunEvent(message, type, data);
+      notify();
+    },
+    onEnd: () => finishRunMessage(message, retry),
+    onError: (error) => failRunMessage(message, retry, error),
+  });
+  message.stop = handle.close;
+  activeRun = { runId: message.runId, close: handle.close };
+}
+
+/** 只取事件里的客观字段（tool / status / plan / termination），不自造文案。 */
+function applyRunEvent(message, type, data) {
+  if (type === 'run_started') {
+    if (data.task) message.note = `运行中：${String(data.task).slice(0, 60)}`;
+    return;
+  }
+  if (type === 'step_started') {
+    message.steps.push({ tool: String(data.tool || ''), status: 'running' });
+    message.note = `正在执行：${data.tool || ''}`;
+    return;
+  }
+  if (type === 'step_finished') {
+    const step = [...message.steps].reverse().find(
+      (item) => item.tool === data.tool && item.status === 'running',
+    );
+    if (step) step.status = String(data.status || 'finished');
+    message.note = `已完成：${data.tool || ''}（${data.status || ''}）`;
+    return;
+  }
+  if (type === 'plan_updated') {
+    message.plan = Array.isArray(data.plan) ? data.plan : [];
+    return;
+  }
+  if (type === 'gate_pending') {
+    message.note = `等待确认：${data.tool || ''}`;
+    return;
+  }
+  if (type === 'ask_user') {
+    message.note = '等待补充信息';
+    return;
+  }
+  if (type === 'run_finished') {
+    message.note = `运行结束（${data.termination || ''}）`;
+  }
+}
+
+/** 运行结束：回读会话直到最终轮落盘，再整体替换（不重复渲染）。 */
+async function finishRunMessage(message, retry) {
+  const runId = message.runId;
+  if (!activeRun || activeRun.runId !== runId) return;   // 已切会话：旧stream 的结果不落新会话
+  activeRun = null;
+  state.sending = false;
+  try {
+    if (state.sessionId) {
+      const messages = await reloadSessionUntilRun(state.sessionId, runId);
+      if (messages) {
+        state.messages = messages;
+        notify();
+        return;
+      }
+    }
+    replaceMessage(message, { role: 'agent', payload: null, text: '运行已结束。' });
+  } catch (error) {
+    replaceMessage(message, {
+      role: 'agent', failed: true, reason: error.message, ...retry,
+    });
+  }
+  notify();
+}
+
+function failRunMessage(message, retry, error) {
+  if (activeRun && activeRun.runId !== message.runId) return;
+  activeRun = null;
+  state.sending = false;
+  replaceMessage(message, {
+    role: 'agent', failed: true, reason: error.message, ...retry,
+  });
+  notify();
+}
+
+/** 轮询会话读取，直到最终轮（payload.agent_run_id === runId）出现；超时回最后一次结果。 */
+async function reloadSessionUntilRun(sessionId, runId, attempts = 10, delayMs = 200) {
+  let last = null;
+  for (let i = 0; i < attempts; i += 1) {
+    const payload = await getJson(`/api/chat/session?id=${encodeURIComponent(sessionId)}`);
+    if (payload && payload.status === 'ok' && payload.data) {
+      last = (payload.data.messages || []).map((message) => ({
+        role: message.role === 'agent' ? 'agent' : 'user',
+        text: message.text || '',
+        payload: message.payload || null,
+      }));
+      const done = last.some(
+        (message) => message.role === 'agent' && message.payload
+          && message.payload.agent_run_id === runId,
+      );
+      if (done) return last;
+    }
+    await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+  }
+  return last;
 }
 
 function retryFailed(message) {
@@ -275,6 +413,28 @@ function renderMessage(message) {
     const waiting = el('p', 'chat__pending', message.note || '正在处理…');
     waiting.setAttribute('aria-busy', 'true');
     node.append(waiting);
+    return node;
+  }
+  if (message.running) {
+    const node = turn('assistant');
+    const box = el('div', 'chat__run');
+    box.setAttribute('aria-busy', 'true');
+    box.append(el('p', 'chat__run-note', message.note || '运行中…'));
+    if (Array.isArray(message.plan) && message.plan.length) {
+      const plan = el('ul', 'chat__plan');
+      for (const step of message.plan) {
+        plan.append(el('li', 'chat__plan-step', `${step.title || ''}（${step.status || ''}）`));
+      }
+      box.append(plan);
+    }
+    if (Array.isArray(message.steps) && message.steps.length) {
+      const list = el('ul', 'chat__run-list');
+      for (const step of message.steps.slice(-20)) {
+        list.append(el('li', 'chat__run-step', `${step.tool || ''}（${step.status || ''}）`));
+      }
+      box.append(list);
+    }
+    node.append(box);
     return node;
   }
   if (message.failed) {

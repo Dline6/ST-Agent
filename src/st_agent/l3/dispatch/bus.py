@@ -343,6 +343,11 @@ class DispatchBus:
         self._trainings = trainings
         self._investigations = investigations
 
+    @property
+    def investigations(self) -> Any:
+        """注入的循环端口（只读；表现层的运行控制面经它取事件与活动态）。"""
+        return self._investigations
+
     def dispatch(
         self,
         confirmation: IntentConfirmation,
@@ -354,6 +359,7 @@ class DispatchBus:
         structure: Mapping[str, Any] | None = None,
         now: datetime | None = None,
         session_id: str | None = None,
+        agent_run_id: str | None = None,
     ) -> DispatchOutcome:
         """派发一张**已确认**的意图确认卡（§4）。
 
@@ -366,6 +372,8 @@ class DispatchBus:
         :param session_id: 所属会话（[05 §4](../../../../docs/技术架构-v2/05-L3-对话主入口.md)
             的会话身份进派发载荷）；缺省 ``None`` ⇒ 下游按无历史的单次查证运行并显式标注，
             **不臆造会话**。空白串按 ``None`` 处理。
+        :param agent_run_id: 开跑前由调用方预铸的运行标识（后台运行据此立即寻址，
+            [D-154](../../../项目管理/决策日志.md) B1）；缺省由循环端口自行铸。
         """
         moment = now if now is not None else _now()
         session = _session_id_or_none(session_id)
@@ -391,7 +399,9 @@ class DispatchBus:
         elif confirmation.intent == "train":
             outcome = self._dispatch_train(confirmation, spec, values, moment)
         elif confirmation.intent == "investigate":
-            outcome = self._dispatch_investigate(confirmation, spec, values, moment, session)
+            outcome = self._dispatch_investigate(
+                confirmation, spec, values, moment, session, agent_run_id,
+            )
         else:
             outcome = self._pending(spec, moment)
         return outcome if outcome.session_id == session else outcome.model_copy(
@@ -655,6 +665,7 @@ class DispatchBus:
         values: Mapping[str, Any] | None,
         moment: datetime,
         session_id: str | None,
+        agent_run_id: str | None = None,
     ) -> DispatchOutcome:
         """``investigate`` 去向：经注入的循环端口触发 [05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 自主查证循环（§3.1）。
 
@@ -680,6 +691,8 @@ class DispatchBus:
         port_kwargs: dict[str, Any] = {"values": values, "now": moment}
         if session_id is not None:
             port_kwargs["session_id"] = session_id
+        if agent_run_id:
+            port_kwargs["agent_run_id"] = agent_run_id
         payload = self._investigations.investigate(confirmation, **port_kwargs)
         envelope = getattr(payload, "envelope", None)
         if not isinstance(envelope, ResultEnvelope):
@@ -704,6 +717,7 @@ class DispatchBus:
         answers: Mapping[str, Any] | None = None,
         now: datetime | None = None,
         session_id: str | None = None,
+        new_run_id: str | None = None,
     ) -> DispatchOutcome:
         """接回一次「待确认 / 待用户输入」的交还（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的续跑）。
 
@@ -727,6 +741,8 @@ class DispatchBus:
         }
         if session is not None:
             port_kwargs["session_id"] = session
+        if new_run_id:
+            port_kwargs["new_run_id"] = new_run_id
         payload = resume(str(agent_run_id or ""), **port_kwargs)
         envelope = getattr(payload, "envelope", None)
         if not isinstance(envelope, ResultEnvelope):

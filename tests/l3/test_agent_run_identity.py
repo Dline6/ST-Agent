@@ -185,3 +185,43 @@ def test_conclude_uses_provided_id(store):
     assert report.agent_run_id == fixed
     assert report.record.agent_run_id == fixed
     assert agent_log_ref_of(fixed) in store.list_files("execution_log")
+
+
+# ───────────────────────── T-AGT-023.1：预铸标识与只读运行面 ─────────────────────────
+
+
+def test_preassigned_run_id_is_used_and_readable_after_finish(store):
+    """后台派发预铸的标识被沿用；结束后仍可按 id 回放事件（SSE 断线重连的底座）。"""
+    runs = ActiveRunRegistry()
+    port = _port(store, protocol=_ProbeProtocol(runs, []), runs=runs)
+    fixed = "agr_00000000000000000004"
+
+    result = port.investigate(_Card(), session_id=SESSION, agent_run_id=fixed)
+
+    assert result.agent_run_id == fixed
+    assert agent_log_ref_of(fixed) in store.list_files("execution_log")
+    assert port.is_active(fixed) is False
+    assert port.has_event_log(fixed) is True
+    events = port.events(fixed)
+    assert events[0].event == "run_started"
+    assert events[-1].event == "run_finished"
+    assert [event.seq for event in events] == list(range(1, len(events) + 1))
+    assert port.new_run_id() != fixed
+
+
+def test_duplicate_preassigned_id_is_rejected_without_running(store):
+    runs = ActiveRunRegistry()
+    fixed = "agr_00000000000000000005"
+    runs.register(fixed, SESSION)
+    port = _port(store, protocol=_ExplodingProtocol(), runs=runs)
+
+    result = port.investigate(_Card(), session_id=SESSION, agent_run_id=fixed)
+
+    assert result.report is None
+    assert result.envelope.status == "validation_failed"
+    assert runs.get(fixed) is not None
+
+
+def test_wait_started_reports_timeout_for_unregistered_id(store):
+    port = _port(store, protocol=_ProbeProtocol(ActiveRunRegistry(), []))
+    assert port.wait_started("agr_never_registered", timeout=0.05) is False

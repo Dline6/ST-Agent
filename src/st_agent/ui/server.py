@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from datetime import datetime
 from dataclasses import dataclass
@@ -290,6 +291,24 @@ def _query(raw: str, name: str) -> str:
     return parse_qs(raw).get(name, [""])[0]
 
 
+_SSE_PREFIX = "/api/chat/run/"
+_SSE_SUFFIX = "/events"
+
+
+def _sse_run_id(path: str) -> str | None:
+    """``/api/chat/run/<id>/events`` → ``<id>``；其余路径 → ``None``。
+
+    契约（[00 §1.1] / [05 §10]）把运行端点写成带标识的**动态段**，故这里只放行这一条
+    形状（标识不含 ``/``）——不做通用动态路由，路径集仍然可枚举。
+    """
+    if not path.startswith(_SSE_PREFIX) or not path.endswith(_SSE_SUFFIX):
+        return None
+    middle = path[len(_SSE_PREFIX):-len(_SSE_SUFFIX)]
+    if not middle or "/" in middle:
+        return None
+    return middle
+
+
 def _dispatch_guarded(where: str, call: Callable[[], dict]) -> dict:
     """跑一次端点，**任何逸出的异常都转成信封**（[00 §6] 失败显式化）。
 
@@ -328,6 +347,10 @@ def _restart_blocked(app: Any, path: str) -> dict | None:
     )
 
 
+_TOKEN_QUERY = re.compile(r"([?&]t=)[^&\s]+")
+"""SSE 路径把令牌放进查询串；访问日志里**打码**（令牌不落日志）。"""
+
+
 class UiRequestHandler(BaseHTTPRequestHandler):
     """回环请求处理。
 
@@ -341,7 +364,7 @@ class UiRequestHandler(BaseHTTPRequestHandler):
     sys_version = ""
 
     def log_message(self, fmt: str, *args: object) -> None:
-        _LOG.debug("%s - %s", self.address_string(), fmt % args)
+        _LOG.debug("%s - %s", self.address_string(), _TOKEN_QUERY.sub(r"\1***", fmt % args))
 
     # ── 路由 ────────────────────────────────────────────────────────────────
     def do_GET(self) -> None:  # noqa: N802 —— http.server 规定的接口名
@@ -352,9 +375,20 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         # 读净，否则关闭连接时对端拿到复位 —— 见 :meth:`_drain_request_body`。
         self._drain_request_body()
 
-        verdict = self.app.guard.check(self.headers, require_token=path.startswith("/api/"))
+        sse_run = _sse_run_id(path)
+        # EventSource 无法携带自定义头（[D-060] ③F 的令牌正典通道是 `X-ST-Token`），
+        # 故**仅这一条 SSE 路径**额外接受查询串里的 `t`；其余 `/api/*` 口径不变。
+        verdict = self.app.guard.check(
+            self.headers,
+            require_token=path.startswith("/api/"),
+            query_token=_query(parsed.query, "t") if sse_run is not None else "",
+        )
         if not verdict.allowed:
             self._send_json(verdict.status, {"error": verdict.reason})
+            return
+
+        if sse_run is not None:
+            self._serve_run_events(sse_run, parsed)
             return
 
         handler = _GET_ROUTES.get(path)
@@ -438,6 +472,66 @@ class UiRequestHandler(BaseHTTPRequestHandler):
         if getattr(self, "headers", None) is not None:
             self._drain_request_body()
         super().send_error(code, message, explain)
+
+    # ── 运行事件流（SSE，T-AGT-023.1） ──────────────────────────────────────
+    def _serve_run_events(self, run_id: str, parsed: Any) -> None:
+        """`GET /api/chat/run/<id>/events`：先补发再续推；未知 id 显式 404，不挂空连接。"""
+        blocked = _restart_blocked(self.app, "/api/chat/run")
+        if blocked is not None:
+            self._stream_sse([
+                'event: stream_end\ndata: '
+                + json.dumps(
+                    {"reason": "unavailable", "detail": blocked.get("reason", "")},
+                    ensure_ascii=False,
+                )
+                + "\n\n",
+            ])
+            return
+        try:
+            after_seq = self._last_event_id(parsed)
+            frames = self.app.api_chat_run_events(run_id, after_seq=after_seq)
+        except KeyError as exc:
+            self._send_json(404, {"error": str(exc)})
+            return
+        except ValueError as exc:
+            self._send_json(400, {"error": str(exc)})
+            return
+        self._stream_sse(frames)
+
+    def _last_event_id(self, parsed: Any) -> int:
+        """断线重连的续传点：`Last-Event-ID` 头 → 查询串 `last_event_id` / `after_seq`。"""
+        raw = (self.headers.get("Last-Event-ID") or "") or _query(parsed.query, "last_event_id")
+        if not raw:
+            raw = _query(parsed.query, "after_seq")
+        if not raw:
+            return 0
+        try:
+            value = int(raw)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Last-Event-ID 须为 ≥0 的整数，得到 {raw!r}") from exc
+        if value < 0:
+            raise ValueError(f"Last-Event-ID 须为 ≥0 的整数，得到 {raw!r}")
+        return value
+
+    def _stream_sse(self, frames: Any) -> None:
+        """流式写出 SSE 帧（无 `Content-Length`，以连接关闭定界）。
+
+        客户端断开后不再写（`BrokenPipe` / 连接复位是正常的离开，不是服务端失败）。
+        """
+        self.protocol_version = "HTTP/1.1"
+        self.close_connection = True
+        self.send_response(200)
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Connection", "close")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.end_headers()
+        try:
+            for frame in frames:
+                self.wfile.write(frame.encode("utf-8"))
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            return
 
     # ── 请求体 ──────────────────────────────────────────────────────────────
     def _content_length(self) -> int:

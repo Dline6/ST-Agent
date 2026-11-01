@@ -92,15 +92,25 @@ class RequestGuard:
         """允许的 ``Origin`` 值集合（回环 http）。"""
         return frozenset(f"http://{authority}" for authority in self.authorities)
 
-    def check(self, headers: Mapping[str, str], *, require_token: bool = True) -> GuardVerdict:
+    def check(
+        self,
+        headers: Mapping[str, str],
+        *,
+        require_token: bool = True,
+        query_token: str = "",
+    ) -> GuardVerdict:
         """校验一次请求。
 
         ``require_token`` 对**数据面**（``/api/*``）为真；静态壳为假——初始文档导航
         无法携带自定义头，壳里也没有用户数据。返回 ``allowed=False`` 时调用方**不得**
         返回任何数据。
+
+        ``query_token`` 只由**运行事件流**（SSE）端点传入：浏览器 ``EventSource`` 无法
+        设置自定义请求头，故该一条路径以查询串携带同一枚启动令牌（同强度比较）。其余
+        数据面仍只认 ``X-ST-Token``——调用方不传即不开放该通道。
         """
         if require_token:
-            token = _header(headers, TOKEN_HEADER)
+            token = _header(headers, TOKEN_HEADER) or str(query_token or "")
             if not token or not hmac.compare_digest(token, self._token):
                 return GuardVerdict(False, 401, "缺少或无效的启动令牌")
         if _header(headers, "Host") not in self.authorities:
