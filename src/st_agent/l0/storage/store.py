@@ -83,6 +83,7 @@ from st_agent.l0.storage.format import (
     MODE_PLAIN,
     STORE_MARKER,
     read_mode,
+    read_partition_set,
     write_marker,
 )
 from st_agent.l0.storage.manifest import (
@@ -449,7 +450,7 @@ class Store:
         secrets_salt = os.urandom(32)                     # §2.2 单独隔离
         root.mkdir(parents=True, exist_ok=True)
         if passphrase is None:
-            write_marker(root, MODE_PLAIN)
+            write_marker(root, MODE_PLAIN, PARTITION_NAMES)
             kf.write_text(json.dumps({
                 "version": 1,
                 "kdf": "pbkdf2-sha256",
@@ -463,7 +464,7 @@ class Store:
             salt = os.urandom(32)
             master = derive_master_key(passphrase, salt)
             secrets_key = derive_master_key(passphrase, secrets_salt)
-            write_marker(root, MODE_ENCRYPTED)
+            write_marker(root, MODE_ENCRYPTED, PARTITION_NAMES)
             kf.write_text(json.dumps({
                 "version": 1,
                 "kdf": "pbkdf2-sha256",
@@ -489,7 +490,8 @@ class Store:
 
         明文根免口令（02 §2.2）；加密根必须给主密码，且标记缺失的历史根按加密
         口径读（A2）。给出主密码时若该密码同时满足凭据校验锚则一并解锁 `secrets`，
-        否则凭据保持锁定（02 §3）。打开时**回收**中间产物目录（02 §2.4）。
+        否则凭据保持锁定（02 §3）。打开时**回收**中间产物目录（02 §2.4），并先
+        **迁移**注册表中本根从未初始化过的分区（02 §2.1 / §2.3）再校验。
         """
         root = Path(root)
         meta = _read_keyfile_meta(root)
@@ -541,10 +543,61 @@ class Store:
             store._reset_tmp_dir()
             if passphrase is not None:
                 store.unlock_secrets(passphrase)   # 惰性解锁（TOFU，§2.2）
+        store._migrate_partition_table()   # 02 §2.1：注册表新增分区对存量根补建
         report = store._verify_all()
         if not report.is_clean:
             raise StorageCorruptionError(report)
         return store
+
+    def _migrate_partition_table(self) -> None:
+        """补建「注册表有、本根从未初始化过」的分区，并刷新格式标记（02 §2.1）。
+
+        判据取标记里的分区表（``partitions``）：
+
+        - **不在表内**且目录不存在（或目录为空、无清单）⇒ 本次新增的分区，补建空清单；
+        - **在表内**而目录 / 清单缺失 ⇒ 不动，交给 :meth:`_verify_all` 判损坏
+          （已初始化分区被删不得被静默重建，02 §2.3）。
+        - 旧根（标记无该字段，或标记缺失）视作「未登记任何分区」，按注册表补建——
+          这一次无法区分「本次新增」与「升级前已删」，此后分区表已刷新即可检出。
+
+        **不复活被清空的根**：一个有效分区清单都没有时不补建（否则整根误删会被
+        静默恢复成空存储）。锁定分区（未解锁的 ``secrets``）无密钥，不参与。
+        """
+        root = self._root
+        declared = read_partition_set(root)
+        registered = set(PARTITION_NAMES)
+        if declared is not None and set(declared) == registered:
+            return
+
+        uninitialized = [
+            p for p in PARTITIONS
+            if not self._is_locked(p.name)
+            and (declared is None or p.name not in declared)
+            and self._is_uninitialized(p.name)
+        ]
+        if uninitialized:
+            if not self._has_valid_manifest():
+                return            # 不复活被清空的根：一个有效清单都没有时不补建
+            for p in uninitialized:
+                d = root / p.name
+                d.mkdir(parents=True, exist_ok=True)
+                self._write_manifest(p.name, PartitionManifest(entries=()))
+        write_marker(root, self.mode, PARTITION_NAMES)
+
+    def _is_uninitialized(self, partition: PartitionName) -> bool:
+        """分区可视为「本根从未初始化」：目录不存在，或目录为空且无清单。"""
+        d = self._root / partition
+        if not d.is_dir():
+            return True
+        return not (d / MANIFEST_NAME).is_file() and not _has_files_under(d)
+
+    def _has_valid_manifest(self) -> bool:
+        """根内是否已有任一已解锁分区的清单文件（判定「已建立的根」）。"""
+        return any(
+            not self._is_locked(p.name)
+            and (self._root / p.name / MANIFEST_NAME).is_file()
+            for p in PARTITIONS
+        )
 
     def _try_unlock_secrets(self, passphrase: str) -> None:
         """加密根上尝试解锁凭据分区：口令不匹配凭据锚 ⇒ 保持锁定（不报错）。
