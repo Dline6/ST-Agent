@@ -207,7 +207,7 @@ def _post(running, body: dict, *, token: str | None = None):
 
 
 def test_gwt6_chat_endpoint_serves_reverse_flow(rig: M1Rig) -> None:
-    """`POST /api/chat` 对已装配运行时走通一段反向流，出站点过中性化门（真 HTTP）。"""
+    """`POST /api/chat` 走通反向流：默认入口 fail-closed，派发仍经真 HTTP 送达。"""
     from st_agent.ui.server import serve
 
     with serve(dev=False, chat=rig.m1.chat) as running:
@@ -215,17 +215,21 @@ def test_gwt6_chat_endpoint_serves_reverse_flow(rig: M1Rig) -> None:
         status, _ = _post(running, {"action": "post", "text": "查退市风险"})
         assert status == 401
 
+        # 默认入口（[D-154] A1）：M1 根未装配循环端口 → 显式 unavailable，不回落旧路径
         status, d = _post(
             running, {"action": "post", "text": "查 sh.600000 退市风险"},
             token=running.token,
         )
-        assert status == 200 and d["status"] == "ok"
-        assert d["needs_confirmation"] is True and d["session_id"]
+        assert status == 200 and d["status"] == "unavailable"
+        assert "循环端口" in d["reason"]
+        assert d["session_id"] and d["needs_confirmation"] is False
         # 六态渲染语义随信封下发
         assert d["render"]["presentation"]
 
+        # 既有反向流仍可经门面起卡；派发经真 HTTP 送达，描述件原样透出
+        turn = rig.m1.chat.post("看下 sh.600000 有没有退市风险")
         status, d2 = _post(
-            running, {"action": "dispatch", "session_id": d["session_id"]},
+            running, {"action": "dispatch", "session_id": turn.session_id},
             token=running.token,
         )
         assert status == 200 and d2["status"] == "ok"

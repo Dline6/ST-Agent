@@ -171,7 +171,7 @@ function adoptSession(payload) {
   }
 }
 
-/** 发一条用户消息：立即出等待轮，失败可重试。 */
+/** 发一条用户消息：默认入口直接起一次运行并跟随事件（T-AGT-029.1）；失败可重试。 */
 async function send(text) {
   const trimmed = String(text || '').trim();
   if (!trimmed || state.sending) return;
@@ -181,22 +181,46 @@ async function send(text) {
   const pending = { role: 'agent', pending: true, note: '正在处理…' };
   state.messages.push(pending);
   notify();
+  let running = false;
   try {
     const payload = await chatRequest({
       action: 'post',
       text: trimmed,
+      background: true,
       ...(state.sessionId ? { session_id: state.sessionId } : {}),
     });
     adoptSession(payload);
-    replaceMessage(pending, { role: 'agent', payload });
+    // `/` 快捷指令由服务端同步回确认卡（无 running 载荷）；其余走运行态 + 事件流。
+    running = adoptRunResponse(pending, payload, { retryText: trimmed }, '运行中…');
   } catch (error) {
     replaceMessage(pending, {
       role: 'agent', failed: true, reason: error.message, retryText: trimmed,
     });
   } finally {
-    state.sending = false;
-    notify();
+    if (!running) {
+      state.sending = false;
+      notify();
+    }
   }
+}
+
+/** 收到 running 载荷 → 切成运行态消息并跟随事件；否则原样替换。
+ *
+ * 返回是否已进入运行态（调用方据此把 `sending` 交给 `watchRunMessage` 收口）。
+ */
+function adoptRunResponse(pending, payload, retry, note) {
+  if (payload && payload.running && payload.agent_run_id) {
+    const running = {
+      role: 'agent', running: true, runId: payload.agent_run_id,
+      note: note || '运行中…', steps: [], plan: [],
+    };
+    replaceMessage(pending, running);
+    notify();
+    watchRunMessage(running, retry);
+    return true;
+  }
+  replaceMessage(pending, { role: 'agent', payload });
+  return false;
 }
 
 /** 确认卡派发：后台开跑 + SSE 跟随；结束后回读会话渲染最终轮（T-AGT-023.2）。 */
@@ -209,27 +233,20 @@ async function dispatch(body) {
   const request = {
     action: 'dispatch', session_id: state.sessionId, background: true, ...body,
   };
+  let running = false;
   try {
     const payload = await chatRequest(request);
     adoptSession(payload);
-    if (payload && payload.running && payload.agent_run_id) {
-      const running = {
-        role: 'agent', running: true, runId: payload.agent_run_id,
-        note: '运行中…', steps: [], plan: [],
-      };
-      replaceMessage(pending, running);
-      notify();
-      watchRunMessage(running, { retryBody: { ...body } });
-      return;                      // sending 保持到运行结束（避免重复提交）
-    }
-    replaceMessage(pending, { role: 'agent', payload });
+    running = adoptRunResponse(pending, payload, { retryBody: { ...body } }, '运行中…');
   } catch (error) {
     replaceMessage(pending, {
       role: 'agent', failed: true, reason: error.message, retryBody: { ...body },
     });
   }
-  state.sending = false;
-  notify();
+  if (!running) {
+    state.sending = false;
+    notify();
+  }
 }
 
 /** 续跑：与派发同一套后台 / 事件 / 回读口径；重试沿用同一续跑体。 */
@@ -246,28 +263,23 @@ async function resume(cont, body) {
     background: true,
     ...body,
   };
+  let running = false;
   try {
     const payload = await chatRequest(request);
     adoptSession(payload);
-    if (payload && payload.running && payload.agent_run_id) {
-      const running = {
-        role: 'agent', running: true, runId: payload.agent_run_id,
-        note: '续跑中…', steps: [], plan: [],
-      };
-      replaceMessage(pending, running);
-      notify();
-      watchRunMessage(running, { retryContinuation: { cont, body } });
-      return;
-    }
-    replaceMessage(pending, { role: 'agent', payload });
+    running = adoptRunResponse(
+      pending, payload, { retryContinuation: { cont, body } }, '续跑中…',
+    );
   } catch (error) {
     replaceMessage(pending, {
       role: 'agent', failed: true, reason: error.message,
       retryContinuation: { cont, body },
     });
   }
-  state.sending = false;
-  notify();
+  if (!running) {
+    state.sending = false;
+    notify();
+  }
 }
 
 /** 跟随一次后台运行：按事件更新运行态；结束 / 失败时收口。 */
@@ -490,9 +502,11 @@ function renderMessage(message) {
   return node;
 }
 
-/** 助手轮：信封 chrome + 澄清追问 / 意图确认卡 / 生成式 UI（按出现项）。 */
+/** 助手轮：模型正文 + 信封 chrome + 澄清追问 / 意图确认卡 / 生成式 UI（按出现项）。 */
 function agentTurn(payload) {
   const node = turn('assistant');
+  const answer = answerNode(payload);
+  if (answer) node.append(answer);
   const envelopeBox = el('div', 'chat__envelope');
   const data = payload.data;
   const isDescription = Boolean(data && typeof data === 'object' && data.component_type);
@@ -513,6 +527,18 @@ function agentTurn(payload) {
     node.append(continuationNode(payload.agent_continuation));
   }
   return node;
+}
+
+/** 模型正文：取服务端 `slots.answer`（`text_kinds.answer = generated`）原样呈现。
+ *
+ * 这是「立即回答」路径的正文（T-AGT-029.1 GWT-3）；空串 / 非字符串时不出空段。
+ */
+function answerNode(payload) {
+  const data = payload && payload.data;
+  const slots = data && typeof data === 'object' ? data.slots : null;
+  const answer = slots && typeof slots.answer === 'string' ? slots.answer.trim() : '';
+  if (!answer) return null;
+  return el('p', 'chat__text', answer);
 }
 
 /** 查证产出的终止标签（服务端下发生成文案槽；本层不携词表，停止后据此如实呈现）。 */

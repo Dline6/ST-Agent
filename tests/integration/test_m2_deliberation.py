@@ -215,14 +215,20 @@ def test_gwt6_divergence_map_survives_the_loopback_gate(rig: M2Rig) -> None:
     from st_agent.ui.server import serve
 
     with serve(dev=False, chat=rig.m2.chat) as running:
+        # 默认自然语言入口归循环（[D-154] A1）；M2 根未装配循环端口，故经 `/回测`
+        # 快捷指令进入 analyze 去向（[T-AGT-029.2] 的短路语义）。
         status, d = _post(
-            running, {"action": "post", "text": "分析下 sh.600000 是否值得关注"},
+            running, {"action": "post", "text": "/回测"},
             token=running.token,
         )
         assert status == 200 and d["needs_confirmation"] is True
 
         status, d2 = _post(
-            running, {"action": "dispatch", "session_id": d["session_id"]},
+            running,
+            {
+                "action": "dispatch", "session_id": d["session_id"],
+                "values": {"topic": "sh.600000 是否值得关注"},
+            },
             token=running.token,
         )
         assert status == 200 and d2["status"] == "ok"

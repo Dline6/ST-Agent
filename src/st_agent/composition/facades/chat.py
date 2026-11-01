@@ -26,12 +26,18 @@ from st_agent.l2.memory import (
     official_onboarding_entry,
 )
 from st_agent.l3.chat import SessionStore
+from st_agent.l3.commands import COMMAND_PREFIX
 from st_agent.l3.conflict import ConflictAdjudicator
 from st_agent.l3.dispatch import DispatchBus, DispatchOutcome
 from st_agent.l3.errors import SessionNotFoundError, SessionValidationError
 from st_agent.l3.feedback import FeedbackCollector
 from st_agent.l3.home import build_context_card
-from st_agent.l3.intent import IntentDraft, IntentProtocol, LlmIntentUnderstander
+from st_agent.l3.intent import (
+    IntentDraft,
+    IntentProtocol,
+    LlmIntentUnderstander,
+    checked_draft,
+)
 from st_agent.l3.render import (
     describe_adjudication,
     describe_context_card,
@@ -173,6 +179,52 @@ class DialogFacade:
         if outcome.envelope.status == "ok":
             self._pending.pop(session_id, None)
         return outcome
+
+    # ───────────────────── §3.1 默认入口：自然语言直接进循环 ─────────────────────
+
+    @staticmethod
+    def routes_to_loop(text: str) -> bool:
+        """这段输入是否走**默认循环入口**（[D-154] A1）——`/` 开头的快捷指令例外
+        （§3.1 / §8：命中即短路，取意图模板与参数预填）。"""
+        return not str(text or "").strip().startswith(COMMAND_PREFIX)
+
+    def ensure_session(self, session_id: str | None = None) -> str:
+        """取或新建一个会话标识（后台开跑前先定锚：running 载荷须能回给调用方）。
+
+        给了标识即原样返回——它是否存在由随后的落盘判定（不存在 → `append` 抛
+        `SessionNotFoundError`，与既有入口同一失败面），此处不另造一次校验。
+        """
+        sid = str(session_id or "").strip()
+        if sid:
+            return sid
+        return self._sessions.create(now=self._now()).session_id
+
+    def start_turn(
+        self,
+        text: str,
+        *,
+        session_id: str | None = None,
+        agent_run_id: str | None = None,
+    ) -> DispatchOutcome | ResultEnvelope:
+        """默认入口：把一句自然语言**直接**交给循环（[D-154] A1/A2）。
+
+        落 user 消息后构造一张 `investigate` 确认卡并就地置确认——不做意图分类、不产
+        待用户点「确认并执行」的卡：循环在授权闸门内自行选步，需要确认的动作由循环在
+        那一步交还（§10）。循环端口未装配时由 `DispatchBus` 回显式 `unavailable`，
+        **不回落**到既有意图路径（同一请求不会存在第二条承接路径）。
+
+        :param agent_run_id: 后台运行调用方预铸的标识；缺省由循环端口自行铸。
+        """
+        raw = str(text or "").strip()
+        if not raw:
+            return ResultEnvelope.validation_failed("输入为空，无法启动查证循环（05 §3.1）")
+        sid = self.ensure_session(session_id)
+        self._sessions.append(sid, raw, now=self._now())
+        draft = checked_draft(intent="investigate", target=raw)
+        confirmation = self._intent.confirm(draft).mark_confirmed()
+        return self._bus.dispatch(
+            confirmation, session_id=sid, now=self._now(), agent_run_id=agent_run_id,
+        )
 
     # ───────────────────── 运行控制面的只读口（T-AGT-023.1） ─────────────────────
 
@@ -484,8 +536,24 @@ class DialogFacade:
                     "clarification": None, "traces": [],
                     "agent_continuation": self._continuation_payload(
                         outcome.investigation)}
-        # 默认：输入 → 理解 → 澄清 → 确认卡
-        result = self.post(str(body.get("text") or ""), session_id=sid or None)
+        # 默认：自然语言直接进循环（[D-154] A1/A2）；`/` 快捷指令仍短路（[T-AGT-029.2]）
+        text = str(body.get("text") or "")
+        if not self.routes_to_loop(text):  # `/` 指令：意图模板与参数预填（§8）
+            return self._intent_turn_payload(text, sid or None)
+        outcome = self.start_turn(text, session_id=sid or None, agent_run_id=run_hint)
+        if isinstance(outcome, ResultEnvelope):  # 空输入等前置失败
+            return {"reply": outcome, "session_id": sid, "needs_confirmation": False,
+                    "description": None, "clarification": None, "traces": [],
+                    "agent_continuation": None}
+        return {"reply": outcome.envelope, "session_id": outcome.session_id or sid,
+                "needs_confirmation": False, "description": None,
+                "clarification": None, "traces": [],
+                "agent_continuation": self._continuation_payload(
+                    outcome.investigation)}
+
+    def _intent_turn_payload(self, text: str, session_id: str | None) -> dict[str, Any]:
+        """`/` 快捷指令的往返：输入 → 理解 / 澄清 → 确认卡（[05 §8] 短路，语义不变）。"""
+        result = self.post(text, session_id=session_id)
         if result.envelope is not None:  # 理解失败：会话已建，标识照样回给调用方
             return {"reply": result.envelope, "session_id": result.session_id,
                     "needs_confirmation": False, "description": None,

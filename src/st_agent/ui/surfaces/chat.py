@@ -60,19 +60,28 @@ class ChatSurface(SurfaceBase):
         `clarification`（澄清轮：问项 / 方向候选 / 超预算默认项，[05 §3.2]，原样透传）。
         未注入门面 → `unavailable` + 点名（不伪造，同 `api_health` 之外的各 fail-closed 面）。
 
-        **后台派发**（[D-154] B1 / [T-AGT-023.1]）：`action=dispatch|resume` 且
-        `background=true` 时，先铸 `agent_run_id` 再在后台线程跑完整轮，**立即**回 running
-        载荷（`running` / `agent_run_id`）；最终助手轮仍由工作线程落会话，前端在
-        `run_finished` 后回读会话渲染（[T-AGT-023.2]）。默认路径（`action=post` 或不带
-        `background`）保持同步，逐字节不变。
+        **后台派发**（[D-154] B1 / [T-AGT-023.1]）：`action=dispatch|resume`，或默认入口的
+        自然语言（非 `/` 开头，[T-AGT-029.1]），在 `background=true` 时先铸 `agent_run_id`
+        再在后台线程跑完整轮，**立即**回 running 载荷（`running` / `agent_run_id` / `session_id`）；
+        最终助手轮仍由工作线程落会话，前端在 `run_finished` 后回读会话渲染（[T-AGT-023.2]）。
+        `/` 快捷指令不带后台语义（同步回确认卡）；不带 `background` 的调用保持同步。
 
         **本方法不向上抛**（[00 §6] 失败显式化）：非法请求体（门面在构造契约对象时
         拒绝，属 `ValueError` / `KeyError` 族）转 `validation_failed`；其余未预期异常
         记 traceback 后转 `failed`（附可查 `log_ref`）——两端都回信封，连接不被关闭。
         """
-        if str(body.get("action") or "post") in ("dispatch", "resume") and body.get("background"):
+        action = str(body.get("action") or "post")
+        loop_turn = action not in ("dispatch", "resume") and self._routes_to_loop(body)
+        if body.get("background") and (action in ("dispatch", "resume") or loop_turn):
             return self._api_chat_background(body)
         return self._chat_turn_payload(body)
+
+    def _routes_to_loop(self, body: dict[str, Any]) -> bool:
+        """默认入口是否承接循环（门面判定；未持该取数口 ⇒ 不后台化，保持既有面）。"""
+        checker = getattr(self.chat, "routes_to_loop", None)
+        if not callable(checker):
+            return False
+        return bool(checker(str(body.get("text") or "")))
 
     def _api_chat_background(self, body: dict[str, Any]) -> dict[str, Any]:
         """后台派发：预铸运行标识 → 后台线程跑完整轮 → 立即回 running 载荷。"""
@@ -88,8 +97,20 @@ class ChatSurface(SurfaceBase):
             run_id = face.new_run_id()
         except ValueError as exc:
             return envelope_payload(ResultEnvelope.unavailable(str(exc), last_updated_at=_now()))
-        request = {**body, "agent_run_id": run_id}
-        if str(body.get("action") or "") == "resume":
+        action = str(body.get("action") or "post")
+        session_id = body.get("session_id")
+        if action not in ("dispatch", "resume"):
+            # 默认入口在**开跑前**定锚会话：running 载荷必须能回给调用方（否则首轮无会话可归属）。
+            ensure = getattr(face, "ensure_session", None)
+            if callable(ensure):
+                try:
+                    session_id = ensure(session_id)
+                except (ValueError, KeyError) as exc:
+                    return envelope_payload(
+                        ResultEnvelope.validation_failed(str(exc))
+                    )
+        request = {**body, "agent_run_id": run_id, "session_id": session_id}
+        if action == "resume":
             # 续跑同时需要**旧**标识（定位留痕）与**新**标识（本次开跑）；旧标识不能被覆盖。
             request = {**body, "new_run_id": run_id}
         outcome: dict[str, Any] = {}
@@ -120,7 +141,6 @@ class ChatSurface(SurfaceBase):
             return envelope_payload(
                 ResultEnvelope.failed("后台运行未能在预期时间内登记")
             )
-        session_id = body.get("session_id")
         return {
             "status": "ok",
             "data": {"agent_run_id": run_id, "running": True},

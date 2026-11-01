@@ -181,14 +181,17 @@ def test_chat_carries_the_lens_traces_for_the_trace_entry(m5) -> None:
     """GWT-1（`.3`）：`analyze` 去向的 `/api/chat` 返程携 `traces` 键（结论卡「推理链」入口）。"""
     runtime = m5.m5
     with serve(dev=False, chat=runtime.chat) as running:
-        posted = _post(running, "/api/chat", {"action": "post", "text": "研判 是否关注中际旭创"})
+        posted = _post(running, "/api/chat", {"action": "post", "text": "/回测"})
         assert posted["status"] == "ok", posted
         assert posted["needs_confirmation"] is True
-        assert posted["traces"] == [], "非 analyze 去向的返程不带链（键恒在、值为空表）"
+        assert posted["traces"] == [], "确认卡返程不带链（链随 dispatch 返程下发）"
 
         dispatched = _post(
             running, "/api/chat",
-            {"action": "dispatch", "session_id": posted["session_id"]},
+            {
+                "action": "dispatch", "session_id": posted["session_id"],
+                "values": {"topic": "是否关注中际旭创"},
+            },
         )
 
     assert dispatched["status"] == "ok", dispatched

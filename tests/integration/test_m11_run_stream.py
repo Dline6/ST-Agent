@@ -1,8 +1,9 @@
 """T-AGT-023.1/.2 · 运行事件流端到端（真组合根 + 真回环服务）。
 
-单叶用例用桩验帧形态与后台派发；本文件在 **M5 真装配** 上验一件事：确认卡派发改走后
-台之后，`agent_run_id` 立即可得、SSE 能回放到 `run_started` → `step_*` → `run_finished`，
-且最终助手轮真落会话并带同一 `agent_run_id`（前端据此回读、不重复渲染）。
+单叶用例用桩验帧形态与后台派发；本文件在 **M5 真装配** 上验一件事：默认入口（[T-AGT-029.1]
+起自然语言即开跑）走后台之后，`agent_run_id` 立即可得、SSE 能回放到 `run_started` →
+`step_*` → `run_finished`，且最终助手轮真落会话并带同一 `agent_run_id`（前端据此回读、
+不重复渲染）。
 """
 
 from __future__ import annotations
@@ -31,19 +32,14 @@ def test_background_dispatch_streams_events_and_records_final_turn(tmp_path: Pat
     rig = seeded_m5(tmp_path / ROOT_NAME)
     _make_autonomous(rig.m5)
     with ui_server(rig) as ui:
-        status, card = ui.post("/api/chat", {"action": "post", "text": TEXT})
-        assert status == 200
-        assert card["needs_confirmation"] is True
-        session_id = card["session_id"]
-
         status, ack = ui.post(
-            "/api/chat",
-            {"action": "dispatch", "session_id": session_id, "background": True},
+            "/api/chat", {"action": "post", "text": TEXT, "background": True},
         )
         assert status == 200
         assert ack["running"] is True
+        session_id = ack["session_id"]
         run_id = ack["agent_run_id"]
-        assert run_id
+        assert session_id and run_id
 
         status, stream = ui.text(f"/api/chat/run/{run_id}/events")
         assert status == 200

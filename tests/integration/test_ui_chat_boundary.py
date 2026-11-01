@@ -104,13 +104,14 @@ def test_internal_error_is_enveloped_with_log_ref(rig: M1Rig, caplog) -> None:  
     )
 
 
-def test_valid_request_unchanged(rig: M1Rig) -> None:
-    """GWT-5 回归：真门面的合法请求仍 `ok` + 确认卡（捕获不改变正常路径）。"""
+def test_default_entry_is_fail_closed_without_the_loop(rig: M1Rig) -> None:
+    """GWT-5 回归：合法请求不再是确认卡——M1 根未装配循环端口，默认入口显式 `unavailable`。"""
     with serve(dev=False, chat=rig.m1.chat) as running:
         status, payload = _post(
             running, {"action": "post", "text": "查 sh.600000 退市风险"}, token=running.token,
         )
     assert status == 200
-    assert payload["status"] == "ok"
-    assert payload["needs_confirmation"] is True
+    assert payload["status"] == "unavailable"
+    assert "循环端口" in payload["reason"]
     assert payload["session_id"]
+    assert payload["needs_confirmation"] is False
