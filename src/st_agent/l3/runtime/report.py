@@ -319,15 +319,21 @@ def build_agent_output(
 
 
 def conclude_agent_run(
-    store: Any, outcome: LoopOutcome, *, now: datetime | None = None,
+    store: Any, outcome: LoopOutcome, *, agent_run_id: str | None = None,
+    now: datetime | None = None,
     resumed_from: str = "",
 ) -> AgentRunReport:
-    """收口一次循环：铸标识 → 落留痕 → 装产出（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+    """收口一次循环：铸标识（或沿用开跑铸好的）→ 落留痕 → 装产出（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
 
     顺序有意如此：**先落留痕再装产出**——产出里的 ``log_ref`` 指向的那条记录因此必然已存在
     （「指针指向真实存在的记录」不靠事后补写）。
+
+    :param agent_run_id: **开跑前**已铸好的标识（[D-154](../../../项目管理/决策日志.md) B1 /
+        [T-AGT-022.1](../../../项目管理/tasks/T-AGT-022.1-开跑铸号与活动run注册表.md)）；
+        缺省才在此铸一个（存量调用方的行为不变）。
     """
-    agent_run_id = new_agent_run_id()
+    if agent_run_id is None:
+        agent_run_id = new_agent_run_id()
     record = record_agent_run(
         store, outcome, agent_run_id=agent_run_id, now=now, resumed_from=resumed_from,
     )
