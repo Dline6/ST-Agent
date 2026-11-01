@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-029.1]
 status: done
 decisions: [D-154, D-156]
-verify: 见执行日志 [T-AGT-029.2]（范围套件同批 2192 passed / 2 errors；定向 `/盯盘` 确认卡 + 未知指令 empty；真浏览器：`/盯盘` 同步出确认卡、无运行态；commit 待回填）
+verify: 见执行日志 [T-AGT-029.2]（范围套件同批 2192 passed / 2 errors；定向 `/盯盘` 确认卡 + 未知指令 empty；真浏览器：`/盯盘` 同步出确认卡、无运行态；commit 1be347e）
 ---
 
 # T-AGT-029.2 · 快捷指令短路保留

@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-020, T-AGT-022.1]
 status: done
 decisions: [D-154, D-156]
-verify: 见执行日志 [T-AGT-029.1]（范围套件 2192 passed / 2 errors〔两例既有环境性 test_shell〕；定向 6 passed + 改写用例 45 passed；真浏览器：默认输入 → 正文「证据已收集完毕」+ 2 行证据表，SSE 200，控制台 0 错误；commit 待回填）
+verify: 见执行日志 [T-AGT-029.1]（范围套件 2192 passed / 2 errors〔两例既有环境性 test_shell〕；定向 6 passed + 改写用例 45 passed；真浏览器：默认输入 → 正文「证据已收集完毕」+ 2 行证据表，SSE 200，控制台 0 错误；commit 1be347e）
 ---
 
 # T-AGT-029.1 · 对话入口改造与会话预取
