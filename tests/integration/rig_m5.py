@@ -188,17 +188,20 @@ def seeded_m5(
     script: list[tuple[str, dict]] | None = None,
     rules: list[tuple[str, IntentDraft]] | None = None,
     register_skills: bool = True,
+    endpoint: Any = None,
     **l1_kwargs: Any,
 ) -> M5Rig:
     """已播种数据面的 M5 全栈装配（生产组合根 `build_m5_runtime` + 脚本化端点）。
 
     ``supported=False`` ⇒ 探测判「不支持工具调用」（GWT-4 的反支）；``script`` 覆写循环轮次
-    的脚本；``register_skills=False`` ⇒ 不装示例执行件（供「缺任务文本」一类不跑循环的用例）。
+    的脚本；``register_skills=False`` ⇒ 不装示例执行件（供「缺任务文本」一类不跑循环的用例）；
+    ``endpoint`` 可换入同接口的自定义端点（供需要与循环步调同步的用例，如插话）。
     """
     seed_market_db(root, PASS)
     feed = MarketData()
     sender = RecordingSender()
-    endpoint = ScriptedEndpoint(supported=supported, script=script)
+    if endpoint is None:
+        endpoint = ScriptedEndpoint(supported=supported, script=script)
     understander = DeterministicUnderstander(
         DEFAULT_RULES if rules is None else rules
     )

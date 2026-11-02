@@ -40,6 +40,7 @@ from st_agent.l1.skills.tool_catalog import ToolEntry
 from st_agent.l2.memory.reader import MemorySlice
 from st_agent.l3.chat.session import ROLE_LABELS, ChatMessage
 from st_agent.l3.errors import AgentRuntimeValidationError
+from st_agent.l3.runtime.steer import SteerMessage
 from st_agent.l3.runtime.tool_search import (
     SUMMARY_CHARS,
     TOOL_SEARCH_TOOL,
@@ -236,6 +237,11 @@ class WorkContext(BaseModel):
     """**近端会话历史**（按时间序；取自 :func:`assemble_context <../chat/session.py>` 的
     ``messages`` 产出）。它是工作上下文的第四样，**不是**把会话上下文当工作上下文
     （[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)；调研报告 §8.4）。"""
+    steers: tuple[SteerMessage, ...] = ()
+    """**本次运行中插入的消息**（[`T-AGT-027.1`](../../../项目管理/tasks/T-AGT-027.1-steer-inbox与上下文注入.md)；
+    [05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的「插话」）：由循环在**步骤边界**
+    从收件箱排空后并入，按到达顺序；与历史分开成段并带「运行中插入」标记，故模型能区分
+    「原先说过」与「运行中补的」。受本次预算约束，取舍排在记忆与历史之后。"""
     memory: tuple[MemorySlice, ...] = ()
     """**记忆切片**（取自 ``assemble_context`` 的 ``memory.slices``；受预算约束，超限时
     先于历史被舍，见 [05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。"""
@@ -320,6 +326,9 @@ class WorkContext(BaseModel):
             lines.append("用户补充（续跑，一问一参）：" + _json(self.user_inputs))
             lines.append("")
         lines.extend(self._render_history_lines())
+        if self.steers:
+            lines.append("")
+            lines.extend(self._render_steer_lines())
         if self.lazy_tools:
             lines.append("")
             lines.extend(self._render_lazy_tools(include_tools=include_tools))
@@ -363,6 +372,8 @@ class WorkContext(BaseModel):
             out = [f"会话历史（近端 {len(self.history)} 条，按时间序）："]
             for message in self.history:
                 label = ROLE_LABELS.get(message.role, message.role)
+                if getattr(message, "steer", False):
+                    label = f"{label}（运行中插入）"
                 out.append(f"- {label}：{message.text}")
                 if message.payload is not None:
                     # 助手轮的结果在出站载荷里（text 只是中性摘要）——不带它就答不了
@@ -373,6 +384,13 @@ class WorkContext(BaseModel):
         if dropped:
             return [f"会话历史：已按预算舍弃 {dropped} 条最早消息（见运行报告）"]
         return ["会话历史：无（本会话无更早消息）"]
+
+    def _render_steer_lines(self) -> list[str]:
+        """运行中插入段（按到达顺序；标记让模型区分「原先说过」与「运行中补的」）。"""
+        out = [f"运行中插入的用户消息（{len(self.steers)} 条，按到达顺序）："]
+        for item in self.steers:
+            out.append(f"- [运行中插入] {item.text}")
+        return out
 
     def _render_memory_lines(self) -> list[str]:
         """记忆切片段（同历史的空态口径：无 / 已舍弃 / 有）。"""
@@ -429,6 +447,7 @@ def assemble_work_context(
     *,
     history: Sequence[ChatMessage] = (),
     memory: Sequence[MemorySlice] = (),
+    steer_messages: Sequence[SteerMessage] = (),
     plan: Sequence[PlanStep] = (),
     plan_updated: bool = False,
     plan_error: str = "",
@@ -450,6 +469,7 @@ def assemble_work_context(
     :param steps: 已执行的动作与结果（按发生顺序；逐条过截断，GWT-3 / GWT-4）
     :param history: 近端会话历史（按时间序；取自 ``assemble_context`` 的 ``messages``）
     :param memory: 记忆切片（取自 ``assemble_context`` 的 ``memory.slices``）
+    :param steer_messages: 本次运行中插入的消息（步骤边界排空；按到达顺序，独立成段并带标记）
     :param plan: 当前计划（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的计划原语）
     :param plan_updated: 模型是否已给过计划更新（含清空）——区分「尚未给出」与「已清空」
     :param plan_error: 上一次计划更新未被采用的原因（非法形态留给模型纠正）
@@ -473,9 +493,9 @@ def assemble_work_context(
     ``retrieved_tools`` 展开。未超阈值时输出**逐字节同前**——不向目录加任何条目。
 
     **超限取舍**（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）：先舍记忆切片
-    （自末向首），再舍历史消息（自旧向新）；任务、工具目录与已执行动作**不参与取舍**
-    （D-090 冻结范围：不压缩、不丢步骤）。被舍项记进 ``WorkContext.dropped``。取舍后仍超限
-    则照实标 ``over_budget``——**不假装装得下**。
+    （自末向首），再舍历史消息（自旧向新），**最后才舍插话**（自旧向新）；任务、工具目录与
+    已执行动作**不参与取舍**（D-090 冻结范围：不压缩、不丢步骤）。被舍项记进
+    ``WorkContext.dropped``。取舍后仍超限则照实标 ``over_budget``——**不假装装得下**。
 
     结果**不写任何存储**、不读时钟——故同一输入两次装配逐字节一致（GWT-6）。
     """
@@ -509,6 +529,7 @@ def assemble_work_context(
         steps=tuple(_apply_truncation(step, max_result_chars) for step in ordered),
         history=_checked_history(history),
         memory=_checked_memory(memory),
+        steers=_checked_steers(steer_messages),
         plan=_checked_plan(plan),
         plan_updated=bool(plan_updated),
         plan_error=str(plan_error or ""),
@@ -533,6 +554,7 @@ def _fit_budget(
     steps: tuple[WorkStep, ...],
     history: tuple[ChatMessage, ...],
     memory: tuple[MemorySlice, ...],
+    steers: tuple[SteerMessage, ...],
     plan: tuple[PlanStep, ...],
     plan_updated: bool,
     plan_error: str,
@@ -547,17 +569,20 @@ def _fit_budget(
 ) -> tuple[WorkContext, int]:
     """按声明顺序取舍直至装下（或无可再舍），返回上下文与最终规模。
 
-    取舍顺序＝**记忆 → 历史（旧→新）**；步骤 / 任务 / 工具目录 / 计划 / 用户补充恒保留
-    （[05 §10]）。计划与用户补充是本次任务的结构性输入，不参与取舍。
+    取舍顺序＝**记忆 → 历史（旧→新）→ 插话（旧→新）**；步骤 / 任务 / 工具目录 / 计划 /
+    用户补充恒保留（[05 §10]）。计划与用户补充是本次任务的结构性输入，不参与取舍；
+    插话是最近才到的用户输入，故排在最后才舍。
     """
     kept_history = list(history)
     kept_memory = list(memory)
+    kept_steers = list(steers)
     dropped: list[str] = []
 
     def build() -> WorkContext:
         return WorkContext(
             task=task, tools=tools, steps=steps,
             history=tuple(kept_history), memory=tuple(kept_memory),
+            steers=tuple(kept_steers),
             plan=plan, plan_updated=plan_updated, plan_error=plan_error,
             user_inputs=dict(user_inputs),
             dropped=tuple(dropped), budget_chars=budget_chars, size_chars=0,
@@ -576,6 +601,11 @@ def _fit_budget(
     while size > budget_chars and kept_history:
         item = kept_history.pop(0)
         dropped.append(f"history:{item.message_id}")
+        context = build()
+        size = len(context.render_prompt(include_tools=True))
+    while size > budget_chars and kept_steers:
+        item = kept_steers.pop(0)
+        dropped.append(f"steer:{item.received_at.isoformat()}")
         context = build()
         size = len(context.render_prompt(include_tools=True))
     return context, size
@@ -630,6 +660,19 @@ def _checked_memory(memory: Iterable[MemorySlice]) -> tuple[MemorySlice, ...]:
             raise AgentRuntimeValidationError(
                 f"记忆切片须为 MemorySlice，得到 {type(item).__name__}"
                 "（切片取自 assemble_context 的 memory.slices 产出）"
+            )
+        out.append(item)
+    return tuple(out)
+
+
+def _checked_steers(steers: Iterable[SteerMessage]) -> tuple[SteerMessage, ...]:
+    """插话的形态自检（保序；不静默丢弃坏条目）。"""
+    out: list[SteerMessage] = []
+    for item in steers:
+        if not isinstance(item, SteerMessage):
+            raise AgentRuntimeValidationError(
+                f"运行中插入的消息须为 SteerMessage，得到 {type(item).__name__}"
+                "（取自 run_agent_loop 在步骤边界排空的收件箱）"
             )
         out.append(item)
     return tuple(out)

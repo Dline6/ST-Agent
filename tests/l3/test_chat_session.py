@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from datetime import timedelta
 
 import pytest
@@ -68,6 +69,28 @@ class TestGwt1TreeAndBranching:
                       text="同一输入", created_at=NOW)
         assert new_message_id(**kwargs) == new_message_id(**kwargs)
         assert new_message_id(**{**kwargs, "text": "另一输入"}) != new_message_id(**kwargs)
+
+
+class TestConcurrentAppend:
+    """后台运行线程写助手轮、插话端点线程写用户轮——同一会话并发追加不得丢消息。"""
+
+    def test_concurrent_appends_are_not_lost(self, chat: SessionStore) -> None:
+        session = chat.create(now=NOW)
+
+        def worker(index: int) -> None:
+            chat.append(
+                session.session_id, f"并发-{index}",
+                now=NOW + timedelta(seconds=index + 1),
+            )
+
+        threads = [threading.Thread(target=worker, args=(index,)) for index in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        texts = sorted(item.text for item in chat.load(session.session_id).messages)
+        assert texts == sorted(f"并发-{index}" for index in range(8))
 
 
 class TestGwt2PersistedAndReadableAfterRestart:

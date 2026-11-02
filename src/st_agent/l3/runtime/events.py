@@ -3,7 +3,7 @@
 运行事件是**运行态的追加记录**，不是推理链步骤——[01 §4](../../../../docs/技术架构-v2/01-平台共享契约.md)
 不为它新增 ``step_type``、也不并入 ``steps[]``。本模块交付三件：
 
-- **枚举**：D-154 B5 的 11 类事件（:data:`RUN_EVENT_TYPES`）；
+- **枚举**：D-154 B5 的 11 类事件 + 2026-11-02 增补的插话投递事件 ``steer``（:data:`RUN_EVENT_TYPES`）；
 - **追加写**：:class:`RunEventLog` 以单调序号把事件写进 ``execution_log`` 分区下的
   ``agent-run-events/<agent_run_id>.jsonl``（每行一条 :class:`RunEvent`）；
 - **回放**：:func:`read_run_events` 按序取回（供 ``T-AGT-023.1`` 的 SSE 断线重连 /
@@ -45,10 +45,11 @@ RunEventType = Literal[
     "sub_agent",
     "gate_pending",
     "ask_user",
+    "steer",
     "text_delta",
     "run_finished",
 ]
-"""运行事件枚举（[D-154](../../../项目管理/决策日志.md) B5 的 11 类，与 [05 §10] 同序）。"""
+"""运行事件枚举（[D-154](../../../项目管理/决策日志.md) B5 的 11 类 + 2026-11-02 增补的 ``steer``，与 [05 §10] 同序）。"""
 
 RUN_EVENT_TYPES: tuple[str, ...] = (
     "run_started",
@@ -60,6 +61,7 @@ RUN_EVENT_TYPES: tuple[str, ...] = (
     "sub_agent",
     "gate_pending",
     "ask_user",
+    "steer",
     "text_delta",
     "run_finished",
 )

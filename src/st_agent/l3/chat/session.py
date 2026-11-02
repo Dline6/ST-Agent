@@ -32,6 +32,7 @@
 
 from __future__ import annotations
 
+import threading
 import uuid
 from collections.abc import Iterable, Mapping
 from datetime import datetime
@@ -127,6 +128,10 @@ class ChatMessage(BaseModel):
     历史页据此用**同一条**渲染路径回放该轮；旧记录无此字段（缺省 ``None``）时按纯文本
     回放。用户轮不写该字段——用户原文即 ``text``。
     """
+    steer: bool = False
+    """该用户轮是否为**运行中插话**（[05 §1](../../../docs/技术架构-v2/05-L3-对话主入口.md) /
+    [`T-AGT-027`](../../../项目管理/tasks/T-AGT-027-插话.md)）。旧记录缺省 ``false``，向后兼容；
+    它不是新的角色，也不参与 ``message_id`` 的确定性摘要。"""
 
     @model_validator(mode="after")
     def _message_shape(self) -> "ChatMessage":
@@ -258,6 +263,9 @@ class SessionStore:
 
     def __init__(self, store: Store) -> None:
         self._store = store
+        # 读-改-写（append / branch_from / delete）必须串行：后台运行线程写助手轮、
+        # 插话端点线程写用户轮，同一会话可能并发追加——不锁会丢其中一条。
+        self._lock = threading.RLock()
 
     # ───────────────────────── 会话生命周期 ─────────────────────────
 
@@ -304,12 +312,13 @@ class SessionStore:
         不级联其他分区。删除不可恢复。
         """
         sid = str(session_id or "").strip()
-        if not sid or sid not in self.sessions():
-            raise SessionNotFoundError(f"会话不存在：{sid}")
-        try:
-            self._store.delete(CHAT_PARTITION, _key(sid))
-        except KeyError as exc:
-            raise SessionNotFoundError(f"会话不存在：{sid}") from exc
+        with self._lock:
+            if not sid or sid not in self.sessions():
+                raise SessionNotFoundError(f"会话不存在：{sid}")
+            try:
+                self._store.delete(CHAT_PARTITION, _key(sid))
+            except KeyError as exc:
+                raise SessionNotFoundError(f"会话不存在：{sid}") from exc
 
     # ───────────────────────── 追加与分支 ─────────────────────────
 
@@ -322,19 +331,24 @@ class SessionStore:
         parent_id: str | None = None,
         now: datetime | None = None,
         payload: Mapping[str, Any] | None = None,
+        steer: bool = False,
     ) -> ChatMessage:
         """追加一条消息。
 
         ``parent_id=None`` 时挂到**默认链路的末端**；给了 ``parent_id`` 即从该消息
         分出新支（与 :meth:`branch_from` 等价，后者只是把意图写在名字上）。
+
+        :param steer: 该用户轮是否为**运行中插话**（[05 §1]；受理时的标记，供历史回放）。
         """
-        session = self.load(session_id)
-        if parent_id is None:
-            tail = self.chain(session)
-            parent_id = tail[-1].message_id if tail else None
-        return self._attach(
-            session, text, role=role, parent_id=parent_id, now=now, payload=payload,
-        )
+        with self._lock:
+            session = self.load(session_id)
+            if parent_id is None:
+                tail = self.chain(session)
+                parent_id = tail[-1].message_id if tail else None
+            return self._attach(
+                session, text, role=role, parent_id=parent_id, now=now,
+                payload=payload, steer=steer,
+            )
 
     def branch_from(
         self,
@@ -346,10 +360,13 @@ class SessionStore:
         now: datetime | None = None,
     ) -> ChatMessage:
         """从既有消息发起一条新分支（§1「任意消息可发起分支」）。"""
-        session = self.load(session_id)
-        if message_id not in {m.message_id for m in session.messages}:
-            raise SessionValidationError(f"分支起点不在本会话内：{message_id}")
-        return self._attach(session, text, role=role, parent_id=message_id, now=now)
+        with self._lock:
+            session = self.load(session_id)
+            if message_id not in {m.message_id for m in session.messages}:
+                raise SessionValidationError(f"分支起点不在本会话内：{message_id}")
+            return self._attach(
+                session, text, role=role, parent_id=message_id, now=now,
+            )
 
     def _attach(
         self,
@@ -360,6 +377,7 @@ class SessionStore:
         parent_id: str | None,
         now: datetime | None,
         payload: Mapping[str, Any] | None = None,
+        steer: bool = False,
     ) -> ChatMessage:
         moment = now if now is not None else _now()
         message = ChatMessage(
@@ -373,6 +391,7 @@ class SessionStore:
             text=text,
             created_at=moment,
             payload=payload,
+            steer=steer,
         )
         # 显式重建而非 ``model_copy``——后者**不重跑校验**，重复 message_id 会被静默
         # 放过（红-绿已验：退回 model_copy 时本叶用例 FAIL）。

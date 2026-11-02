@@ -144,6 +144,7 @@ def resume_agent_run(
     subprotocols: Any = None,
     emit: Any = None,
     cancel: Any = None,
+    steer_inbox: Any = None,
 ) -> ResumeOutcome:
     """按用户的选择续跑一次交还（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
 
@@ -160,6 +161,8 @@ def resume_agent_run(
     :param subprotocols: 子协议动作的执行端口（同 :func:`run_agent_loop` 的 ``subprotocols``）。
     :param emit: 运行事件回调（同 :func:`run_agent_loop` 的 ``emit``；缺省不产生事件）。
     :param cancel: 协作式取消事件（同 :func:`run_agent_loop` 的 ``cancel``；缺省不可取消）。
+    :param steer_inbox: 运行中插话的收件箱（同 :func:`run_agent_loop` 的 ``steer_inbox``；
+        续跑同样在步骤边界接受插话）。
     """
     if decision not in ("approve", "answer", "rerun", "cancel"):
         raise AgentRuntimeValidationError(f"未知的续跑选择 {decision!r}")
@@ -318,6 +321,7 @@ def resume_agent_run(
         subprotocols=subprotocols,
         emit=emit,
         cancel=cancel,
+        steer_inbox=steer_inbox,
     )
     if decision == "answer":
         outcome = outcome.model_copy(update={

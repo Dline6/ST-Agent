@@ -302,6 +302,7 @@ def _query(raw: str, name: str) -> str:
 _SSE_PREFIX = "/api/chat/run/"
 _SSE_SUFFIX = "/events"
 _STOP_SUFFIX = "/stop"
+_STEER_SUFFIX = "/steer"
 
 
 def _sse_run_id(path: str) -> str | None:
@@ -316,6 +317,11 @@ def _sse_run_id(path: str) -> str | None:
 def _stop_run_id(path: str) -> str | None:
     """``/api/chat/run/<id>/stop`` → ``<id>``；其余路径 → ``None``（同 :func:`_sse_run_id`）。"""
     return _run_path_id(path, _STOP_SUFFIX)
+
+
+def _steer_run_id(path: str) -> str | None:
+    """``/api/chat/run/<id>/steer`` → ``<id>``；其余路径 → ``None``（同 :func:`_sse_run_id`）。"""
+    return _run_path_id(path, _STEER_SUFFIX)
 
 
 def _run_path_id(path: str, suffix: str) -> str | None:
@@ -469,6 +475,21 @@ class UiRequestHandler(BaseHTTPRequestHandler):
 
         handler = _POST_ROUTES.get(path)
         if handler is None:
+            steer_run = _steer_run_id(path)
+            if steer_run is not None:
+                blocked = _restart_blocked(self.app, path)
+                if blocked is not None:
+                    self._drain_request_body()
+                    self._send_json(200, blocked)
+                    return
+                body = self._read_json_body()
+                self._send_json(
+                    200,
+                    _dispatch_guarded(
+                        path, lambda: self.app.api_chat_run_steer(steer_run, body),
+                    ),
+                )
+                return
             stop_run = _stop_run_id(path)
             if stop_run is not None:
                 blocked = _restart_blocked(self.app, path)

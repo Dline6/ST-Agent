@@ -203,6 +203,62 @@ class ChatSurface(SurfaceBase):
             ResultEnvelope.ok({"agent_run_id": run_id, "stopping": True})
         )
 
+    def api_chat_run_steer(self, agent_run_id: str, body: dict[str, Any]) -> dict[str, Any]:
+        """提交一条**运行中插话**（`POST /api/chat/run/<id>/steer`；[05 §10] / [`T-AGT-027`]）。
+
+        受理语义：消息立即作为 user 消息落会话，再投进活动 run 的收件箱；运行已结束
+        （不在册）时仍回 ``ok`` 且 ``delivered=false``——**不丢、不报错**。请求体非法 /
+        门面未实现写口时分别回 `validation_failed` / `unavailable`（不伪造送达）。
+        """
+        face = self.chat
+        if face is None or not getattr(face, "run_available", False):
+            return envelope_payload(
+                ResultEnvelope.unavailable(
+                    "未接入自主查证循环端口，运行中插话不可用（装配归组合根）",
+                    last_updated_at=_now(),
+                )
+            )
+        run_id = str(agent_run_id or "").strip()
+        if not run_id:
+            return envelope_payload(
+                ResultEnvelope.validation_failed(
+                    "缺少运行标识（需 /api/chat/run/<id>/steer）"
+                )
+            )
+        text = body.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return envelope_payload(
+                ResultEnvelope.validation_failed("插话内容不得为空（需非空 text）")
+            )
+        steer = getattr(face, "steer_run", None)
+        if not callable(steer):
+            return envelope_payload(
+                ResultEnvelope.unavailable(
+                    "对话门面未实现插话写口（装配归组合根）",
+                    last_updated_at=_now(),
+                )
+            )
+        try:
+            reply = steer(run_id, text, session_id=body.get("session_id"))
+        except (ValueError, KeyError) as exc:
+            _LOG.info("插话请求体被门面拒绝（%s）：%s", type(exc).__name__, exc)
+            return envelope_payload(
+                ResultEnvelope.validation_failed(
+                    "插话请求体不合法，无法受理（需非空 text 与可达会话）"
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 —— 内部错误落日志 + 显式 failed
+            log_ref = f"ui/chat-steer-{uuid.uuid4().hex[:12]}"
+            _LOG.exception("插话写面未预期异常（log_ref=%s）：%s", log_ref, exc)
+            return envelope_payload(
+                ResultEnvelope.failed("插话处理未预期失败，详见服务端日志", log_ref=log_ref)
+            )
+        if not isinstance(reply, ResultEnvelope):
+            return envelope_payload(
+                ResultEnvelope.failed("插话写面返回了非法结构")
+            )
+        return envelope_payload(reply)
+
     def _chat_turn_payload(self, body: dict[str, Any]) -> dict[str, Any]:
         """同步跑一轮对话（含最终 payload 装配与助手轮落盘）。"""
         if self.chat is None:

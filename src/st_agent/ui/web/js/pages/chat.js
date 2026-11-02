@@ -193,6 +193,7 @@ export async function openSession(sessionId) {
         role: message.role === 'agent' ? 'agent' : 'user',
         text: message.text || '',
         payload: message.payload || null,
+        steer: Boolean(message.steer),
       }));
     } else {
       state.messages = [];
@@ -278,6 +279,45 @@ async function send(text) {
       notify();
     }
   }
+}
+
+/** 运行中插话：提交到活动 run，不打断当前步骤（T-AGT-027.2 / 05 §10）。 */
+async function sendSteer(text) {
+  const run = activeRun;
+  const trimmed = String(text || '').trim();
+  if (!run || !run.runId || !trimmed) return;
+  const message = { role: 'user', text: trimmed, steer: true, steerState: 'sending' };
+  state.messages.push(message);
+  state.loadError = null;
+  notify();
+  try {
+    const payload = await postJson(
+      `/api/chat/run/${encodeURIComponent(run.runId)}/steer`,
+      { text: trimmed, ...(state.sessionId ? { session_id: state.sessionId } : {}) },
+    );
+    if (payload && payload.status === 'ok') {
+      const data = payload.data || {};
+      // 事件可能先于回执到达（排空时已判定竞态）；已转「普通消息」的状态不被回执覆盖。
+      if (message.steerState !== 'deferred') {
+        message.steerState = data.delivered === false ? 'deferred' : 'delivered';
+      }
+      showToast(
+        data.note
+          || (message.steerState === 'deferred'
+            ? '运行已结束，插话已作为普通消息保留'
+            : '已送达运行中任务'),
+      );
+    } else {
+      message.steerState = 'failed';
+      message.steerError = (payload && payload.reason) || '服务端未受理';
+      showToast(message.steerError, { type: 'error' });
+    }
+  } catch (error) {
+    message.steerState = 'failed';
+    message.steerError = error.message;
+    showToast(`插话未送达：${error.message}`, { type: 'error' });
+  }
+  notify();
 }
 
 /** 收到 running 载荷 → 切成运行态消息并跟随事件；否则原样替换。
@@ -466,6 +506,23 @@ function applyRunEvent(message, type, data) {
     message.note = '等待补充信息';
     return;
   }
+  if (type === 'steer') {
+    // 插话投递结果（T-AGT-027）：排空时确认是否进入本次运行；竞态者转为普通消息。
+    const delivered = body.delivered !== false;
+    const texts = new Set(
+      (Array.isArray(body.messages) ? body.messages : [])
+        .map((item) => String((item && item.text) || '')),
+    );
+    for (const item of state.messages) {
+      if (
+        item.role === 'user' && item.steer && texts.has(item.text)
+        && item.steerState !== 'failed'
+      ) {
+        item.steerState = delivered ? 'delivered' : 'deferred';
+      }
+    }
+    return;
+  }
   if (type === 'run_finished') {
     message.note = `运行结束（${body.termination || ''}）`;
   }
@@ -563,7 +620,20 @@ async function reloadSessionUntilRun(sessionId, runId, attempts = 10, delayMs = 
         role: message.role === 'agent' ? 'agent' : 'user',
         text: message.text || '',
         payload: message.payload || null,
+        steer: Boolean(message.steer),
       }));
+      // 本地已记下投递结果（已送达 / 已转普通消息）的同文插话，回读时保留该状态。
+      const local = new Map();
+      for (const message of state.messages) {
+        if (message.role === 'user' && message.steer && message.steerState) {
+          local.set(message.text, message.steerState);
+        }
+      }
+      last = last.map((message) => (
+        message.steer && local.has(message.text)
+          ? { ...message, steerState: local.get(message.text) }
+          : message
+      ));
       const done = last.some(
         (message) => message.role === 'agent' && message.payload
           && message.payload.agent_run_id === runId,
@@ -696,10 +766,24 @@ function subAgentNode(sub) {
   return box;
 }
 
+/** 运行中插话的送达标注（本地态优先；历史回放无本地态时显示「运行中插入」）。 */
+function steerNoteText(message) {
+  if (!message.steer) return '';
+  if (message.steerState === 'sending') return '正在送达运行中任务…';
+  if (message.steerState === 'delivered') return '已送达运行中任务（下一步生效）';
+  if (message.steerState === 'deferred') return '运行已结束，已作为普通消息保留';
+  if (message.steerState === 'failed') {
+    return `插话未送达：${message.steerError || '服务端未受理'}`;
+  }
+  return '运行中插入';
+}
+
 function renderMessage(message) {
   if (message.role === 'user') {
     const node = turn('user');
     node.append(el('p', 'chat__text', message.text));
+    const note = steerNoteText(message);
+    if (note) node.append(el('p', 'chat__steer-note', note));
     return node;
   }
   if (message.pending) {
@@ -1203,9 +1287,14 @@ export function mountChat(container, { variant = 'rail' } = {}) {
     render() {
       renderTier();
       renderTranscript(stream);
-      input.disabled = state.sending;
-      sendButton.disabled = state.sending;
-      sendButton.textContent = state.sending ? '处理中…' : '发送';
+      // 运行中（有 SSE 跟随）输入框仍可用，提交即插话；无活动的同步轮保持禁用。
+      const steerable = Boolean(activeRun && state.sending);
+      input.disabled = state.sending && !steerable;
+      sendButton.disabled = state.sending && !steerable;
+      sendButton.textContent = steerable
+        ? '插话'
+        : (state.sending ? '处理中…' : '发送');
+      input.title = steerable ? '运行中提交即插话：不打断当前步骤，在下一个步骤边界生效' : '';
     },
   };
 
@@ -1258,9 +1347,14 @@ export function mountChat(container, { variant = 'rail' } = {}) {
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     const text = input.value;
-    if (!text.trim() || state.sending) return;
+    if (!text.trim()) return;
+    if (state.sending && !activeRun) return;
     input.value = '';
     hideCommands();
+    if (state.sending) {
+      sendSteer(text);
+      return;
+    }
     send(text);
   });
   input.addEventListener('input', refreshCommands);
