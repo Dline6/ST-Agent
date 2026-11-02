@@ -11,8 +11,9 @@
 - **缺省单一事实源**——条目 `default` 直接取 [`run_agent_loop`](loop.py) 的
   :data:`~st_agent.l3.runtime.loop.DEFAULT_MAX_STEPS` / :data:`~st_agent.l3.runtime.loop.DEFAULT_MAX_LLM_CALLS`，
   **不另立数字**（否则登记面与运行期缺省会分叉）。
-- **取值域＝整数 ≥1 且 ≤ 上限**——下限沿用循环入口的校验（「上界是预算；到界即终止」）；
-  上限是**防跑飞护栏**（这正是上界当初被称「系统预算」的原因），取值属实现口径。
+- **取值域＝整数 ≥1**——下限沿用循环入口的校验（「上界是预算；到界即终止」）；
+  :data:`MAX_STEPS_CEILING` 等三条**建议上限**只作提示（2026-11-02 起，[D-161](../../../项目管理/决策日志.md)），
+  超出仍可保存并生效，不做硬拒绝。
 
 owner 住 L3（[铁律 7](../../../项目管理/工程宪法.md)：L1 不得 import L3），族适配器见
 :mod:`~st_agent.l3.runtime.registry_adapter`，由**组合根注入** L1 门面——先例为 L2 / L5 / L6 各族。
@@ -70,24 +71,24 @@ CHANGE_PREFIX = "investigate-change/"
 """本族变更留痕（``ChangeRecord``）的落盘目录前缀。"""
 
 MAX_STEPS_CEILING = 32
-"""步数上界的**上限**（防跑飞；缺省 8 的 4×）。取值属实现口径（[T-AGT-007](../../../项目管理/tasks/T-AGT-007-循环上界开放为配置项.md) A4）。"""
+"""步数上界的**建议上限**（防跑飞的提示值，缺省 8 的 4×）；2026-11-02 起只作建议，超出仍可保存（[D-161](../../../项目管理/决策日志.md)）。"""
 
 MAX_LLM_CALLS_CEILING = 64
-"""LLM 调用次数上界的**上限**（防跑飞；缺省 12 的 5×）。"""
+"""LLM 调用次数上界的**建议上限**（防跑飞的提示值，缺省 12 的 5×）。"""
 
 CONTEXT_BUDGET_CEILING = 32000
-"""工作上下文预算的**上限**（字符数；防单次装配塞爆模型窗口）。取值属实现口径。"""
+"""工作上下文预算的**建议上限**（字符数；缺省 16000 的 2×）。"""
 
 
 def _system_now() -> datetime:
     return datetime.now().astimezone()
 
 
-def _check(value: object, *, config_id: str, ceiling: int) -> int:
-    """取值域门：整数、非布尔、``1..ceiling``（非法即抛，**不静默截断 / 回退**）。"""
-    if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= ceiling:
+def _check(value: object, *, config_id: str) -> int:
+    """取值域门：整数、非布尔、``≥1``（非法即抛，**不静默截断 / 回退**）。"""
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
         raise AgentRuntimeValidationError(
-            f"{config_id} 须为 1..{ceiling} 的整数（上界是防跑飞预算），得到 {value!r}"
+            f"{config_id} 须为 ≥1 的整数（上界是预算），得到 {value!r}"
         )
     return value
 
@@ -95,18 +96,19 @@ def _check(value: object, *, config_id: str, ceiling: int) -> int:
 _MAX_STEPS_ENTRY = ConfigEntry(
     config_id=MAX_STEPS_CONFIG_ID,
     display_name="自主查证步数上界",
-    value_schema={"type": "integer", "minimum": 1, "maximum": MAX_STEPS_CEILING},
+    value_schema={"type": "integer", "minimum": 1},
     default=DEFAULT_MAX_STEPS,
     description_for_chat=(
         "自主查证循环一次最多执行多少步（每步＝调用一个工具）。"
         f"缺省 {DEFAULT_MAX_STEPS}；到界即终止并如实告知「达到上界」，不假装完成。"
-        f"取值范围 1–{MAX_STEPS_CEILING}"
+        f"建议不超过 {MAX_STEPS_CEILING}；超出仍可保存"
     ),
     panel_form_spec=PanelField(
         widget="number",
         label="自主查证步数上界",
         help_text=(
-            f"一次自主查证最多执行的步数（1–{MAX_STEPS_CEILING}）；缺省 {DEFAULT_MAX_STEPS}"
+            f"一次自主查证最多执行的步数；缺省 {DEFAULT_MAX_STEPS}，"
+            f"建议不超过 {MAX_STEPS_CEILING}（可超出）"
         ),
     ),
     scope="global",
@@ -117,20 +119,20 @@ _MAX_STEPS_ENTRY = ConfigEntry(
 _MAX_LLM_CALLS_ENTRY = ConfigEntry(
     config_id=MAX_LLM_CALLS_CONFIG_ID,
     display_name="自主查证调用次数上界",
-    value_schema={"type": "integer", "minimum": 1, "maximum": MAX_LLM_CALLS_CEILING},
+    value_schema={"type": "integer", "minimum": 1},
     default=DEFAULT_MAX_LLM_CALLS,
     description_for_chat=(
         "自主查证循环一次最多向模型发多少轮请求。"
         f"缺省 {DEFAULT_MAX_LLM_CALLS}（有意高于步数上界——模型每执行一步要问一轮，"
         "收尾还要再问一轮）；到界即终止并如实告知。"
-        f"取值范围 1–{MAX_LLM_CALLS_CEILING}"
+        f"建议不超过 {MAX_LLM_CALLS_CEILING}；超出仍可保存"
     ),
     panel_form_spec=PanelField(
         widget="number",
         label="自主查证调用次数上界",
         help_text=(
-            f"一次自主查证最多向模型发的请求轮数（1–{MAX_LLM_CALLS_CEILING}）；"
-            f"缺省 {DEFAULT_MAX_LLM_CALLS}"
+            f"一次自主查证最多向模型发的请求轮数；缺省 {DEFAULT_MAX_LLM_CALLS}，"
+            f"建议不超过 {MAX_LLM_CALLS_CEILING}（可超出）"
         ),
     ),
     scope="global",
@@ -141,21 +143,21 @@ _MAX_LLM_CALLS_ENTRY = ConfigEntry(
 _CONTEXT_BUDGET_ENTRY = ConfigEntry(
     config_id=CONTEXT_BUDGET_CONFIG_ID,
     display_name="自主查证上下文预算",
-    value_schema={"type": "integer", "minimum": 1, "maximum": CONTEXT_BUDGET_CEILING},
+    value_schema={"type": "integer", "minimum": 1},
     default=DEFAULT_WORK_CONTEXT_BUDGET,
     description_for_chat=(
         "自主查证循环每一轮的上下文最多占多少字符（含任务、工具目录、已执行动作、"
         "近端会话历史与记忆切片）。"
         f"缺省 {DEFAULT_WORK_CONTEXT_BUDGET}；超限时先舍记忆、再舍最早的历史消息，"
         "并在运行报告里如实标注被舍项。"
-        f"取值范围 1–{CONTEXT_BUDGET_CEILING}"
+        f"建议不超过 {CONTEXT_BUDGET_CEILING}；超出仍可保存"
     ),
     panel_form_spec=PanelField(
         widget="number",
         label="自主查证上下文预算",
         help_text=(
-            f"每轮自查证上下文的最大字符数（1–{CONTEXT_BUDGET_CEILING}）；"
-            f"缺省 {DEFAULT_WORK_CONTEXT_BUDGET}"
+            f"每轮自查证上下文的最大字符数；缺省 {DEFAULT_WORK_CONTEXT_BUDGET}，"
+            f"建议不超过 {CONTEXT_BUDGET_CEILING}（可超出）"
         ),
     ),
     scope="global",
@@ -173,12 +175,6 @@ _DEFAULTS: dict[str, int] = {
     MAX_STEPS_CONFIG_ID: DEFAULT_MAX_STEPS,
     MAX_LLM_CALLS_CONFIG_ID: DEFAULT_MAX_LLM_CALLS,
     CONTEXT_BUDGET_CONFIG_ID: DEFAULT_WORK_CONTEXT_BUDGET,
-}
-
-_CEILINGS: dict[str, int] = {
-    MAX_STEPS_CONFIG_ID: MAX_STEPS_CEILING,
-    MAX_LLM_CALLS_CONFIG_ID: MAX_LLM_CALLS_CEILING,
-    CONTEXT_BUDGET_CONFIG_ID: CONTEXT_BUDGET_CEILING,
 }
 
 
@@ -261,10 +257,10 @@ class LoopBounds:
             raise AgentRuntimeValidationError(
                 f"{config_id} 的配置项损坏（{path}）：{exc}"
             ) from exc
-        return _check(value, config_id=config_id, ceiling=_CEILINGS[config_id])
+        return _check(value, config_id=config_id)
 
     def _set(self, config_id: str, value: object, *, trace_id: str | None) -> ChangeRecord | None:
-        value = _check(value, config_id=config_id, ceiling=_CEILINGS[config_id])
+        value = _check(value, config_id=config_id)
         old = self._read(config_id)
         if old == value:
             return None

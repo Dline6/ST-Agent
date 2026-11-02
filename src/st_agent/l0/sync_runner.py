@@ -19,6 +19,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import threading
 import time
 import uuid
@@ -36,6 +37,7 @@ from st_agent.l0.info.sources import (
 from st_agent.l0.info.switch_config import enabled_task_map
 from st_agent.l0.info.sync import InfoSync
 from st_agent.l0.market.db import MarketDb
+from st_agent.l0.market.auto_sync import parse_auto_sync_config_id
 from st_agent.l0.market.datasets import (
     dataset_for_task,
     get_dataset,
@@ -53,6 +55,8 @@ from st_agent.l0.market.tasks import TASK_KEYS as MARKET_TASK_KEYS
 from st_agent.l0.market.tasks import get_task, last_n_quarters
 
 __all__ = ["DataSyncRunner", "SyncBusyError", "SyncJobError", "SCOPES"]
+
+_LOG = logging.getLogger(__name__)
 
 _MARKET_DOMAIN: dict[str, str] = {
     task_key: domain
@@ -358,12 +362,24 @@ class DataSyncRunner:
             groups = normalize_groups(dataset, raw.get("groups"))
             time = raw.get("time") or spec.default_time
             resolved = self._resolve_time(spec, time)
+            window = raw.get("window")
+            if window is not None:
+                if not isinstance(window, (list, tuple)) or len(window) != 2:
+                    raise SyncJobError(f"第 {index + 1} 项的窗口须为 [起始日期, 结束日期]")
+                window_start = _check_date(window[0], "窗口起点")
+                window_end = _check_date(window[1], "窗口终点")
+                if not window_start or not window_end or window_start > window_end:
+                    raise SyncJobError(
+                        f"第 {index + 1} 项的窗口非法：{window!r}"
+                    )
+                window = (window_start, window_end)
             out.append({
                 "item_id": str(raw.get("item_id") or f"item-{index + 1}"),
                 "target": target,
                 "dataset": dataset,
                 "groups": list(groups),
                 "time": resolved,
+                "window": window,
                 "force_refresh": bool(raw.get("force_refresh", False)),
             })
         return out
@@ -471,6 +487,7 @@ class DataSyncRunner:
                 item["dataset"],
                 json.dumps(item["time"], sort_keys=True, ensure_ascii=False),
                 ",".join(item["groups"]),
+                json.dumps(item.get("window"), ensure_ascii=False),
             )
             group = grouped.get(key)
             if group is None:
@@ -481,6 +498,7 @@ class DataSyncRunner:
                     "codes": set(),
                     "groups": item["groups"],
                     "time": item["time"],
+                    "window": item.get("window"),
                     "force_refresh": False,
                 }
                 grouped[key] = group
@@ -677,6 +695,71 @@ class DataSyncRunner:
             "estimate": preflight["estimate"],
         }
 
+    def start_auto_sync(self, config_ids: Any) -> dict[str, Any] | None:
+        """按勾选集合发起一次启动同步（T-UI-037.3）。
+
+        - 逐「标的 × 数据集」组 items；逐证券标的不可用 / ``custom`` 无代码集即跳过并记日志。
+        - 已有数据 → 日期类按水位增量、季度/年度按距上次成功的期数补齐到当天；
+          无数据 → 日期类最近 1 天、季度/年度最近 1 期、信息面首轮传单日窗口。
+        - 与手动批次共用单飞锁：已有批次在跑时跳过，不排队、不覆盖。
+
+        :returns: 批次快照；无可用项或并发跳过时 ``None``。
+        """
+        pairs: list[tuple[str, str]] = []
+        for config_id in config_ids or ():
+            parsed = parse_auto_sync_config_id(str(config_id))
+            if parsed is not None:
+                pairs.append(parsed)
+        if not pairs:
+            return None
+        db = MarketDb(self._store)
+        self._ensure_schema(db)
+        snapshot = db.overview_snapshot()
+        states = {row["task_key"]: row for row in snapshot["states"]}
+        counts = snapshot["counts"]
+        targets = resolve_targets(db, watchlist=self._watch)
+        items: list[dict[str, Any]] = []
+        for target_id, dataset_id in pairs:
+            spec = get_dataset(dataset_id)
+            if spec.target_kind == "target":
+                if target_id == "custom":
+                    _LOG.warning(
+                        "启动自动同步跳过 %s：自定义代码不持久化（无代码集）", dataset_id
+                    )
+                    continue
+                pool = targets.get(target_id)
+                if pool is None or not pool.available:
+                    reason = pool.reason if pool is not None else "标的未登记"
+                    _LOG.warning(
+                        "启动自动同步跳过 %s / %s：%s", target_id, dataset_id, reason
+                    )
+                    continue
+            elif target_id != "other":
+                continue
+            has_data = _dataset_has_data(spec, states, counts)
+            time, window = _auto_time(spec, states, has_data)
+            item: dict[str, Any] = {
+                "target": target_id,
+                "dataset": dataset_id,
+                "groups": [],
+                "time": time,
+                "force_refresh": False,
+            }
+            if window is not None:
+                item["window"] = window
+            items.append(item)
+        if not items:
+            _LOG.info("启动自动同步：没有可执行的勾选项")
+            return None
+        try:
+            return self.start_items(items)
+        except SyncBusyError as exc:
+            _LOG.warning("启动自动同步跳过：%s", exc)
+            return None
+        except SyncJobError as exc:
+            _LOG.warning("启动自动同步未发起：%s", exc)
+            return None
+
     def fetch_items(self, items: Any, *, custom_text: str = "") -> dict[str, Any]:
         """**同步**执行一次批次并返回终态快照（不另起线程；与后台批次共用单飞锁）。
 
@@ -756,6 +839,7 @@ class DataSyncRunner:
                     execution.append({
                         "key": key, "kind": "info", "result_key": result_key,
                         "group_id": group["group_id"],
+                        "window": group.get("window"),
                     })
         return execution
 
@@ -1193,6 +1277,7 @@ class DataSyncRunner:
                 envelope = sync.run_task(
                     item["key"], enabled=enabled, watchlist=watch,
                     timeout_ms=self._timeout_ms, cancel=self._cancel,
+                    window=item.get("window"),
                 )
                 summary = _summary(envelope)
                 summary.update(_timing(started, began, item))
@@ -1243,6 +1328,76 @@ class DataSyncRunner:
 
         fetcher = HttpInfoFetcher()
         return InfoSync(db, self._gateway, fetcher), lambda: None
+
+
+def _dataset_has_data(
+    spec: Any, states: Mapping[str, Mapping[str, Any]], counts: Mapping[str, Any]
+) -> bool:
+    """该数据集是否已有数据（水位或任一目标表有行）。"""
+    for key in spec.task_keys:
+        row = states.get(key) or {}
+        if row.get("watermark"):
+            return True
+        if key in MARKET_TASK_KEYS:
+            tables = (get_task(key).table_name,)
+        else:
+            tables = tuple(get_info_task(key).written_tables)
+        for table in tables:
+            rows = counts.get(table)
+            if isinstance(rows, int) and rows > 0:
+                return True
+    return False
+
+
+def _last_success_date(
+    spec: Any, states: Mapping[str, Mapping[str, Any]]
+) -> date | None:
+    """该数据集各任务最近一次成功的最大日期（解析不了即忽略）。"""
+    dates: list[date] = []
+    for key in spec.task_keys:
+        value = (states.get(key) or {}).get("last_success_at")
+        if not value:
+            continue
+        try:
+            dates.append(datetime.fromisoformat(str(value)).date())
+        except ValueError:
+            continue
+    return max(dates) if dates else None
+
+
+def _auto_time(
+    spec: Any, states: Mapping[str, Mapping[str, Any]], has_data: bool
+) -> tuple[dict[str, Any], tuple[str, str] | None]:
+    """自动同步的时间口径：有数据补齐到当天，无数据只取最新一期。"""
+    today = _today()
+    if spec.time_kind == "date_range":
+        if has_data:
+            return {"kind": "date_range", "mode": "incremental"}, None
+        return {"kind": "date_range", "mode": "last_days", "n": 1}, None
+    if spec.time_kind == "quarter_range":
+        n = 1
+        if has_data:
+            last = _last_success_date(spec, states)
+            if last is not None:
+                n = max(
+                    1,
+                    (today.year - last.year) * 4
+                    + ((today.month - 1) // 3 - (last.month - 1) // 3)
+                    + 1,
+                )
+        return {"kind": "quarter_range", "mode": "last_n", "n": n}, None
+    if spec.time_kind == "year_range":
+        n = 1
+        if has_data:
+            last = _last_success_date(spec, states)
+            if last is not None:
+                n = max(1, today.year - last.year + 1)
+        return {"kind": "year_range", "mode": "last_n", "n": n}, None
+    window = None
+    if not has_data and any(key in INFO_TASK_KEYS for key in spec.task_keys):
+        day = today.isoformat()
+        window = (day, day)
+    return {"kind": "none"}, window
 
 
 def _timing(

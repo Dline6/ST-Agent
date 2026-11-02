@@ -346,3 +346,21 @@ def test_unknown_session_reads_are_explicit(rig: M1Rig) -> None:
 
 def test_record_reply_does_not_fabricate_for_unknown_sessions(rig: M1Rig) -> None:
     assert rig.m1.chat.record_reply("sess_missing", text="x") is False
+
+
+def test_sessions_can_be_deleted_end_to_end(rig: M1Rig) -> None:
+    """T-UI-037.4：真门面 + 真 `SessionStore` 删除；未知标识进 `missing`。"""
+    first = rig.m1.chat.post("第一条会话")
+    second = rig.m1.chat.post("第二条会话")
+    result = rig.m1.chat.delete_sessions([
+        first.session_id, second.session_id, "sess_missing",
+    ])
+    assert result.status == "ok"
+    assert result.data["deleted"] == [first.session_id, second.session_id]
+    assert result.data["missing"] == ["sess_missing"]
+    remaining = {
+        item["session_id"]
+        for item in rig.m1.chat.list_sessions().data["sessions"]
+    }
+    assert first.session_id not in remaining
+    assert second.session_id not in remaining

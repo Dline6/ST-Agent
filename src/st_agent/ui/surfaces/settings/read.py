@@ -7,6 +7,7 @@ from collections.abc import Callable, Mapping
 from typing import Any
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.ui_description import UiDescription, checked_description, new_description_id
+from st_agent.l0.market.auto_sync import get_auto_sync_pairs
 from st_agent.ui.envelope import envelope_payload
 from st_agent.ui.data_catalog import (
     catalog_payload,
@@ -558,6 +559,7 @@ class SettingsReadSurface(SurfaceBase):
         catalog = {
             **catalog_payload(overview["tasks"]),
             **sync_catalog_payload(overview),
+            "auto_sync": get_auto_sync_pairs(face.store),
         }
         items = list(catalog["items"])
         ok_items = sum(1 for item in items if item["status"] == "ok")

@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import threading
 import time
-from datetime import datetime
+from datetime import date, datetime, timedelta
 
 import pytest
 
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.l0.market import BaoStockSync, MarketDb
+from st_agent.l0.market.auto_sync import auto_sync_config_id
 from st_agent.l0.market.errors import MarketValidationError
 from st_agent.l0.sync_runner import DataSyncRunner, SyncBusyError, SyncJobError
 
@@ -30,13 +31,13 @@ class FakeMarketSync:
     def run_task(
         self, task_key: str, *, enabled=None, watchlist=None, timeout_ms=0,
         codes=None, start=None, end=None, groups=None, quarters=None,
-        force_refresh=False, progress=None, cancel=None,
+        force_refresh=False, progress=None, cancel=None, window=None,
     ):
         self.calls.append(task_key)
         self.args[task_key] = {
             "codes": codes, "start": start, "end": end,
             "groups": groups, "quarters": quarters,
-            "force_refresh": force_refresh,
+            "force_refresh": force_refresh, "window": window,
         }
         if progress is not None:
             progress({
@@ -475,3 +476,79 @@ def test_fetch_items_rejects_unknown_dataset(store, gateway):
     runner = _runner(store, gateway)
     with pytest.raises(MarketValidationError):
         runner.fetch_items([{"target": "other", "dataset": "no-such-dataset"}])
+
+
+# ───────────── 启动自动同步（T-UI-037.3） ─────────────
+
+
+def test_auto_sync_without_data_takes_the_latest_day(store, gateway, market_db):
+    market = FakeMarketSync()
+    runner = _runner(store, gateway, market=market, watchlist=lambda: ())
+
+    result = runner.start_auto_sync([auto_sync_config_id("all_a", "k_daily")])
+    assert result is not None
+    _wait(runner)
+
+    today = date.today()
+    args = market.args["bs_k_daily"]
+    assert args["start"] == (today - timedelta(days=1)).isoformat()
+    assert args["end"] == today.isoformat()
+
+
+def test_auto_sync_with_data_uses_the_watermark(store, gateway, market_db):
+    with market_db.transact() as con:
+        con.execute(
+            "INSERT OR REPLACE INTO sync_state("
+            " task_key, table_name, source_id, mode, schedule_desc,"
+            " watermark, last_success_at, last_status"
+            ") VALUES('bs_k_daily','k_line_daily','baostock','incremental',"
+            " 'daily','2026-09-25','2026-09-25T08:00:00+08:00','ok')"
+        )
+        con.commit()
+    market = FakeMarketSync()
+    runner = _runner(store, gateway, market=market, watchlist=lambda: ())
+
+    assert runner.start_auto_sync([auto_sync_config_id("all_a", "k_daily")])
+    _wait(runner)
+
+    args = market.args["bs_k_daily"]
+    assert args["start"] is None and args["end"] is None, "有数据应按水位增量"
+
+
+def test_auto_sync_first_info_run_gets_a_single_day_window(store, gateway, market_db):
+    info = FakeInfoSync()
+    runner = _runner(store, gateway, info=info, watchlist=lambda: ())
+
+    assert runner.start_auto_sync([
+        auto_sync_config_id("other", "announcement_cninfo"),
+    ])
+    _wait(runner)
+
+    today = date.today().isoformat()
+    assert info.args["info_announcement_cninfo"]["window"] == (today, today)
+
+
+def test_auto_sync_skips_unavailable_and_custom_targets(store, gateway, market_db):
+    market = FakeMarketSync()
+    runner = _runner(store, gateway, market=market, watchlist=lambda: ())
+
+    assert runner.start_auto_sync([
+        auto_sync_config_id("watchlist", "k_daily"),
+        auto_sync_config_id("custom", "k_daily"),
+    ]) is None
+    assert market.calls == []
+
+
+def test_auto_sync_skips_when_a_batch_is_running(store, gateway, market_db):
+    release = threading.Event()
+
+    class BlockingMarket(FakeMarketSync):
+        def run_task(self, task_key, **kwargs):
+            release.wait(3)
+            return super().run_task(task_key, **kwargs)
+
+    runner = _runner(store, gateway, market=BlockingMarket())
+    runner.start(["bs_calendar"])
+    assert runner.start_auto_sync([auto_sync_config_id("all_a", "k_daily")]) is None
+    release.set()
+    _wait(runner)

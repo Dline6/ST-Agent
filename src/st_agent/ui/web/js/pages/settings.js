@@ -969,10 +969,11 @@ function renderDataWorkspace({ root, tasks, items, scopeInfo, jobPart }) {
   if (initialJob.state === 'running') pollJob(jobBox, root);
 }
 
-function renderDataWorkspaceV2({ root, targets, datasets, groups, tasks, jobPart }) {
+function renderDataWorkspaceV2({ root, targets, datasets, groups, tasks, jobPart, autoSync }) {
   let targetMap = new Map(targets.map((item) => [item.target_id, item]));
   let targetDatasets = datasets.filter((item) => item.target_kind === 'target');
   let globalDatasets = datasets.filter((item) => item.target_kind === 'global');
+  const autoMap = new Map(Object.entries(autoSync || {}));
   let lastPreflight = null;
   let preflightSeq = 0;
   let preflightTimer = null;
@@ -1259,6 +1260,44 @@ function renderDataWorkspaceV2({ root, targets, datasets, groups, tasks, jobPart
       refreshPreflight();
     });
     row.append(head, el('p', 'settings-item__desc', dataset.description));
+
+    // 启动应用时自动同步（T-UI-037.3）：逐「标的 × 数据集」落 `data-sync/auto.*`。
+    const autoKey = itemKey(target.target_id, dataset.dataset_id);
+    const autoLabel = el('label', 'settings-field settings-field--inline');
+    const autoCheck = el('input');
+    autoCheck.type = 'checkbox';
+    autoCheck.checked = Boolean(autoMap.get(autoKey));
+    autoCheck.disabled = target.target_id === 'custom';
+    if (target.target_id === 'custom') {
+      autoCheck.title = '自定义代码不持久化，启动时没有代码集';
+    }
+    autoCheck.addEventListener('change', async () => {
+      autoCheck.disabled = true;
+      try {
+        const result = await postJson('/api/settings/apply', {
+          config_id: `data-sync/auto.${target.target_id}.${dataset.dataset_id}`,
+          action: autoCheck.checked ? 'enable' : 'disable',
+        });
+        if (!result || result.status !== 'ok') {
+          throw new Error((result && result.reason) || '未保存');
+        }
+        if (autoCheck.checked) autoMap.set(autoKey, true);
+        else autoMap.delete(autoKey);
+        showToast(
+          autoCheck.checked ? '已设为启动时自动同步' : '已取消启动自动同步',
+          { type: 'success' },
+        );
+      } catch (error) {
+        autoCheck.checked = !autoCheck.checked;
+        showToast(`自动同步设置未保存：${error.message}`, { type: 'error' });
+      } finally {
+        autoCheck.disabled = target.target_id === 'custom';
+      }
+    });
+    autoLabel.append(
+      autoCheck, el('span', 'settings-field__label', '启动应用时自动同步'),
+    );
+    row.append(autoLabel);
 
     const meta = [];
     const tables = (dataset.tables || []).map((table) =>
@@ -1594,6 +1633,12 @@ function renderDataWorkspaceV2({ root, targets, datasets, groups, tasks, jobPart
         targetMap = new Map(targets.map((item) => [item.target_id, item]));
         targetDatasets = datasets.filter((item) => item.target_kind === 'target');
         globalDatasets = datasets.filter((item) => item.target_kind === 'global');
+        if (values.auto_sync) {
+          autoMap.clear();
+          for (const [key, enabled] of Object.entries(values.auto_sync)) {
+            if (enabled) autoMap.set(key, true);
+          }
+        }
       }
     } catch (error) {
       // 目录刷新失败不改写已有内容：进度卡已如实给出批次结果。
@@ -1753,7 +1798,7 @@ async function renderDataView(root) {
   if (datasets.length && targets.length) {
     renderDataWorkspaceV2({
       root, targets, datasets, groups: values.groups || [],
-      tasks, jobPart: payload.job,
+      tasks, jobPart: payload.job, autoSync: values.auto_sync || {},
     });
   } else {
     renderDataWorkspace({ root, tasks, items, scopeInfo, jobPart: payload.job });
@@ -2052,6 +2097,58 @@ async function renderAgentAuthorization(root) {
   root.append(box);
 }
 
+/** 开放网络页的页面级 chrome：「允许抓取全部域名」一键写入名单 `*`（T-UI-037.1）。 */
+function webChrome(root, panel) {
+  const entries = (panel && panel.data && panel.data.slots
+    && panel.data.slots.entries) || [];
+  const allowed = entries.find(
+    (item) => item.config_id === 'web-egress/allowed-hosts',
+  );
+  if (!allowed) return;
+  const box = el('section', 'page__block');
+  box.append(el('h3', 'page__block-title', '全部域名'));
+  const label = el('label', 'settings-field settings-field--inline');
+  const check = el('input');
+  check.type = 'checkbox';
+  check.checked = String(allowed.current || '').trim() === '*';
+  const status = el('p', 'component__meta', '');
+  label.append(check, el('span', 'settings-field__label', '允许抓取全部域名'));
+  check.addEventListener('change', async () => {
+    check.disabled = true;
+    try {
+      const result = await postJson('/api/settings/apply', {
+        config_id: 'web-egress/allowed-hosts',
+        action: 'set',
+        value: check.checked ? '*' : '',
+      });
+      if (!result || result.status !== 'ok') {
+        status.textContent = `未应用（${(result && result.status) || '未知'}）：`
+          + `${(result && result.reason) || ''}`;
+        status.className = 'state state--error';
+        check.checked = !check.checked;
+        return;
+      }
+      showToast(check.checked ? '已允许抓取全部域名' : '已清空域名名单', {
+        type: 'success',
+      });
+      if (root.parentElement) renderSettingsPage(null, root.parentElement);
+    } catch (error) {
+      status.textContent = `请求失败：${error.message}`;
+      status.className = 'state state--error';
+      check.checked = !check.checked;
+    } finally {
+      check.disabled = false;
+    }
+  });
+  box.append(
+    label,
+    el('p', 'component__meta',
+      '写入名单 * 后任意主机均可抓取；总开关仍须开启。取消勾选会清空名单。'),
+    status,
+  );
+  root.append(box);
+}
+
 export async function renderSettingsPage(page, mount) {
   const view = readView();
   const root = el('div', 'page');
@@ -2069,7 +2166,8 @@ export async function renderSettingsPage(page, mount) {
     if (payload && !payload.status) llmBootChrome(root, partValues(payload.boot));
     credentialChrome(root);
   } else if (view === 'web') {
-    await renderParts('/api/settings/web', root, ['panel', 'credential']);
+    const payload = await renderParts('/api/settings/web', root, ['panel', 'credential']);
+    if (payload && !payload.status) webChrome(root, payload.panel);
     credentialChrome(root);
   } else if (view === 'command') {
     await renderParts('/api/settings/command', root, ['panel']);

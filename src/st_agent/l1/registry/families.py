@@ -57,6 +57,15 @@ from st_agent.l0.net.web_config import (
     validate_host_patterns,
     web_config_entries,
 )
+from st_agent.l0.market.auto_sync import (
+    AUTO_SYNC_CONFIG_PREFIX,
+    AutoSyncConfigError,
+    auto_sync_entry,
+    get_auto_sync_flags,
+    get_auto_sync_keys,
+    parse_auto_sync_config_id,
+    set_auto_sync,
+)
 from st_agent.l0.exec.exec_config import (
     LOCAL_EXEC_ENABLED_CONFIG_ID,
     exec_config_entries,
@@ -81,6 +90,7 @@ from st_agent.l1.sandbox.provider_hosts import CONFIG_ID_PREFIX, ProviderHostReg
 from st_agent.l1.scheduler.policy import OFFLINE_CATCH_UP_CONFIG_ID, SchedulerPolicy
 
 __all__ = [
+    "DataSyncAutoFamily",
     "DataSourceSwitchFamily",
     "LocalExecFamily",
     "McpHubPolicyFamily",
@@ -612,6 +622,73 @@ class WebEgressFamily:
         raise RegistryValidationError(
             f"{config_id!r} 不属本族（web-egress/enabled / web-egress/allowed-hosts）"
         )
+
+    def _record(
+        self, config_id: str, old: object, new: object, trace_id: str | None
+    ) -> ChangeRecord:
+        change = ChangeRecord(
+            change_id=new_change_id(), config_id=config_id,
+            old_value=old, new_value=new, applied_at=self._now().isoformat(),
+            trace_ref=trace_id,
+        )
+        self._store.put(
+            CHANGE_PARTITION, f"{self.change_prefix}{change.change_id}.json",
+            change.model_dump_json().encode("utf-8"),
+        )
+        return change
+
+
+class DataSyncAutoFamily:
+    """数据同步的启动自动同步勾选（``data-sync/auto.*``；T-UI-037.3）。
+
+    条目为 L0 owner 的布尔标量：勾选集合落 ``config`` 分区 ``data-sync/auto.json``；
+    变更由本族补落 ``ChangeRecord``（前缀 ``data-sync-change/``）。消费方是启动时的
+    ``DataSyncRunner.start_auto_sync``，它每次启动现读，故落值即对下一次启动生效。
+
+    :param store: ``Store`` 句柄
+    :param now: 取时函数（测试注入固定时钟；缺省本机当前时刻）
+    """
+
+    config_prefix = AUTO_SYNC_CONFIG_PREFIX
+    scope: ConfigScope = "global"
+    change_prefix = "data-sync-change/"
+
+    def __init__(self, store, *, now: Callable[[], datetime] | None = None) -> None:
+        self._store = store
+        self._now = _system_now if now is None else now
+
+    def entries(self) -> tuple[ConfigEntry, ...]:
+        out = []
+        for config_id in get_auto_sync_keys(self._store):
+            entry = auto_sync_entry(config_id, current=True)
+            if entry is not None:
+                out.append(entry)
+        return tuple(out)
+
+    def entry(self, config_id: str) -> ConfigEntry | None:
+        parsed = parse_auto_sync_config_id(config_id)
+        if parsed is None:
+            return None
+        current = bool(get_auto_sync_flags(self._store).get(config_id, False))
+        return auto_sync_entry(config_id, current=current)
+
+    def apply(
+        self, config_id: str, value: object, *, trace_id: str | None = None
+    ) -> ChangeRecord | None:
+        if parse_auto_sync_config_id(config_id) is None:
+            raise RegistryValidationError(
+                f"{config_id!r} 不属本族（data-sync/auto.<target>.<dataset>）"
+            )
+        if not isinstance(value, bool):
+            raise RegistryValidationError(f"{config_id} 的取值须为布尔：{value!r}")
+        old = bool(get_auto_sync_flags(self._store).get(config_id, False))
+        if old == value:
+            return None
+        try:
+            set_auto_sync(self._store, config_id, value)
+        except AutoSyncConfigError as exc:
+            raise RegistryValidationError(str(exc)) from exc
+        return self._record(config_id, old, value, trace_id)
 
     def _record(
         self, config_id: str, old: object, new: object, trace_id: str | None

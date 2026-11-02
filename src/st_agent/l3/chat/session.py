@@ -297,6 +297,20 @@ class SessionStore:
                if p.startswith(SESSION_PREFIX) and p.endswith(".json")]
         return tuple(sorted(ids))
 
+    def delete(self, session_id: str) -> None:
+        """物理删除一个会话（[05 §1]；2026-11-02 补）。
+
+        不存在即 :class:`SessionNotFoundError`；只删 ``chat_history`` 分区内的会话文件，
+        不级联其他分区。删除不可恢复。
+        """
+        sid = str(session_id or "").strip()
+        if not sid or sid not in self.sessions():
+            raise SessionNotFoundError(f"会话不存在：{sid}")
+        try:
+            self._store.delete(CHAT_PARTITION, _key(sid))
+        except KeyError as exc:
+            raise SessionNotFoundError(f"会话不存在：{sid}") from exc
+
     # ───────────────────────── 追加与分支 ─────────────────────────
 
     def append(

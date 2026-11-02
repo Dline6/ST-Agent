@@ -221,3 +221,19 @@ class TestPayloadPersistence:
         message = ChatMessage.model_validate_json(raw)
         assert message.payload is None
         assert message.text == "旧轮次"
+
+
+class TestDeleteSession:
+    """T-UI-037.4：物理删除会话，未知标识显式抛。"""
+
+    def test_delete_removes_only_the_named_session(self, chat: SessionStore) -> None:
+        keep = chat.create(now=NOW)
+        drop = chat.create(now=NOW)
+        chat.delete(drop.session_id)
+        assert chat.sessions() == (keep.session_id,)
+        with pytest.raises(SessionNotFoundError):
+            chat.load(drop.session_id)
+
+    def test_delete_unknown_session_is_explicit(self, chat: SessionStore) -> None:
+        with pytest.raises(SessionNotFoundError):
+            chat.delete("sess_missing")

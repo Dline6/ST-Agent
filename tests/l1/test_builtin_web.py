@@ -173,6 +173,15 @@ class TestFetch:
         assert "名单为空" in out.reason
         assert env.http.calls == []
 
+    def test_star_allows_every_host(self, env):
+        """T-UI-037.1：名单写 `*` 即允许全部域名（仍受总开关约束）。"""
+        set_egress_enabled(env.store, True)
+        set_allowed_hosts(env.store, "*")
+        env.http.payload = FetchedPayload(200, "text/plain", b"ok")
+        out = env.fetch("https://any.random.test/a")
+        assert out.status == "ok"
+        assert out.data["host"] == "any.random.test"
+
     def test_non_text_is_unavailable_not_mojibake(self, env):
         set_egress_enabled(env.store, True)
         set_allowed_hosts(env.store, "docs.example.com")

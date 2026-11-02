@@ -316,3 +316,27 @@ def test_sync_groups_start_collapsed_and_selection_does_not_rebuild_the_catalog(
         "勾选只改状态并刷新预检——整块重建会让折叠态与滚动位置复位"
     )
     assert "refreshCatalog" in text, "批次结束应只刷新目录状态，不整页重绘"
+
+
+def test_web_page_has_an_allow_all_domains_option() -> None:
+    """T-UI-037.1：开放网络页提供「允许抓取全部域名」，写入名单 `*`。"""
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "src" / "st_agent" / "ui" / "web" / "js" / "pages" / "settings.js"
+    )
+    text = path.read_text(encoding="utf-8")
+    assert "允许抓取全部域名" in text
+    assert "value: check.checked ? '*' : ''" in text
+    assert "web-egress/allowed-hosts" in text
+
+
+def test_data_page_has_a_startup_auto_sync_checkbox() -> None:
+    """T-UI-037.3：每个「标的 × 数据集」行提供启动自动同步勾选。"""
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "src" / "st_agent" / "ui" / "web" / "js" / "pages" / "settings.js"
+    )
+    text = path.read_text(encoding="utf-8")
+    assert "启动应用时自动同步" in text
+    assert "data-sync/auto." in text
+    assert "values.auto_sync" in text

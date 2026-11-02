@@ -199,6 +199,8 @@ _POST_ROUTES: dict[str, Callable[[UiApp, dict], dict]] = {
     # 会话级授权档位（[`T-AGT-028.1`]）：窗口内切换 / 恢复跟随全局——**显式动作**、非幂等读面；
     # 只改进程内该会话的覆盖，不动全局条目与 `agent-change/` 留痕（[01 §7]）。
     "/api/chat/session/tier": lambda app, body: app.api_chat_set_session_tier(body),
+    # 会话删除（[`T-UI-037.4`]）：按标识物理删除会话文件——显式动作，非幂等读面。
+    "/api/chat/sessions/delete": lambda app, body: app.api_chat_delete_sessions(body),
     # 反思中心的写面（`T-UI-004.2`）：反馈采集与提案处置
     "/api/reflection/feedback": lambda app, body: app.api_reflection_feedback(body),
     "/api/reflection/proposals/decide": lambda app, body: app.api_reflection_decide(body),

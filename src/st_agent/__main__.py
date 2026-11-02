@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import signal
 import sys
@@ -60,6 +61,7 @@ from st_agent.l0.bootstrap.root import (
     resolve_root,
 )
 from st_agent.l0.market import MarketDb
+from st_agent.l0.market.auto_sync import get_auto_sync_keys
 from st_agent.l0.storage import (
     StorageCorruptionError,
     StorageOpenError,
@@ -79,10 +81,13 @@ __all__ = [
     "main",
     "parent_alive",
     "run_backend",
+    "start_auto_sync",
     "ui_ports",
     "watch_parent",
     "watch_stdin",
 ]
+
+_LOG = logging.getLogger(__name__)
 
 AMBIENT_INTERVAL_SECONDS = 60.0
 """常驻驱动循环的轮询间隔（秒）——``tick`` 的判定精度到分钟，60 s 足够不误点；``0`` ＝关闭。"""
@@ -668,6 +673,7 @@ def run_backend(
     if control_stdin:
         watch_stdin(stop)
     _emit_ready(stream, running, Path(root), json_handshake=json_handshake)
+    start_auto_sync(runtime)
     ambient = ambient_loop(runtime, stop, interval=ambient_interval)
     try:
         stop.wait()
@@ -685,6 +691,39 @@ def run_backend(
             else:
                 _emit(stream, "已退出。")
     return 0
+
+
+def start_auto_sync(runtime: Any) -> threading.Thread | None:
+    """按设置页勾选集合，在后台发起一次启动同步（T-UI-037.3）。
+
+    只读 ``config`` 分区的勾选集合；没有勾选、运行期未装配同步面或存储面即无操作。
+    批次本体在独立线程里跑，**不阻塞就绪握手与常驻循环**；并发 / 不可用由
+    :meth:`DataSyncRunner.start_auto_sync` 自行跳过并记日志。
+    """
+    runner = getattr(runtime, "data_sync", None)
+    settings = getattr(runtime, "settings", None)
+    store = getattr(settings, "store", None)
+    if runner is None or store is None:
+        return None
+    try:
+        keys = get_auto_sync_keys(store)
+    except Exception as exc:  # noqa: BLE001 —— 配置损坏不应拖垮启动
+        _LOG.warning("启动自动同步跳过：读取勾选集合失败（%s）", exc)
+        return None
+    if not keys:
+        return None
+
+    def _run() -> None:
+        try:
+            runner.start_auto_sync(keys)
+        except Exception:  # noqa: BLE001 —— 后台线程不得静默吞异常
+            _LOG.exception("启动自动同步未预期失败")
+
+    thread = threading.Thread(
+        target=_run, name="st-agent-auto-sync", daemon=True,
+    )
+    thread.start()
+    return thread
 
 
 def build_parser() -> argparse.ArgumentParser:
