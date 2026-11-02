@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-022.1]
 status: done
 decisions: [D-154, D-163]
-verify: "见执行日志 [T-AGT-027.1]；范围套件 2268 passed / 2 环境性 ERROR；verify_docs --strict PASS；真 HTTP 集成用例覆盖黄金路径"
+verify: "见执行日志 [T-AGT-027.1]；范围套件 2268 passed / 2 环境性 ERROR；verify_docs --strict PASS；真 HTTP 集成用例覆盖黄金路径；commit b4e1fb4"
 ---
 
 # T-AGT-027.1 · steer inbox 与上下文注入

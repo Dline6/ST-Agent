@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-027.1, T-AGT-023.2]
 status: done
 decisions: [D-154, D-163]
-verify: "见执行日志 [T-AGT-027.2]；端点 / 真装配用例 8 passed；范围套件 2268 passed / 2 环境性 ERROR；verify_docs --strict PASS；dev 面两态走查"
+verify: "见执行日志 [T-AGT-027.2]；端点 / 真装配用例 8 passed；范围套件 2268 passed / 2 环境性 ERROR；verify_docs --strict PASS；dev 面两态走查；commit b4e1fb4"
 ---
 
 # T-AGT-027.2 · 前端运行中输入
