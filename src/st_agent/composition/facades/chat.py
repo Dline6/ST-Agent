@@ -51,6 +51,7 @@ from st_agent.l6.errors import AuthorizationError
 from st_agent.composition.common import (
     _now,
 )
+from st_agent.composition.facades.chat_runs import RunControlMixin
 
 def _clarification_payload(round_: Any) -> dict[str, Any] | None:
     """澄清轮 → 可序列化字典（[05 §3.2]）；无问项也无方向候选时 ``None``（不摆空壳）。
@@ -101,7 +102,7 @@ class TurnResult:
         return self.confirmation is not None
 
 
-class DialogFacade:
+class DialogFacade(RunControlMixin):
     """对话门面：把 L2/L3 编排器串成 [00 §5] 反向流的一条调用面。
 
     只**装配与转发**，不加域逻辑——各段语义仍由各编排器负责（失败一律走信封、
@@ -230,50 +231,8 @@ class DialogFacade:
             confirmation, session_id=sid, now=self._now(), agent_run_id=agent_run_id,
         )
 
-    # ───────────────────── 运行控制面的只读口（T-AGT-023.1） ─────────────────────
-
-    @property
-    def run_available(self) -> bool:
-        """循环端口是否装配（旧根为 ``False`` ⇒ SSE / 后台派发显式 ``unavailable``）。"""
-        return self._run_port is not None
-
-    @property
-    def _run_port(self) -> Any:
-        return getattr(self._bus, "investigations", None)
-
-    def new_run_id(self) -> str:
-        """预铸一个运行标识（后台派发在开跑前须先能寻址）。"""
-        port = self._run_port
-        if port is None:
-            raise ValueError("未注入自主查证循环端口，无法启动后台运行（05 §10）")
-        return port.new_run_id()
-
-    def is_active(self, agent_run_id: str) -> bool:
-        port = self._run_port
-        return bool(port is not None and port.is_active(str(agent_run_id or "")))
-
-    def wait_started(self, agent_run_id: str, timeout: float = 5.0) -> bool:
-        port = self._run_port
-        if port is None:
-            return False
-        return bool(port.wait_started(str(agent_run_id or ""), timeout=timeout))
-
-    def run_events(self, agent_run_id: str, *, after_seq: int = 0) -> tuple[Any, ...]:
-        port = self._run_port
-        if port is None:
-            raise ValueError("未注入自主查证循环端口，无法读取运行事件（05 §10）")
-        return tuple(port.events(str(agent_run_id or ""), after_seq=after_seq))
-
-    def has_event_log(self, agent_run_id: str) -> bool:
-        port = self._run_port
-        return bool(port is not None and port.has_event_log(str(agent_run_id or "")))
-
-    def stop_run(self, agent_run_id: str) -> bool:
-        """请求安全停止一次在册运行（[D-154] B6；协作式，不在册即 ``False``）。"""
-        port = self._run_port
-        if port is None:
-            raise ValueError("未注入自主查证循环端口，无法停止运行（05 §10）")
-        return bool(port.stop(str(agent_run_id or "")))
+    # 运行控制面（SSE / 等待开跑 / 事件回放 / 停止 / 插话）见
+    # `st_agent.composition.facades.chat_runs.RunControlMixin`——门面只保留编排。
 
     # ───────────────────── 会话级运行期授权档位（T-AGT-028.1 / 01 §7） ─────────────────────
 
@@ -411,6 +370,7 @@ class DialogFacade:
                 "text": message.text,
                 "created_at": message.created_at.isoformat(),
                 "payload": dict(message.payload) if message.payload is not None else None,
+                "steer": bool(message.steer),
             }
             for message in chain
         ]

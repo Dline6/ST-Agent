@@ -272,6 +272,7 @@ class _AgentInvestigator:
                 subprotocols=self._subprotocols,
                 emit=events.emit,
                 cancel=run.cancel_event,
+                steer_inbox=run.steer_inbox,
             )
             outcome = outcome.model_copy(update={"context_note": note})
             report = conclude_agent_run(
@@ -346,6 +347,7 @@ class _AgentInvestigator:
                 subprotocols=self._subprotocols,
                 emit=events.emit,
                 cancel=run.cancel_event,
+                steer_inbox=run.steer_inbox,
             )
         except AgentRuntimeValidationError as exc:
             return ResumeOutcome(envelope=ResultEnvelope.validation_failed(str(exc)))
@@ -398,6 +400,23 @@ class _AgentInvestigator:
             return False
         handle.request_cancel()
         return True
+
+    def steer(self, agent_run_id: str, text: str) -> bool:
+        """把一条**运行中插话**投进该 run 的收件箱（不在册即 ``False``，不报错）。
+
+        取件与注入由循环在步骤边界完成；本方法只负责「投进去」，不落会话——会话落盘
+        由对话门面按受理时序先做（[`T-AGT-027`]）。
+        """
+        handle = self._runs.get(str(agent_run_id or ""))
+        if handle is None:
+            return False
+        handle.request_steer(str(text or ""))
+        return True
+
+    def run_session(self, agent_run_id: str) -> str | None:
+        """该 run 的会话归属（不在册即 ``None``；供插话端点定锚落盘）。"""
+        handle = self._runs.get(str(agent_run_id or ""))
+        return None if handle is None else handle.session_id
 
     def _gate_for(self, session_id: str | None) -> ActionGate:
         """按**会话**绑定判据端口的闸门（会话级覆盖，[01 §7]）。

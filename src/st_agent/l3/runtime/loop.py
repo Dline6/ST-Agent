@@ -64,6 +64,7 @@ from st_agent.l3.runtime.protocol import (
     DEFAULT_TURN_PURPOSE,
     ToolCallProtocol,
 )
+from st_agent.l3.runtime.steer import SteerMessage
 from st_agent.l3.runtime.subprotocols import (
     SUBPROTOCOL_TOOLS,
     handle as handle_subprotocol,
@@ -325,6 +326,13 @@ class LoopOutcome(BaseModel):
     """并发形态的显式标注（并行 / 因底层未声明并发安全而退回串行）。"""
     sub_agents: tuple[SubAgentRun, ...] = ()
     """本次循环派生的子 Agent 摘要（按派生顺序；子步骤不在 ``steps`` 内）。"""
+    steered: tuple[SteerMessage, ...] = ()
+    """本次循环收到的**运行中插话**（按到达顺序；含未投递的竞态消息）。
+
+    ``delivered=True`` 者已进入某个后续轮次的工作上下文；``False`` 者在排空前运行已结束，
+    转为下一条普通消息（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+    本段只做留痕与回执，不进 Trace（不新增步骤类型）。
+    """
 
     @property
     def at_bound(self) -> bool:
@@ -393,6 +401,7 @@ def run_agent_loop(
     subprotocols: Any = None,
     emit: Callable[[str, Mapping[str, Any]], None] | None = None,
     cancel: threading.Event | None = None,
+    steer_inbox: Any = None,
 ) -> LoopOutcome:
     """驱动自主查证循环（四段一轮，直至模型给出「结束」或触界）。
 
@@ -441,6 +450,11 @@ def run_agent_loop(
         缺省 ``None`` 即不可取消，存量调用方逐字节不变。置位后循环在**下一处边界**
         终止：LLM 调用前 / 调用返回后 / 批执行前 / 串行每步前——**已开始的工具跑完再停**，
         不强杀在途动作；终止原因 `cancelled`，已执行步骤照实带走（不回滚）
+    :param steer_inbox: **运行中插话的收件箱**（鸭子类型 ``drain() -> Sequence[SteerMessage]``；
+        `ActiveRun.steer_inbox`）。循环在每轮 LLM 调用前（步骤边界）排空，按到达顺序并入
+        工作上下文（带「运行中插入」标记）；与「模型给出结束」竞态时未排空者以
+        ``delivered=False`` 收口，**不丢**（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+        缺省 ``None`` 即不接收插话，存量调用方逐字节不变
     :returns: :class:`LoopOutcome`——终止原因、已执行步骤、链、以及被拦下未执行的那一步
 
     入参非法（上界非正 / 任务为空 / 目录形态坏）抛
@@ -470,6 +484,10 @@ def run_agent_loop(
         raise AgentRuntimeValidationError("运行事件回调须为可调用对象（或 None）")
     if cancel is not None and not callable(getattr(cancel, "is_set", None)):
         raise AgentRuntimeValidationError("取消事件须提供 is_set()（threading.Event 形态，或 None）")
+    if steer_inbox is not None and not callable(getattr(steer_inbox, "drain", None)):
+        raise AgentRuntimeValidationError(
+            "插话收件箱须提供 drain()（ActiveRun.steer_inbox 形态，或 None）"
+        )
 
     chain = trace if trace is not None else Trace(trace_id=TraceId.generate())
     steps: list[WorkStep] = list(prior_steps)
@@ -495,6 +513,8 @@ def run_agent_loop(
     subagent_notes: list[str] = [render_subagent_note(sub) for sub in prior_sub_agents]
     parallel_notes: list[str] = []
     parallel_used = False
+    steered: list[SteerMessage] = []
+    """本次运行收到的插话（已投递与竞态未投递合并；留痕与回执共用）。"""
 
     def _emit(kind: str, payload: Mapping[str, Any] | None = None) -> None:
         """发一条运行事件（``emit`` 缺省即无操作；载荷只由本模块给定客观字段）。"""
@@ -529,6 +549,15 @@ def run_agent_loop(
         cards: Sequence[Any] = (),
     ) -> LoopOutcome:
         """装配终止产出——**计划与上下文状态随每次终止照实带走**。"""
+        deferred = _take_steers(
+            steer_inbox, delivered=False, after_steps=executed,
+        )
+        if deferred:
+            steered.extend(deferred)
+            _emit("steer", _steer_event_payload(
+                deferred, delivered=False, after_steps=executed,
+                reason=f"运行已结束（{termination}），插话转为下一条普通消息",
+            ))
         result = _outcome(
             task, endpoint_id, termination, chain, steps, llm_calls,
             reason=reason, answer=answer, pending=pending, gate_reason=gate_reason,
@@ -543,6 +572,7 @@ def run_agent_loop(
             parent_trace_id=parent_trace_id, executed_steps=executed,
             parallel_used=parallel_used, parallel_note="；".join(parallel_notes),
             sub_agents=tuple(sub_runs),
+            steered=tuple(steered),
         )
         _emit("run_finished", {
             "termination": termination,
@@ -584,12 +614,23 @@ def run_agent_loop(
                 reason=f"已达到 LLM 调用次数上界（{max_llm_calls}），终止",
             )
 
+        # ── 插话（步骤边界）：排空收件箱，按到达顺序并入下一轮上下文 ──
+        delivered_steers = _take_steers(
+            steer_inbox, delivered=True, after_steps=executed,
+        )
+        if delivered_steers:
+            steered.extend(delivered_steers)
+            _emit("steer", _steer_event_payload(
+                delivered_steers, delivered=True, after_steps=executed,
+            ))
+
         # ── ① 出动作（工作上下文每轮重装：任务 + 计划 + 目录 + 已执行动作与结果） ──
         note_for_context = subprotocol_note
         subprotocol_note = ""              # 回灌是一次性的：本轮装配后即消费
         assembled = assemble_work_context(
             task, tuple(tools), steps,
             history=history, memory=memory,
+            steer_messages=tuple(steered),
             plan=current_plan, plan_updated=plan_given, plan_error=plan_error,
             user_inputs=user_inputs,
             budget_chars=budget_chars, max_result_chars=max_result_chars,
@@ -1095,6 +1136,7 @@ def _outcome(
     parallel_used: bool = False,
     parallel_note: str = "",
     sub_agents: Sequence[SubAgentRun] = (),
+    steered: Sequence[SteerMessage] = (),
 ) -> LoopOutcome:
     """装配一次循环的产出（``failure`` 即端点侧给的原信封，产出装配原样透出）。"""
     return LoopOutcome(
@@ -1111,13 +1153,55 @@ def _outcome(
         tool_searches=tuple(tool_searches),
         parent_trace_id=parent_trace_id, executed_steps=executed_steps,
         parallel_used=parallel_used, parallel_note=parallel_note,
-        sub_agents=tuple(sub_agents),
+        sub_agents=tuple(sub_agents), steered=tuple(steered),
     )
 
 
 def _join_note(*parts: str) -> str:
     """把若干显式说明拼成一条（空串跳过；分隔与既有留痕口径一致）。"""
     return "；".join(part for part in parts if part)
+
+
+def _take_steers(
+    inbox: Any, *, delivered: bool, after_steps: int,
+) -> tuple[SteerMessage, ...]:
+    """排空插话收件箱并标上本次排空的投递结果（无收件箱即空）。"""
+    if inbox is None:
+        return ()
+    drained = tuple(inbox.drain() or ())
+    out: list[SteerMessage] = []
+    for item in drained:
+        if not isinstance(item, SteerMessage):
+            raise AgentRuntimeValidationError(
+                "插话收件箱须返回 SteerMessage"
+                f"（得到 {type(item).__name__}；收件箱形态见 05 §10）"
+            )
+        out.append(item.model_copy(update={
+            "delivered": delivered, "after_steps": after_steps,
+        }))
+    return tuple(out)
+
+
+def _steer_event_payload(
+    items: Sequence[SteerMessage],
+    *,
+    delivered: bool,
+    after_steps: int,
+    reason: str = "",
+) -> dict[str, Any]:
+    """``steer`` 运行事件的载荷（只给客观字段；文本是用户消息本身）。"""
+    payload: dict[str, Any] = {
+        "messages": [
+            {"text": item.text, "received_at": item.received_at.isoformat()}
+            for item in items
+        ],
+        "count": len(items),
+        "delivered": delivered,
+        "after_steps": after_steps,
+    }
+    if reason:
+        payload["reason"] = reason
+    return payload
 
 
 def render_subagent_note(sub: SubAgentRun) -> str:

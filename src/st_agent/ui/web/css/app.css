@@ -798,6 +798,12 @@ body {
 .chat__turn { border-left: 2px solid var(--line); padding-left: var(--space-3); }
 .chat__turn--user { border-left-color: var(--accent); }
 .chat__text { margin: 0; white-space: pre-wrap; }
+.chat__steer-note {
+  margin: var(--space-1) 0 0;
+  color: var(--fg-muted);
+  font-size: var(--text-caption);
+  line-height: var(--leading-caption);
+}
 .chat__envelope .state { font-size: var(--text-caption); line-height: var(--leading-caption); font-weight: 400; color: var(--fg-muted); }
 .chat__envelope .state--error { color: var(--error); font-weight: 600; }
 

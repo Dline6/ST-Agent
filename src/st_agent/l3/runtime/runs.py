@@ -22,11 +22,14 @@ from dataclasses import dataclass, field
 from datetime import datetime
 
 from st_agent.l3.errors import AgentRuntimeValidationError
+from st_agent.l3.runtime.steer import SteerInbox, SteerMessage
 
 __all__ = [
     "ActiveRun",
     "ActiveRunRegistry",
     "RunAlreadyActiveError",
+    "SteerInbox",
+    "SteerMessage",
 ]
 
 
@@ -62,10 +65,17 @@ class ActiveRun:
     session_id: str | None = None
     started_at: datetime = field(default_factory=_now)
     cancel_event: threading.Event = field(default_factory=threading.Event)
+    steer_inbox: SteerInbox = field(default_factory=SteerInbox)
+    """运行中插话的收件箱（[`T-AGT-027.1`](../../../项目管理/tasks/T-AGT-027.1-steer-inbox与上下文注入.md)）。
+    端点线程写入、循环线程在步骤边界排空；进程内瞬态，不落盘。"""
 
     def request_cancel(self) -> None:
         """置位取消事件（**协作式**：实际终止发生在下一个 LLM / 动作边界）。"""
         self.cancel_event.set()
+
+    def request_steer(self, text: str, *, now: datetime | None = None) -> SteerMessage:
+        """把一条插话投进收件箱（空白文本显式拒绝）。"""
+        return self.steer_inbox.add(text, now=now)
 
     @property
     def cancel_requested(self) -> bool:

@@ -44,6 +44,7 @@ from st_agent.l3.runtime.context import (
     result_will_truncate,
 )
 from st_agent.l3.runtime.loop import LoopOutcome, SubAgentRun, TerminationReason
+from st_agent.l3.runtime.steer import SteerMessage
 from st_agent.l3.runtime.tool_search import ToolSearchRecord
 
 __all__ = [
@@ -167,6 +168,12 @@ class AgentRunRecord(BaseModel):
     """并发形态的显式标注（并行 / 因底层未声明并发安全而退回串行）。"""
     sub_agents: tuple[SubAgentRun, ...] = ()
     """派生的子 Agent 摘要（结论与引用；子步骤在子链自己的留痕里）。"""
+    steered: tuple[SteerMessage, ...] = ()
+    """本次运行收到的**运行中插话**（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+
+    ``delivered=True`` 者已进入某个后续轮次的工作上下文；``False`` 者在排空前运行已结束，
+    转为下一条普通消息。本段只做留痕（不新增 Trace 步骤类型）。
+    """
     llm_calls: int = Field(default=0, ge=0)
     max_steps: int = Field(ge=1)
     """本次生效的**步数上界**（取值可注入，故记实际生效值而非缺省值）。"""
@@ -261,6 +268,7 @@ def record_agent_run(
         parallel_used=outcome.parallel_used,
         parallel_note=outcome.parallel_note,
         sub_agents=tuple(outcome.sub_agents),
+        steered=tuple(outcome.steered),
         llm_calls=outcome.llm_calls,
         max_steps=outcome.max_steps,
         max_llm_calls=outcome.max_llm_calls,

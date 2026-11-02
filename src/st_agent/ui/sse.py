@@ -5,7 +5,7 @@
 :meth:`~st_agent.composition.facades.chat.DialogFacade.is_active`。帧形态按 SSE 规范：
 
 - ``id: <seq>`` —— ``Last-Event-ID`` 续传的依据（事件日志的单调序号）；
-- ``event: <11 类之一>`` —— 事件类型；
+- ``event: <运行事件类型>`` —— 事件类型（枚举见 ``RUN_EVENT_TYPES``）；
 - ``data: <RunEvent JSON>`` —— 单行 JSON（模型载荷不换行）；
 - 心跳 ``: ping``；结束 ``event: stream_end``（``reason`` = ``finished`` / ``inactive``）。
 

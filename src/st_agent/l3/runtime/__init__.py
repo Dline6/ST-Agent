@@ -103,6 +103,7 @@ from st_agent.l3.runtime.report import (
 )
 from st_agent.l3.runtime.registry_adapter import InvestigateFamily, investigate_family
 from st_agent.l3.runtime.runs import ActiveRun, ActiveRunRegistry, RunAlreadyActiveError
+from st_agent.l3.runtime.steer import SteerInbox, SteerMessage
 from st_agent.l3.runtime.subprotocols import (
     SUBPROTOCOL_TOOLS,
     SubprotocolPorts,
@@ -173,6 +174,8 @@ __all__ = [
     "RunEvent",
     "RunEventLog",
     "RunEventType",
+    "SteerInbox",
+    "SteerMessage",
     "SubAgentRun",
     "SubprotocolPorts",
     "SubprotocolResult",
