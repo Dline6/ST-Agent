@@ -244,6 +244,8 @@ const dataSelection = new Set();
 const dataConfigs = new Map();
 /** 已展开的标的 / 其他分组（会话内记忆；默认全折叠，见 [T-UI-030]）。 */
 const openTargets = new Set();
+/** 已展开的 Agent 工具分组（会话内记忆；默认全折叠）。 */
+const openToolGroups = new Set();
 let dataCustomCodes = '';
 let dataForceRefresh = false;
 let dataAdvanced = false;
@@ -2047,12 +2049,31 @@ function densityChrome(mount) {
   mount.append(box);
 }
 
-/** 运行期授权页：服务端面板 + 循环预算 + 留痕，回滚按钮由本页 chrome 承载（[D-143]）。 */
+/** 运行期授权页：服务端面板 + 循环预算 + Agent 工具开关 + 留痕，回滚按钮由本页 chrome 承载。 */
 async function renderAgentAuthorization(root) {
-  const payload = await renderParts(
-    '/api/settings/agent-authorization', root, ['panel', 'budget', 'trail'],
-  );
-  if (!payload || payload.status) return;
+  let payload;
+  try {
+    payload = await getJson('/api/settings/agent-authorization');
+  } catch (error) {
+    root.append(el('p', 'state state--error', `无法取数：${error.message}`));
+    return;
+  }
+  if (!payload || typeof payload.status === 'string') {
+    const block = el('section', 'page__block');
+    renderEnvelope(payload, block);
+    root.append(block);
+    return;
+  }
+  for (const key of ['panel', 'budget']) {
+    const block = el('section', 'page__block');
+    renderPart(payload[key], block);
+    root.append(block);
+  }
+  renderToolsSection(root, payload.tools);
+  const trailBlock = el('section', 'page__block');
+  renderPart(payload.trail, trailBlock);
+  root.append(trailBlock);
+
   const changes = partValues(payload.trail).changes || [];
   if (!changes.length) return;
 
@@ -2095,6 +2116,94 @@ async function renderAgentAuthorization(root) {
   }
   box.append(status);
   root.append(box);
+}
+
+/** Agent 工具开关（T-UI-038）：按功能域折叠列出，逐条落 `agent-tools/<base>`。 */
+function renderToolsSection(root, part) {
+  const box = el('section', 'page__block');
+  if (!part || part.status !== 'ok') {
+    renderPart(part, box);
+    root.append(box);
+    return;
+  }
+  const values = partValues(part);
+  const groups = Array.isArray(values.groups) ? values.groups : [];
+  box.append(el('h3', 'page__block-title', 'Agent 工具'));
+  const countLine = el('p', 'component__meta', '');
+  const refreshCount = () => {
+    const total = groups.reduce((sum, group) => sum + (group.tools || []).length, 0);
+    const on = groups.reduce(
+      (sum, group) => sum + (group.tools || []).filter((tool) => tool.enabled).length, 0,
+    );
+    countLine.textContent = '允许 Agent 调用的工具；关闭即从模型可见面移除，'
+      + `Skill 库手动执行与工作流同样被拒绝。当前 ${on} / ${total} 个启用。`;
+  };
+  box.append(countLine);
+  refreshCount();
+  if (!groups.length) {
+    box.append(el('p', 'state state--empty', '没有可显示的工具。'));
+    root.append(box);
+    return;
+  }
+  for (const group of groups) {
+    const tools = Array.isArray(group.tools) ? group.tools : [];
+    const details = el('details', 'settings-category');
+    details.open = openToolGroups.has(group.key);
+    details.addEventListener('toggle', () => {
+      if (details.open) openToolGroups.add(group.key);
+      else openToolGroups.delete(group.key);
+    });
+    const summary = el('summary', 'settings-category__head');
+    summary.append(el('h4', 'settings-category__title', group.label));
+    const badge = el('span', 'settings-badge', '');
+    summary.append(badge);
+    details.append(summary);
+    const refreshBadge = () => {
+      const on = tools.filter((tool) => tool.enabled).length;
+      badge.textContent = `${on} / ${tools.length} 启用`;
+    };
+    refreshBadge();
+    for (const tool of tools) details.append(renderToolRow(tool, refreshBadge, refreshCount));
+    box.append(details);
+  }
+  root.append(box);
+}
+
+function renderToolRow(tool, refreshGroupBadge, refreshCount) {
+  const row = el('div', 'settings-item');
+  const head = el('div', 'settings-item__head');
+  const label = el('label', 'settings-item__label');
+  const check = el('input');
+  check.type = 'checkbox';
+  check.checked = Boolean(tool.enabled);
+  const badge = el('span', 'settings-badge', tool.enabled ? '启用' : '关闭');
+  check.addEventListener('change', async () => {
+    check.disabled = true;
+    try {
+      const result = await postJson('/api/settings/apply', {
+        config_id: tool.config_id,
+        action: check.checked ? 'enable' : 'disable',
+      });
+      if (!result || result.status !== 'ok') {
+        throw new Error((result && result.reason) || '未保存');
+      }
+      tool.enabled = check.checked;
+      badge.textContent = check.checked ? '启用' : '关闭';
+      refreshGroupBadge();
+      refreshCount();
+      showToast(check.checked ? '已启用该工具' : '已关闭该工具', { type: 'success' });
+    } catch (error) {
+      check.checked = !check.checked;
+      showToast(`工具开关未保存：${error.message}`, { type: 'error' });
+    } finally {
+      check.disabled = false;
+    }
+  });
+  label.append(check, el('span', 'settings-item__name', tool.name));
+  head.append(label, badge);
+  row.append(head, el('p', 'settings-item__desc', tool.description || ''));
+  row.append(el('p', 'settings-item__meta', tool.config_id || ''));
+  return row;
 }
 
 /** 开放网络页的页面级 chrome：「允许抓取全部域名」一键写入名单 `*`（T-UI-037.1）。 */

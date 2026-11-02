@@ -340,6 +340,7 @@ class M5Runtime:
                 default=platform_default_root(),
             ),
             data_sync=self.data_sync,
+            skills=runtime.skills,
         )
 
     @property
