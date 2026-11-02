@@ -279,13 +279,13 @@ def web_config_entries() -> tuple[ConfigEntry, ...]:
             default=DEFAULT_ALLOWED_HOSTS,
             description_for_chat=(
                 "网页抓取允许访问的主机名单（逗号或换行分隔的 glob，如 "
-                "*.example.com）；留空表示全部拒绝"
+                "*.example.com）；单条 * 表示允许全部域名；留空表示全部拒绝"
             ),
             panel_form_spec=PanelField(
                 widget="text", label="允许抓取的域名",
                 help_text=(
-                    "逗号或换行分隔的主机模式，如 *.example.com；留空＝全部拒绝。"
-                    "名单外主机在发包前拦截"
+                    "逗号或换行分隔的主机模式，如 *.example.com；"
+                    "填 * 表示允许全部域名；留空＝全部拒绝。名单外主机在发包前拦截"
                 ),
             ),
             scope="global",

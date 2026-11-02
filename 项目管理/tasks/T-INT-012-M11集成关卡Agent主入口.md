@@ -7,9 +7,9 @@ arch: ../../docs/技术架构-v2/05-L3-对话主入口.md
 arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P0
 milestone: M11
-depends_on: [T-AGT-020, T-AGT-021, T-AGT-022.1, T-AGT-022.2, T-AGT-023.1, T-AGT-023.2, T-AGT-024.1, T-AGT-024.2, T-AGT-025, T-AGT-026.1, T-AGT-026.2, T-AGT-026.3, T-AGT-027.1, T-AGT-027.2, T-AGT-028.1, T-AGT-028.2, T-AGT-029.1, T-AGT-029.2, T-AGT-030.1, T-AGT-030.2, T-UI-036]
+depends_on: [T-AGT-020, T-AGT-021, T-AGT-022.1, T-AGT-022.2, T-AGT-023.1, T-AGT-023.2, T-AGT-024.1, T-AGT-024.2, T-AGT-025, T-AGT-026.1, T-AGT-026.2, T-AGT-026.3, T-AGT-027.1, T-AGT-027.2, T-AGT-028.1, T-AGT-028.2, T-AGT-029.1, T-AGT-029.2, T-AGT-030.1, T-AGT-030.2, T-UI-036, T-UI-037.1, T-UI-037.2, T-UI-037.3, T-UI-037.4]
 status: todo
-decisions: [D-154]
+decisions: [D-154, D-161]
 verify:
 ---
 

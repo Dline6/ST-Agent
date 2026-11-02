@@ -21,6 +21,7 @@ _UI = Path(__file__).resolve().parents[2] / "src" / "st_agent" / "ui"
 _PAGES_JS = _UI / "web" / "js" / "pages.js"
 _MAIN_JS = _UI / "web" / "js" / "main.js"
 _CHAT_JS = _UI / "web" / "js" / "pages" / "chat.js"
+_CHAT_HISTORY_JS = _UI / "web" / "js" / "pages" / "chat_history.js"
 _ROUTER_JS = _UI / "web" / "js" / "router.js"
 
 HISTORY_PATHS = ("/api/chat/sessions", "/api/chat/session?id=sess_1")
@@ -146,3 +147,54 @@ def test_chat_view_has_waiting_timeout_and_retry() -> None:
     assert "timeoutMs" in chat
     assert "if (!trimmed || state.sending) return;" in chat, "等待期间必须拒绝重复提交"
     assert "st.chat.active" in chat, "活动会话要能在冷启动时回填"
+
+
+# ── 会话删除（T-UI-037.4） ────────────────────────────────────────────
+
+
+def test_delete_endpoint_forwards_ids(http_post, auth) -> None:
+    from st_agent.ui.security import TOKEN_HEADER
+    from st_agent.ui.server import serve
+
+    seen: list[list[str]] = []
+
+    def _delete(ids):  # noqa: ANN001, ANN202（鸭子面）
+        seen.append(ids)
+        return ResultEnvelope.ok({"deleted": ids, "missing": []})
+
+    with serve(dev=False, chat=SimpleNamespace(delete_sessions=_delete)) as running:
+        payload = http_post(
+            running, "/api/chat/sessions/delete",
+            {"session_ids": ["sess_a", "sess_b"]},
+            headers={TOKEN_HEADER: running.token},
+        ).json()
+    assert seen == [["sess_a", "sess_b"]]
+    assert payload["status"] == "ok"
+    assert payload["data"]["deleted"] == ["sess_a", "sess_b"]
+
+
+def test_delete_endpoint_fails_closed_and_rejects_empty(http_post, auth) -> None:
+    from st_agent.ui.security import TOKEN_HEADER
+    from st_agent.ui.server import serve
+
+    with serve(dev=False, chat=SimpleNamespace()) as running:
+        headers = {TOKEN_HEADER: running.token}
+        missing = http_post(
+            running, "/api/chat/sessions/delete", {"session_ids": ["sess_a"]},
+            headers=headers,
+        ).json()
+        empty = http_post(
+            running, "/api/chat/sessions/delete", {"session_ids": []},
+            headers=headers,
+        ).json()
+    assert missing["status"] == "unavailable" and "未接入" in missing["reason"]
+    assert empty["status"] == "validation_failed"
+
+
+def test_chat_history_page_wires_single_and_bulk_delete() -> None:
+    text = _CHAT_HISTORY_JS.read_text(encoding="utf-8")
+    assert "/api/chat/sessions/delete" in text
+    assert "删除所选" in text
+    assert "chat-history__check" in text
+    assert "openDialog(" in text, "删除前必须走确认框"
+    assert "startNewSession();" in text, "删到活动会话要回到新对话"

@@ -416,6 +416,33 @@ class DialogFacade:
         ]
         return ResultEnvelope.ok(data, as_of=session.updated_at)
 
+    def delete_sessions(self, session_ids: list[str]) -> ResultEnvelope:
+        """批量删除会话（[05 §1]；2026-11-02 补）。
+
+        去重后逐条物理删除；未知标识计入 ``missing`` 而不使整批失败。空集即
+        ``validation_failed``（不把「没给标识」当成「全部删除」）。
+        """
+        ids = list(dict.fromkeys(
+            str(item or "").strip() for item in session_ids
+        ))
+        ids = [sid for sid in ids if sid]
+        if not ids:
+            return ResultEnvelope.validation_failed(
+                "缺少会话标识（session_ids 为空）",
+            )
+        deleted: list[str] = []
+        missing: list[str] = []
+        for sid in ids:
+            try:
+                self._sessions.delete(sid)
+            except SessionNotFoundError:
+                missing.append(sid)
+            else:
+                deleted.append(sid)
+        return ResultEnvelope.ok(
+            {"deleted": deleted, "missing": missing}, as_of=self._now(),
+        )
+
     @staticmethod
     def _session_summary(session: Any, chain: tuple[Any, ...]) -> dict[str, Any]:
         """列表 / 单会话共用的摘要字段（标题缺省取首条用户消息）。"""

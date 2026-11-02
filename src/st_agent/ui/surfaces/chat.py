@@ -297,6 +297,28 @@ class ChatSurface(SurfaceBase):
             "chat-sessions", face, "会话历史面", lambda f: f.list_sessions(),
         )
 
+    def api_chat_delete_sessions(self, body: dict[str, Any]) -> dict[str, Any]:
+        """删除会话（[05 §1]；2026-11-02 补）：body ``{session_ids: [...]}``。
+
+        物理删除、不可恢复；未知标识回 ``missing`` 而不使整批失败。未注入删除口即
+        `unavailable` + 点名（不静默当作「已删除」）。
+        """
+        raw = body.get("session_ids")
+        if not isinstance(raw, list) or not raw:
+            return envelope_payload(ResultEnvelope.validation_failed(
+                "session_ids 须为非空数组",
+            ))
+        face = self.chat
+        if face is None or not hasattr(face, "delete_sessions"):
+            return envelope_payload(ResultEnvelope.unavailable(
+                "未接入会话删除面：对话门面或 delete_sessions 写口缺席（装配归组合根）",
+                last_updated_at=_now(),
+            ))
+        return self._call_face(
+            "chat-sessions-delete", face, "会话删除面",
+            lambda f: f.delete_sessions([str(item) for item in raw]),
+        )
+
     def api_chat_session(self, session_id: str) -> dict[str, Any]:
         """读一个会话的消息（[05 §1] 历史读面）。未知标识走 `validation_failed`。"""
         face = self.chat

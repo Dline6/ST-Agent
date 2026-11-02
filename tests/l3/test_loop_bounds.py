@@ -106,7 +106,7 @@ def test_gwt1_entries_registered_with_both_channels(store) -> None:
     assert entry.scope == "global"
     assert entry.default == DEFAULT_MAX_STEPS                       # 缺省＝循环入口缺省
     assert entry.value_schema["minimum"] == 1
-    assert entry.value_schema["maximum"] == MAX_STEPS_CEILING
+    assert "maximum" not in entry.value_schema                  # 2026-11-02：上限只作建议
     assert entry.change_policy.requires_confirmation is True        # 改预算需确认（A5）
     # 双通道同源：对话描述 + 面板规格都在同一条目上
     assert entry.description_for_chat
@@ -119,7 +119,7 @@ def test_gwt1_entries_registered_with_both_channels(store) -> None:
     budget_entry = facade.entry(CONTEXT_BUDGET_CONFIG_ID)
     assert budget_entry is not None
     assert budget_entry.default == DEFAULT_WORK_CONTEXT_BUDGET
-    assert budget_entry.value_schema["maximum"] == CONTEXT_BUDGET_CEILING
+    assert "maximum" not in budget_entry.value_schema
     assert CONTEXT_BUDGET_CONFIG_ID in ids
 
 
@@ -159,7 +159,7 @@ def test_gwt3_missing_value_falls_back_to_default(store) -> None:
 
 
 @pytest.mark.parametrize(
-    "bad", [0, -1, True, 1.5, "5", MAX_STEPS_CEILING + 1, None]
+    "bad", [0, -1, True, 1.5, "5", None]
 )
 def test_gwt4_out_of_range_rejected_and_not_persisted(store, bad) -> None:
     facade, bounds = _facade(store)
@@ -172,7 +172,18 @@ def test_gwt4_out_of_range_rejected_and_not_persisted(store, bad) -> None:
 def test_gwt4_owner_raises_its_own_error_type(store) -> None:
     """owner 侧的取值域门抛 L3 自己的错误类型（适配器再统一为门面词汇）。"""
     with pytest.raises(AgentRuntimeValidationError):
-        LoopBounds(store).set_llm_calls(MAX_LLM_CALLS_CEILING + 1)
+        LoopBounds(store).set_llm_calls(0)
+
+
+def test_above_suggested_ceiling_is_accepted(store) -> None:
+    """2026-11-02：建议上限不硬拒绝，超出仍可保存并生效。"""
+    facade, bounds = _facade(store)
+    facade.set(MAX_STEPS_CONFIG_ID, MAX_STEPS_CEILING + 1)
+    assert bounds.steps() == MAX_STEPS_CEILING + 1
+    facade.set(MAX_LLM_CALLS_CONFIG_ID, MAX_LLM_CALLS_CEILING + 1)
+    assert bounds.llm_calls() == MAX_LLM_CALLS_CEILING + 1
+    facade.set(CONTEXT_BUDGET_CONFIG_ID, CONTEXT_BUDGET_CEILING + 1)
+    assert bounds.budget_chars() == CONTEXT_BUDGET_CEILING + 1
 
 
 def test_gwt4_unknown_id_and_foreign_prefix_are_rejected(store) -> None:

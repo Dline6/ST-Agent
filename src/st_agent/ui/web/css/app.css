@@ -984,7 +984,21 @@ body {
 .chat-history__head { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); }
 .chat-history__actions { display: flex; gap: var(--space-1); }
 .chat-history__items { margin: 0; padding: 0; list-style: none; }
-.chat-history__row { margin: 0 0 var(--space-1); }
+.chat-history__select {
+  display: flex; align-items: center; gap: var(--space-1);
+  color: var(--fg-muted); font-size: var(--text-caption);
+}
+.chat-history__row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center; gap: var(--space-1); margin: 0 0 var(--space-1);
+}
+.chat-history__check { margin: 0; }
+.chat-history__remove {
+  padding: var(--space-1) var(--space-2); font: inherit; cursor: pointer;
+  color: var(--error); background: transparent;
+  border: 1px solid var(--line); border-radius: var(--radius-surface);
+}
+.chat-history__remove:hover { background: var(--accent-weak); }
 .chat-history__item {
   display: flex; flex-direction: column; gap: var(--space-1); width: 100%;
   padding: var(--space-2); font: inherit; text-align: left; cursor: pointer;

@@ -24,6 +24,11 @@ from st_agent.l0.storage.errors import (
     StorageOpenError,
 )
 from st_agent.l1.runtime import LLM_CREDENTIAL_ID, LlmBootstrap
+from st_agent.l3.runtime.bounds import (
+    CONTEXT_BUDGET_CEILING,
+    MAX_LLM_CALLS_CEILING,
+    MAX_STEPS_CEILING,
+)
 from st_agent.ui.envelope import envelope_payload
 from st_agent.ui.data_catalog import (
     catalog_payload,
@@ -228,19 +233,26 @@ _BUDGET_CONFIG_IDS = (
 不随注册表内部排序漂移。缺条目即跳过（族未接线时面板如实为空，不臆造）。
 """
 
+_BUDGET_SUGGESTED_MAX = {
+    "investigate.max_steps": MAX_STEPS_CEILING,
+    "investigate.max_llm_calls": MAX_LLM_CALLS_CEILING,
+    "investigate.context_budget": CONTEXT_BUDGET_CEILING,
+}
+"""预算三条目的**建议上限**（只作页面提示，不参与校验；2026-11-02 起）。"""
+
 
 def _budget_entries(registry: Any) -> list[dict[str, Any]]:
     """把三条 `investigate.*` 预算摆成 `setting_panel` 的 entries（自由文本 + `set` 动作）。
 
     三条目都是整数标量，取值域由 owner 的 ``value_schema`` 校验：前端只回传字符串，
-    ``_coerce_value`` 按声明类型还原；越界即 `validation_failed`，不静默夹取。
+    ``_coerce_value`` 按声明类型还原；**建议上限只作提示**，超出仍可保存。
     """
     out: list[dict[str, Any]] = []
     for config_id in _BUDGET_CONFIG_IDS:
         entry = registry.entry(config_id)
         if entry is None:
             continue
-        schema = entry.value_schema or {}
+        suggested = _BUDGET_SUGGESTED_MAX.get(config_id)
         out.append({
             "config_id": config_id,
             "params": {"config_id": config_id},
@@ -251,8 +263,8 @@ def _budget_entries(registry: Any) -> list[dict[str, Any]]:
             "input": "text",
             "description": entry.panel_form_spec.help_text,
             "note": (
-                f"取值范围 {schema.get('minimum', '—')}–{schema.get('maximum', '—')}；"
-                f"缺省 {entry.default}"
+                f"建议取值 1–{suggested}（可超出）；缺省 {entry.default}"
+                if suggested else f"缺省 {entry.default}"
             ),
         })
     return out
@@ -399,6 +411,7 @@ def _web_entries(registry: Any) -> list[dict[str, Any]]:
                 "input": "text",
                 "actions": ["set"],
                 "description": entry.panel_form_spec.help_text,
+                "note": "填 * 表示允许抓取全部域名；留空＝全部拒绝",
             })
     return out
 

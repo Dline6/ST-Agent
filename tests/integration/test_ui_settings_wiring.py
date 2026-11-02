@@ -438,12 +438,21 @@ def test_agent_authorization_page_shows_and_writes_loop_budget(m5) -> None:
             for name in runtime.store.list_files("execution_log")
         )
 
+        # 2026-11-02：建议上限不硬拒绝，超出仍可保存
+        above = _post(
+            running, "/api/settings/apply",
+            {"config_id": "investigate.max_steps", "action": "set", "value": "100"},
+        )
+        assert above["status"] == "ok", above.get("reason")
+        assert above["data"]["changed"] is True
+        assert registry.entry("investigate.max_steps").default == 100
+
         rejected = _post(
             running, "/api/settings/apply",
             {"config_id": "investigate.max_steps", "action": "set", "value": "0"},
         )
         assert rejected["status"] == "validation_failed"
-        assert registry.entry("investigate.max_steps").default == 5
+        assert registry.entry("investigate.max_steps").default == 100
 
 
 def test_wipe_needs_three_ordered_tokens_then_stops_the_data_face(m5) -> None:
@@ -517,6 +526,32 @@ def test_data_job_snapshot_is_light_and_empty_before_a_batch(m5) -> None:
 
     assert payload["status"] == "ok"
     assert payload["data"] == {"job": {}}
+
+
+def test_data_page_exposes_and_writes_auto_sync(m5) -> None:
+    """T-UI-037.3：每个「标的 × 数据集」的启动自动同步勾选可读可写并留痕。"""
+    runtime = m5.m5
+    config_id = "data-sync/auto.all_a.k_daily"
+    with serve(dev=False, settings=runtime.settings) as running:
+        first = _get(running, "/api/settings/data")
+        assert first["tasks"]["status"] == "ok"
+        assert first["tasks"]["data"]["slots"]["values"]["auto_sync"] == {}
+
+        applied = _post(
+            running, "/api/settings/apply",
+            {"config_id": config_id, "action": "enable"},
+        )
+        assert applied["status"] == "ok", applied.get("reason")
+        assert applied["data"]["changed"] is True
+
+        second = _get(running, "/api/settings/data")
+        values = second["tasks"]["data"]["slots"]["values"]
+        assert values["auto_sync"] == {"all_a:k_daily": True}
+        assert runtime.settings.config_registry.entry(config_id).default is True
+        assert any(
+            name.startswith("data-sync-change/")
+            for name in runtime.store.list_files("execution_log")
+        )
 
 
 def test_data_preflight_reports_order_and_scope(m5) -> None:
