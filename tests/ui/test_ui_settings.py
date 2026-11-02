@@ -149,6 +149,14 @@ def test_boolean_and_number_form_values_are_restored_to_declared_types() -> None
     with pytest.raises(ValueError):
         _coerce_value(number, True)
 
+    integer = _StubEntry(config_id="x.steps", value_schema={"type": "integer"}, default=8)
+    assert _coerce_value(integer, "8") == 8
+    assert _coerce_value(integer, 8) == 8
+    with pytest.raises(ValueError):
+        _coerce_value(integer, "八")
+    with pytest.raises(ValueError):
+        _coerce_value(integer, True)
+
     free = _StubEntry(config_id="x.host", value_schema={"type": "string"}, default="a")
     assert _coerce_value(free, "b") == "b"
 
@@ -232,6 +240,47 @@ def test_agent_authorization_is_unavailable_without_the_reflection_face() -> Non
     for part in payload.values():
         assert part["status"] == "unavailable"
         assert "未接入" in part["reason"]
+
+
+class _BudgetSettings:
+    """只有配置注册表的最小设置面——预算段**不依赖反思面**（T-UI-036 GWT-4）。"""
+
+    config_registry = _StubRegistry((
+        _StubEntry(
+            config_id="investigate.context_budget", display_name="上下文预算",
+            value_schema={"type": "integer", "minimum": 1, "maximum": 32000},
+            default=16000,
+        ),
+        _StubEntry(
+            config_id="investigate.max_steps", display_name="步数上界",
+            value_schema={"type": "integer", "minimum": 1, "maximum": 32},
+            default=8,
+        ),
+        _StubEntry(
+            config_id="investigate.max_llm_calls", display_name="调用次数上界",
+            value_schema={"type": "integer", "minimum": 1, "maximum": 64},
+            default=12,
+        ),
+    ))
+
+
+def test_agent_authorization_exposes_budget_without_the_reflection_face() -> None:
+    """预算段独立于反思面：档位 / 留痕不可用时，三条预算仍可调且顺序固定。"""
+    app = build_ui(host="127.0.0.1", port=0, settings=_BudgetSettings())
+    payload = app.api_settings_agent_authorization()
+    assert payload["panel"]["status"] == "unavailable"
+    assert payload["trail"]["status"] == "unavailable"
+    budget = payload["budget"]
+    assert budget["status"] == "ok", budget.get("reason")
+    slots = budget["data"]["slots"]
+    assert slots["surface"] == "settings-config"
+    entries = slots["entries"]
+    assert [item["config_id"] for item in entries] == [
+        "investigate.max_steps", "investigate.max_llm_calls", "investigate.context_budget",
+    ]
+    assert [item["current"] for item in entries] == [8, 12, 16000]
+    assert all(item["actions"] == ["set"] and item["input"] == "text" for item in entries)
+    assert "1–32" in entries[0]["note"]
 
 
 def test_agent_rollback_requires_a_change_id() -> None:

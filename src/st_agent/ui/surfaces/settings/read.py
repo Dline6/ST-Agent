@@ -50,6 +50,7 @@ from st_agent.ui.surfaces.settings.shared import (
     _window_start,
     _window_text,
     _wipe_tokens,
+    budget_part,
 )
 
 
@@ -140,25 +141,31 @@ class SettingsReadSurface(SurfaceBase):
         )
 
     def api_settings_agent_authorization(self) -> dict[str, Any]:
-        """设置-运行期授权页：档位（可改）+ 动作级分级清单（只呈现）+ 缺省来源 + 留痕。
+        """设置-运行期授权页：档位（可改）+ 动作级分级清单（只呈现）+ 缺省来源 + 留痕 + 循环预算。
 
         档位与清单共用 L6 的运行期授权面：档位条目 `agent.authorization` 走统一落值面；
         分级清单归 `evolution.risk-grading`（单一事实源），本页**只呈现**。`trail` 段把
         `agent-change/` 的留痕按 `table` 列出，并附 `values.changes` 供页面级 chrome 逐条
-        回滚（回滚走固定回环路由，动作不进描述）。
+        回滚（回滚走固定回环路由，动作不进描述）。`budget` 段是 L3 `investigate.*` 三条目
+        （步数 / LLM 调用次数 / 上下文预算）的 `setting_panel`，**独立于反思面**——预算条目
+        属配置注册表，反思面缺席不应连带隐藏它。
         """
+        budget = budget_part(self)
         if self.restart_gate.reason:
             return self._agent_authorization_error(ResultEnvelope.unavailable(
                 self.restart_gate.reason, last_updated_at=_now()
             ))
         face = self.reflection
         if face is None:
-            return self._agent_authorization_error(ResultEnvelope.unavailable(
+            payload = envelope_payload(ResultEnvelope.unavailable(
                 "未接入L6 反思演进面，该端点不可用（装配归生产入口）",
                 last_updated_at=_now(),
             ))
+            return {"panel": payload, "trail": payload, "budget": budget}
         try:
-            return self._agent_authorization_parts(face)
+            parts = self._agent_authorization_parts(face)
+            parts["budget"] = budget
+            return parts
         except (ValueError, KeyError) as exc:
             _LOG.info(
                 "表现层端点 settings-agent-authorization 拒绝请求（%s）：%s",
@@ -181,7 +188,7 @@ class SettingsReadSurface(SurfaceBase):
     def _agent_authorization_error(envelope: ResultEnvelope) -> dict[str, Any]:
         """多段端点的错误态：**每一段都是同一支错误信封**（同 `_settings_parts`）。"""
         payload = envelope_payload(envelope)
-        return {"panel": payload, "trail": payload}
+        return {"panel": payload, "trail": payload, "budget": payload}
 
     def _agent_authorization_parts(self, face: Any) -> dict[str, Any]:
         info = face.agent_authorization()

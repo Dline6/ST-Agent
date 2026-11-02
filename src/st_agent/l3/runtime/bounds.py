@@ -213,7 +213,7 @@ class LoopBounds:
         return self._read(MAX_LLM_CALLS_CONFIG_ID)
 
     def budget_chars(self) -> int:
-        """生效的**工作上下文预算**（未落值 → 缺省 4000；损坏 / 越界 → 显式抛）。"""
+        """生效的**工作上下文预算**（未落值 → 缺省 16000；损坏 / 越界 → 显式抛）。"""
         return self._read(CONTEXT_BUDGET_CONFIG_ID)
 
     def entries(self) -> tuple[ConfigEntry, ...]:

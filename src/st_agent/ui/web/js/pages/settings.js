@@ -2002,10 +2002,10 @@ function densityChrome(mount) {
   mount.append(box);
 }
 
-/** 运行期授权页：服务端面板 + 留痕，回滚按钮由本页 chrome 承载（[D-143]）。 */
+/** 运行期授权页：服务端面板 + 循环预算 + 留痕，回滚按钮由本页 chrome 承载（[D-143]）。 */
 async function renderAgentAuthorization(root) {
   const payload = await renderParts(
-    '/api/settings/agent-authorization', root, ['panel', 'trail'],
+    '/api/settings/agent-authorization', root, ['panel', 'budget', 'trail'],
   );
   if (!payload || payload.status) return;
   const changes = partValues(payload.trail).changes || [];

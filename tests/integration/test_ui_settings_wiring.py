@@ -404,6 +404,48 @@ def test_agent_authorization_page_writes_and_rolls_back_through_the_real_facade(
         assert len(final["trail"]["data"]["slots"]["values"]["changes"]) == 2
 
 
+def test_agent_authorization_page_shows_and_writes_loop_budget(m5) -> None:
+    """T-UI-036：循环预算三条目可见、可改、留痕落 `investigate-change/`，越界即拒。"""
+    runtime = m5.m5
+    registry = runtime.settings.config_registry
+    with serve(dev=False, settings=runtime.settings, reflection=runtime.reflection) as running:
+        first = _get(running, "/api/settings/agent-authorization")
+        assert first["budget"]["status"] == "ok", first["budget"].get("reason")
+        entries = first["budget"]["data"]["slots"]["entries"]
+        assert [item["config_id"] for item in entries] == [
+            "investigate.max_steps",
+            "investigate.max_llm_calls",
+            "investigate.context_budget",
+        ]
+        assert [item["current"] for item in entries] == [8, 12, 16000]
+
+        applied = _post(
+            running, "/api/settings/apply",
+            {"config_id": "investigate.max_steps", "action": "set", "value": "5"},
+        )
+        assert applied["status"] == "ok", applied.get("reason")
+        assert applied["data"]["changed"] is True
+
+        second = _get(running, "/api/settings/agent-authorization")
+        current = {
+            item["config_id"]: item["current"]
+            for item in second["budget"]["data"]["slots"]["entries"]
+        }
+        assert current["investigate.max_steps"] == 5
+        assert registry.entry("investigate.max_steps").default == 5
+        assert any(
+            name.startswith("investigate-change/")
+            for name in runtime.store.list_files("execution_log")
+        )
+
+        rejected = _post(
+            running, "/api/settings/apply",
+            {"config_id": "investigate.max_steps", "action": "set", "value": "0"},
+        )
+        assert rejected["status"] == "validation_failed"
+        assert registry.entry("investigate.max_steps").default == 5
+
+
 def test_wipe_needs_three_ordered_tokens_then_stops_the_data_face(m5) -> None:
     """GWT-3：三次确认是 L0 的硬门；足量后删根并**置重启闸门**——不假装进程仍健康。"""
     runtime = m5.m5

@@ -24,6 +24,7 @@ from st_agent.l0.storage.errors import (
     StorageOpenError,
 )
 from st_agent.l1.runtime import LLM_CREDENTIAL_ID, LlmBootstrap
+from st_agent.ui.envelope import envelope_payload
 from st_agent.ui.data_catalog import (
     catalog_payload,
     domain_label,
@@ -214,6 +215,92 @@ def _switch_entries(registry: Any, prefix: str) -> list[dict[str, Any]]:
             "description": entry.panel_form_spec.help_text,
         })
     return out
+
+
+_BUDGET_CONFIG_IDS = (
+    "investigate.max_steps",
+    "investigate.max_llm_calls",
+    "investigate.context_budget",
+)
+"""运行期授权页「自主查证预算」的三条目（[01 §7] 的 `investigate.*` 族）。
+
+展示顺序固定为「步数 → 调用次数 → 上下文预算」——即用户调整时的决策顺序，
+不随注册表内部排序漂移。缺条目即跳过（族未接线时面板如实为空，不臆造）。
+"""
+
+
+def _budget_entries(registry: Any) -> list[dict[str, Any]]:
+    """把三条 `investigate.*` 预算摆成 `setting_panel` 的 entries（自由文本 + `set` 动作）。
+
+    三条目都是整数标量，取值域由 owner 的 ``value_schema`` 校验：前端只回传字符串，
+    ``_coerce_value`` 按声明类型还原；越界即 `validation_failed`，不静默夹取。
+    """
+    out: list[dict[str, Any]] = []
+    for config_id in _BUDGET_CONFIG_IDS:
+        entry = registry.entry(config_id)
+        if entry is None:
+            continue
+        schema = entry.value_schema or {}
+        out.append({
+            "config_id": config_id,
+            "params": {"config_id": config_id},
+            "identifier": entry.display_name,
+            "current": entry.default,
+            "options": [],
+            "actions": ["set"],
+            "input": "text",
+            "description": entry.panel_form_spec.help_text,
+            "note": (
+                f"取值范围 {schema.get('minimum', '—')}–{schema.get('maximum', '—')}；"
+                f"缺省 {entry.default}"
+            ),
+        })
+    return out
+
+
+def budget_part(surface: Any) -> dict[str, Any]:
+    """循环预算的 `setting_panel`（`investigate.*`；**不依赖反思面**）。
+
+    设置面 / 注册表缺席即 `unavailable` + 点名；条目为空是**内容**问题（面板照常出，
+    只是没有可调项），与「面缺席」分开——同 `_settings_parts` 的取值口径。
+    """
+    face = getattr(surface, "settings", None)
+    if face is None:
+        return envelope_payload(ResultEnvelope.unavailable(
+            "未接入 L0 存储 / 配置面，该端点不可用（装配归组合根）",
+            last_updated_at=_now(),
+        ))
+    registry = getattr(face, "config_registry", None)
+    if registry is None:
+        return envelope_payload(ResultEnvelope.unavailable(
+            "设置面缺句柄：config_registry（装配归组合根）", last_updated_at=_now(),
+        ))
+    try:
+        return surface._part(
+            "setting_panel",
+            slots={
+                "entries": _budget_entries(registry),
+                "surface": "settings-config",
+                "labels": {"set": "应用"},
+            },
+            text_kinds={"entries": "data", "surface": "data", "labels": "generated"},
+            title="自主查证预算",
+        )
+    except (ValueError, KeyError) as exc:
+        _LOG.info(
+            "表现层端点 settings-agent-budget 拒绝请求（%s）：%s",
+            type(exc).__name__, exc,
+        )
+        return envelope_payload(ResultEnvelope.validation_failed(str(exc) or "请求不合契约"))
+    except Exception as exc:  # noqa: BLE001 —— 内部失败：不吞，落日志 + 显式 failed
+        log_ref = f"ui/settings-agent-budget-{uuid.uuid4().hex[:12]}"
+        _LOG.exception(
+            "表现层端点 settings-agent-budget 未预期失败（log_ref=%s）：%s",
+            log_ref, exc,
+        )
+        return envelope_payload(ResultEnvelope.failed(
+            "该端点未预期失败，详见服务端日志", log_ref=log_ref
+        ))
 
 
 def _privacy_entries(registry: Any) -> list[dict[str, Any]]:
@@ -484,7 +571,7 @@ def _coerce_value(entry: Any, value: Any) -> Any:
         if text in ("true", "false"):
             return text == "true"
         raise ValueError(f"{entry.config_id} 的取值须为布尔：{value!r}")
-    if declared == "number":
+    if declared in ("number", "integer"):
         if isinstance(value, bool):
             raise ValueError(f"{entry.config_id} 的取值须为数值：{value!r}")
         if isinstance(value, (int, float)):
