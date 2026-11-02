@@ -12,6 +12,7 @@ from st_agent.l0.llm.boot_config import load_boot_config, save_boot_config
 from st_agent.l0.llm.http_transport import OpenAiRoute
 from st_agent.l0.secrets.masking import mask_secret
 from st_agent.l0.storage import Store
+from st_agent.l1.registry.errors import ConfigRegistryError
 from st_agent.l1.runtime import LLM_CREDENTIAL_ID, LlmBootstrap
 from st_agent.ui.envelope import envelope_payload
 
@@ -204,12 +205,25 @@ class SettingsWriteSurface(SurfaceBase):
             value = _coerce_value(entry, body.get("value"))
         else:
             raise ValueError(f"未知的设置动作：{action!r}（只认 set / enable / disable）")
-        change = registry.set(config_id, value, trace_id=f"ui-settings/{config_id}")
+        change = self._set_config(registry, config_id, value)
         return {
             "config_id": config_id,
             "changed": change is not None,
             "change_id": getattr(change, "change_id", None),
         }
+
+    @staticmethod
+    def _set_config(registry: Any, config_id: str, value: Any) -> Any:
+        """落一次值；注册表的**输入类**契约错误统一成 `ValueError`。
+
+        `RegistryValidationError` 是不合约取值（越界 / 条目未知），属用户输入问题；
+        不转成 `ValueError` 就会被 `_call_face` 当成内部失败（`failed` + log_ref），
+        用户看不到「哪条取值越界」。
+        """
+        try:
+            return registry.set(config_id, value, trace_id=f"ui-settings/{config_id}")
+        except ConfigRegistryError as exc:
+            raise ValueError(str(exc)) from exc
 
     def _run_convert(self, face: Any, body: dict[str, Any]) -> Any:
         to_format = str(_required(body, "to_format")).strip()
