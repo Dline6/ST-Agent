@@ -32,6 +32,8 @@ stories: [PRD Story 2 — Skills Runtime, Story 6 — Skill Studio, Story 8 — 
 5. **执行与留痕**：执行器产出先经描述体 `output_schema` 核验（01 §2 方言澄清，判定件 `contracts.schema_check`）——不合契约 → `failed` + 违规点说明，**不进入下一步**；合契约则包装 ResultEnvelope；记录 SkillRun（输入快照、输出、耗时、错误、依赖链）并挂到 `trace_id`
 6. **输出登记**：成功输出登记为可引用结果（见 §1.3）；**未过步骤 5 核验的载荷一律不登记**（禁止把不合契约的载荷按 `ok` 传播给复用方）
 
+**工具关闭检查（2026-11-02 增补，[`T-UI-038`](../../项目管理/tasks/T-UI-038-Agent工具开关.md)）**：描述体取到后、执行器调用前，先查 [01 §7](01-平台共享契约.md) 的 `agent-tools/<base>`——被用户关闭的工具走 `unavailable` 并点名，**不调用执行器、不解析依赖**。该检查在**统一执行入口**（`SkillRunner`），故 L3 循环、Skill 库手动执行、工作流与试跑**同口径**；关闭集合读不出（损坏）时同样拒绝执行（fail-closed），不静默放行。关闭不撤销注册，重新启用即恢复。
+
 ### 1.3 输出复用（数据协同）
 
 - 每个 SkillRun 输出可被后续 Skill / 视角 / 报告通过 `skill_run_id` 引用，避免重复计算

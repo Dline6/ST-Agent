@@ -11,7 +11,12 @@ from pathlib import Path
 
 import pytest
 
+from st_agent.l0.storage import Store
 from st_agent.ui.app import build_ui
+from st_agent.l1.skills.tool_selection import (
+    TOOL_SELECTION_PATH,
+    set_tool_enabled,
+)
 from st_agent.ui.surfaces.settings.shared import (
     _bytes_text,
     _coerce_value,
@@ -281,6 +286,81 @@ def test_agent_authorization_exposes_budget_without_the_reflection_face() -> Non
     assert [item["current"] for item in entries] == [8, 12, 16000]
     assert all(item["actions"] == ["set"] and item["input"] == "text" for item in entries)
     assert "1–32" in entries[0]["note"]
+
+
+class _ToolEntry:
+    def __init__(self, name: str) -> None:
+        self.name = name
+        self.skill_id = f"{name}_v1.0"
+        self.description = f"{name} 的说明"
+
+
+class _SkillsStub:
+    def __init__(self, names: tuple[str, ...]) -> None:
+        self._entries = tuple(_ToolEntry(name) for name in names)
+
+    def tool_catalog(self):
+        return self._entries
+
+
+class _ToolSettings(_BudgetSettings):
+    """预算三条目 + 工具目录 + 真 Store（工具开关落盘用）。"""
+
+    def __init__(self, store, names: tuple[str, ...]) -> None:
+        self.store = store
+        self.skills = _SkillsStub(names)
+
+
+def test_agent_page_lists_tools_grouped_and_enabled(tmp_path: Path) -> None:
+    store = Store.create(tmp_path / "root", "correct horse battery staple")
+    settings = _ToolSettings(
+        store, ("sk_plan_update", "sk_web_search", "sk_custom_thing"),
+    )
+    app = build_ui(host="127.0.0.1", port=0, settings=settings, reflection=_AgentAuthFace())
+    payload = app.api_settings_agent_authorization()
+    tools = payload["tools"]
+    assert tools["status"] == "ok", tools.get("reason")
+    values = tools["data"]["slots"]["values"]
+    groups = {group["key"]: group for group in values["groups"]}
+    assert groups["control"]["tools"][0]["name"] == "sk_plan_update"
+    assert groups["web"]["tools"][0]["name"] == "sk_web_search"
+    assert groups["other"]["tools"][0]["name"] == "sk_custom_thing"
+    assert values["total"] == 3 and values["enabled"] == 3
+    assert groups["control"]["tools"][0]["config_id"] == "agent-tools/sk_plan_update"
+
+
+def test_agent_page_reflects_disabled_tools(tmp_path: Path) -> None:
+    store = Store.create(tmp_path / "root", "correct horse battery staple")
+    set_tool_enabled(store, "sk_web_search", False)
+    settings = _ToolSettings(store, ("sk_web_search", "sk_plan_update"))
+    app = build_ui(host="127.0.0.1", port=0, settings=settings, reflection=_AgentAuthFace())
+    values = app.api_settings_agent_authorization()["tools"]["data"]["slots"]["values"]
+    groups = {group["key"]: group for group in values["groups"]}
+    assert groups["web"]["tools"][0]["enabled"] is False
+    assert values["enabled"] == 1 and values["disabled"] == 1
+
+
+def test_agent_page_reports_corrupt_tool_config(tmp_path: Path) -> None:
+    store = Store.create(tmp_path / "root", "correct horse battery staple")
+    store.put("config", TOOL_SELECTION_PATH, b"{not json")
+    settings = _ToolSettings(store, ("sk_web_search",))
+    app = build_ui(host="127.0.0.1", port=0, settings=settings, reflection=_AgentAuthFace())
+    tools = app.api_settings_agent_authorization()["tools"]
+    assert tools["status"] == "unavailable"
+    assert "损坏" in tools["reason"]
+
+
+def test_tool_toggles_are_rendered_as_collapsible_groups() -> None:
+    """静态断言：工具分组沿用数据同步页的 details 折叠形态（T-UI-038）。"""
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "src" / "st_agent" / "ui" / "web" / "js" / "pages" / "settings.js"
+    )
+    text = path.read_text(encoding="utf-8")
+    assert "function renderToolsSection" in text
+    assert "openToolGroups" in text
+    assert "details.open = openToolGroups.has(group.key);" in text
+    assert "config_id: tool.config_id" in text
 
 
 def test_agent_rollback_requires_a_change_id() -> None:

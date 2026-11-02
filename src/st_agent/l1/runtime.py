@@ -59,6 +59,7 @@ from st_agent.l1.reuse.freshness import MarketFreshnessOracle
 from st_agent.l1.reuse.registry import OutputRegistry
 from st_agent.l1.registry.facade import ConfigRegistryFacade
 from st_agent.l1.registry.families import (
+    AgentToolFamily,
     DataSyncAutoFamily,
     DataSourceSwitchFamily,
     LocalExecFamily,
@@ -579,6 +580,7 @@ def _build_config_registry(
     facade.register_family(SearchFamily(store, vault=vault))
     facade.register_family(WebEgressFamily(store))
     facade.register_family(DataSyncAutoFamily(store))
+    facade.register_family(AgentToolFamily(store))
     facade.register_family(LocalExecFamily(store))
     facade.register_family(DataSourceSwitchFamily(store))
     return facade

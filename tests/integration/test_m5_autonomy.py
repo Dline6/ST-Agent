@@ -30,6 +30,7 @@ from st_agent.__main__ import build_ambient_runtime
 from st_agent.app import M4Runtime, M5Runtime, TurnResult, build_m4_runtime
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.l1.runtime import LLM_CAPABILITY, LLM_ENDPOINT_ID
+from st_agent.l1.skills.tool_selection import set_tool_enabled
 from st_agent.l3.intent import ConfirmationItem, IntentDraft, checked_confirmation
 from st_agent.l3.runtime import load_agent_run
 from st_agent.l6 import EvolutionRiskRule
@@ -442,6 +443,25 @@ def test_loop_port_declares_parallel_safety_and_nested_recorder(rig, monkeypatch
     ref = captured["nested_recorder"](child)
     assert load_agent_run(rig.m5.store, ref.agent_run_id).task == "子任务：查证一条公告"
     assert ref.log_ref
+
+
+class TestToolSelection:
+    """T-UI-038：用户关闭的工具不进入循环可见面。"""
+
+    def test_disabled_tool_is_removed_from_the_run_catalog(self, rig) -> None:
+        set_tool_enabled(rig.m5.store, SK_A, False)
+        tools, error = rig.m5.investigations._tools_for_run()
+        assert error == ""
+        names = {entry.name for entry in tools}
+        assert SK_A not in names
+        assert SK_B in names
+
+    def test_all_tools_disabled_yields_catalog_empty(self, rig) -> None:
+        for entry in rig.m5.m1.runtime.skills.tool_catalog():
+            set_tool_enabled(rig.m5.store, entry.name, False)
+        outcome = _investigate(rig.m5)
+        assert outcome.envelope.status == "empty"
+        assert outcome.envelope.reason
 
 
 # ───────────────────────────── 内部 ─────────────────────────────

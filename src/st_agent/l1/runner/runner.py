@@ -57,7 +57,11 @@ from st_agent.l1.skills.errors import (
     SkillNotFoundError,
     SkillValidationError,
 )
-from st_agent.l1.skills.ids import check_skill_id
+from st_agent.l1.skills.ids import base_of, check_skill_id
+from st_agent.l1.skills.tool_selection import (
+    ToolSelectionError,
+    get_disabled_tools,
+)
 
 __all__ = [
     "RUN_PREFIX",
@@ -305,6 +309,23 @@ class SkillRunner:
         except SkillNotFoundError as exc:
             return finish(
                 ResultEnvelope.validation_failed(f"Skill {skill_id!r} 未注册：{exc}"),
+                (), dict(values))
+
+        # ── 用户工具开关拦截（T-UI-038 / 01 §7：关闭即不执行、不解析依赖） ──
+        try:
+            disabled = get_disabled_tools(self._store)
+        except ToolSelectionError as exc:
+            return finish(
+                ResultEnvelope.unavailable(
+                    f"工具开关配置损坏，拒绝执行（fail-closed）：{exc}",
+                    last_updated_at=_now()),
+                (), dict(values))
+        base = base_of(skill_id)
+        if base in disabled:
+            return finish(
+                ResultEnvelope.unavailable(
+                    f"Skill {skill_id!r} 已被用户关闭（agent-tools/{base}），拒绝执行",
+                    last_updated_at=_now()),
                 (), dict(values))
 
         # ── 沙箱禁用拦截（T-L1-001.5 / GWT-W1：直接拦截，不执行不解析依赖） ──

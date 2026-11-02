@@ -6,9 +6,14 @@ import inspect
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
+from datetime import datetime
 from typing import Any
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.trace import Trace
+from st_agent.l1.skills.tool_selection import (
+    ToolSelectionError,
+    get_disabled_tools,
+)
 from st_agent.l3.errors import (
     AgentRunNotFoundError,
     AgentRuntimeValidationError,
@@ -184,6 +189,23 @@ class _AgentInvestigator:
         """
         self._subprotocols = ports
 
+    def _tools_for_run(self) -> tuple[tuple[Any, ...], str]:
+        """本次运行的工具目录＝L1 投影 ∩ 用户允许集（[01 §2] / [01 §7]）。
+
+        关闭集合读不出（配置损坏）时返回**空目录 + 原因**，由调用方回 `unavailable`——
+        不静默当作全部启用（fail-closed）。
+
+        :return: ``(工具条目, 错误原因)``；无错误时原因为空串
+        """
+        try:
+            disabled = get_disabled_tools(self._store)
+        except ToolSelectionError as exc:
+            return (), f"工具开关配置损坏，拒绝运行（fail-closed）：{exc}"
+        return (
+            tuple(entry for entry in self._skills.tool_catalog() if entry.name not in disabled),
+            "",
+        )
+
     def investigate(
         self,
         confirmation: Any,
@@ -222,13 +244,21 @@ class _AgentInvestigator:
         try:
             history, memory, note = self._context_inputs(session, task)
             events = RunEventLog(self._store, run_id)
+            tools, tool_error = self._tools_for_run()
+            if tool_error:
+                return InvestigationOutcome(
+                    envelope=ResultEnvelope.unavailable(
+                        tool_error, last_updated_at=datetime.now().astimezone()),
+                    session_id=session,
+                    context_note=note,
+                )
             budget_chars = self._bounds.budget_chars()
             outcome = run_agent_loop(
                 task=task,
                 endpoint_id=self._endpoint_id,
                 protocol=self._protocol,
                 runner=self._runner,
-                tools=self._skills.tool_catalog(),
+                tools=tools,
                 gate=self._gate_for(session),
                 approved_permissions=self._permissions or (),
                 max_steps=self._bounds.steps(),
@@ -287,6 +317,10 @@ class _AgentInvestigator:
         try:
             history, memory, note = self._context_inputs(session, record.task)
             events = RunEventLog(self._store, run_id)
+            tools, tool_error = self._tools_for_run()
+            if tool_error:
+                return ResumeOutcome(envelope=ResultEnvelope.unavailable(
+                    tool_error, last_updated_at=datetime.now().astimezone()))
             result = resume_agent_run(
                 self._store,
                 record.agent_run_id,
@@ -295,7 +329,7 @@ class _AgentInvestigator:
                 endpoint_id=self._endpoint_id,
                 protocol=self._protocol,
                 runner=self._runner,
-                tools=self._skills.tool_catalog(),
+                tools=tools,
                 gate=self._gate_for(session),
                 approved_permissions=self._permissions or (),
                 max_steps=self._bounds.steps(),

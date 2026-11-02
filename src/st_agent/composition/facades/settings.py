@@ -41,3 +41,6 @@ class SettingsFacade:
     """:class:`~st_agent.l0.bootstrap.root.RootBoot`——存储根指针的读写面。"""
     data_sync: Any = None
     """:class:`~st_agent.l0.sync_runner.DataSyncRunner`——数据总览与手动同步。"""
+    skills: Any = None
+    """L1 ``SkillRegistry``——运行期授权页「Agent 工具开关」的工具目录来源
+    （鸭子类型 ``tool_catalog()``；[01 §2] 的唯一来源）。"""

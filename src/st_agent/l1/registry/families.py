@@ -88,8 +88,17 @@ from st_agent.l1.registry.errors import RegistryValidationError
 from st_agent.l1.registry.naming import CHANGE_PARTITION, new_change_id
 from st_agent.l1.sandbox.provider_hosts import CONFIG_ID_PREFIX, ProviderHostRegistry
 from st_agent.l1.scheduler.policy import OFFLINE_CATCH_UP_CONFIG_ID, SchedulerPolicy
+from st_agent.l1.skills.tool_selection import (
+    TOOL_SELECTION_PREFIX,
+    ToolSelectionError,
+    get_disabled_tools,
+    parse_tool_selection_config_id,
+    set_tool_enabled,
+    tool_selection_entry,
+)
 
 __all__ = [
+    "AgentToolFamily",
     "DataSyncAutoFamily",
     "DataSourceSwitchFamily",
     "LocalExecFamily",
@@ -689,6 +698,82 @@ class DataSyncAutoFamily:
         except AutoSyncConfigError as exc:
             raise RegistryValidationError(str(exc)) from exc
         return self._record(config_id, old, value, trace_id)
+
+    def _record(
+        self, config_id: str, old: object, new: object, trace_id: str | None
+    ) -> ChangeRecord:
+        change = ChangeRecord(
+            change_id=new_change_id(), config_id=config_id,
+            old_value=old, new_value=new, applied_at=self._now().isoformat(),
+            trace_ref=trace_id,
+        )
+        self._store.put(
+            CHANGE_PARTITION, f"{self.change_prefix}{change.change_id}.json",
+            change.model_dump_json().encode("utf-8"),
+        )
+        return change
+
+
+class AgentToolFamily:
+    """Agent 工具开关（``agent-tools/<base>``；T-UI-038）。
+
+    条目为布尔标量：关闭集合落 ``config`` 分区 ``agent-tools/disabled.json``；
+    变更由本族补落 ``ChangeRecord``（前缀 ``agent-tool-change/``）。消费方是
+    L3 循环的工具目录过滤与 L1 ``SkillRunner`` 的执行入口——两者都在使用时现读，
+    故落值即对下一次运行 / 执行生效。
+
+    ``entries()`` **只列已落盘的关闭项**（与 ``DataSyncAutoFamily`` 同口径：未落值即启用，
+    不由本族物化全部工具）——设置页的工具清单直接取 ``SkillRegistry.tool_catalog()``，
+    不靠本族列举。``entry(config_id)`` 对任意合法 ``<base>`` 都可取到条目。
+
+    :param store: ``Store`` 句柄
+    :param now: 取时函数（测试注入固定时钟；缺省本机当前时刻）
+    """
+
+    config_prefix = TOOL_SELECTION_PREFIX
+    scope: ConfigScope = "global"
+    change_prefix = "agent-tool-change/"
+
+    def __init__(self, store, *, now: Callable[[], datetime] | None = None) -> None:
+        self._store = store
+        self._now = _system_now if now is None else now
+
+    def entries(self) -> tuple[ConfigEntry, ...]:
+        return tuple(
+            tool_selection_entry(base, current=False)
+            for base in sorted(self._disabled())
+        )
+
+    def entry(self, config_id: str) -> ConfigEntry | None:
+        base = parse_tool_selection_config_id(config_id)
+        if base is None:
+            return None
+        return tool_selection_entry(base, current=base not in self._disabled())
+
+    def apply(
+        self, config_id: str, value: object, *, trace_id: str | None = None
+    ) -> ChangeRecord | None:
+        base = parse_tool_selection_config_id(config_id)
+        if base is None:
+            raise RegistryValidationError(
+                f"{config_id!r} 不属本族（agent-tools/<base>）"
+            )
+        if not isinstance(value, bool):
+            raise RegistryValidationError(f"{config_id} 的取值须为布尔：{value!r}")
+        old = base not in self._disabled()
+        if old == value:
+            return None
+        try:
+            set_tool_enabled(self._store, base, value)
+        except ToolSelectionError as exc:
+            raise RegistryValidationError(str(exc)) from exc
+        return self._record(config_id, old, value, trace_id)
+
+    def _disabled(self) -> frozenset[str]:
+        try:
+            return get_disabled_tools(self._store)
+        except ToolSelectionError as exc:
+            raise RegistryValidationError(str(exc)) from exc
 
     def _record(
         self, config_id: str, old: object, new: object, trace_id: str | None
