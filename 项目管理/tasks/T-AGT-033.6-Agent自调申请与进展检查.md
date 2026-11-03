@@ -10,7 +10,7 @@ milestone:
 depends_on: [T-AGT-033.4, T-AGT-033.5]
 status: done
 decisions: [D-090, D-154, D-166]
-verify: D-166；范围套件 4386 passed / 4 例测试期望滞后（已修正并定向复验）/ 2 例本机 test_shell 环境性 ERROR；改动区复跑 655 passed；live 3 passed；verify_docs --strict PASS。详见执行日志对应条目。
+verify: D-166；范围套件 4386 passed / 4 例测试期望滞后（已修正并定向复验）/ 2 例本机 test_shell 环境性 ERROR；改动区复跑 655 passed；live 3 passed；verify_docs --strict PASS。详见执行日志对应条目；commit `00f11a5`。
 ---
 
 # T-AGT-033.6 · Agent 自调申请与进展检查
