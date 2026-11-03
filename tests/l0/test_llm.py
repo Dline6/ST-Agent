@@ -30,6 +30,7 @@ from st_agent.l0.llm import (
     LlmUsageRecord,
     LlmValidationError,
     StreamEvent,
+    ToolSpec,
     TransportTimeoutError,
     TransportUnavailableError,
     estimate_tokens,
@@ -343,6 +344,34 @@ class TestGwt5FailureSemantics:
         events = drain(local_client.invoke("local-main", big, initiator="t", purpose="p"))
         assert events[0].error_envelope.status == "validation_failed"
         assert "上下文" in events[0].error_envelope.reason
+        assert events[0].failure.kind == "context_overflow"
+
+    def test_estimate_tokens_counts_cjk_conservatively(self):
+        assert estimate_tokens("中" * 100) == 100
+        assert estimate_tokens("abcd" * 2) == 2
+        assert estimate_tokens("中文abcd") == 3      # 2 个中文字 + 4 字母/4
+
+    def test_tools_count_toward_context_limit(
+        self, store: Store, registry: EndpointRegistry, vault: CredentialVault,
+    ):
+        registry.register(
+            "tool-main", kind="local", provider="local-llama",
+            capability={
+                "max_context_tokens": 1000,
+                "supports_function_calling": True,
+            },
+            priority=1,
+        )
+        client = LlmClient(store, registry, vault, transport=lambda *a, **k: iter(()))
+        tool = ToolSpec(
+            name="sk_big", description="描" * 2000, parameters={"type": "object"},
+        )
+        events = drain(client.invoke(
+            "tool-main", "hi", initiator="t", purpose="p", tools=[tool],
+        ))
+        assert events[0].error_envelope.status == "validation_failed"
+        assert "工具目录" in events[0].error_envelope.reason
+        assert events[0].failure.kind == "context_overflow"
 
     def test_unknown_endpoint_raises(self, local_client):
         with pytest.raises(LlmNotFoundError):

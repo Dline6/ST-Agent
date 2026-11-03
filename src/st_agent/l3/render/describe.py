@@ -224,6 +224,8 @@ AGENT_TERMINATION_LABELS: dict[str, str] = {
     "cancelled": "已按停止请求终止（安全停止）",
     "manual_step_done": "manual 档：本步已执行，未自动续跑",
     "card_ready": "已产出卡片并交还确认",
+    "context_overflow": "上下文超出端点窗口",
+    "no_progress": "重复读取同一结果、无新证据",
 }
 """终止原因的展示标签（生成文案，过 §6）。
 

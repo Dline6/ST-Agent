@@ -12,7 +12,7 @@ from st_agent.l0.storage import Store
 from st_agent.l2.memory import MemoryReader, MemoryWriter
 from st_agent.l3 import SessionNotFoundError, SessionValidationError
 from st_agent.l3.chat import (
-    DEFAULT_CONTEXT_BUDGET,
+    default_context_budget,
     ROLE_LABELS,
     ChatMessage,
     SessionStore,
@@ -173,7 +173,7 @@ class TestGwt5ContextAssembly:
         chat.append(s.session_id, "已记录", role="agent", now=NOW + timedelta(seconds=1))
 
         ctx = chat.assemble_context(s.session_id, reader, topic="银行",
-                                    token_budget=DEFAULT_CONTEXT_BUDGET)
+                                    token_budget=default_context_budget())
         assert ctx.envelope.status == "ok"
         assert [m.text for m in ctx.messages] == ["关注 银行 板块", "已记录"]
         assert ctx.memory.slices, "记忆切片应非空"
@@ -260,3 +260,47 @@ class TestDeleteSession:
     def test_delete_unknown_session_is_explicit(self, chat: SessionStore) -> None:
         with pytest.raises(SessionNotFoundError):
             chat.delete("sess_missing")
+
+
+class TestGwt6TaskAnchorAndHistorySelection:
+    """T-AGT-033.3：主任务锚点独立于历史预算；超大消息跳过而非 ``break``。"""
+
+    def test_follow_up_points_back_to_the_main_task(
+        self, chat: SessionStore, reader: MemoryReader,
+    ) -> None:
+        s = chat.create(now=NOW)
+        chat.append(s.session_id, "查一下 sh.600000 的公告", now=NOW)
+        chat.append(s.session_id, "公告已给出", role="agent",
+                     now=NOW + timedelta(seconds=1))
+        chat.append(s.session_id, "继续", now=NOW + timedelta(seconds=2))
+
+        ctx = chat.assemble_context(s.session_id, reader, token_budget=100_000)
+        assert ctx.main_task == "查一下 sh.600000 的公告"
+        assert ctx.follow_up is True
+
+    def test_oversized_message_is_skipped_not_breaking_older_history(
+        self, chat: SessionStore, reader: MemoryReader,
+    ) -> None:
+        s = chat.create(now=NOW)
+        chat.append(s.session_id, "原问题", now=NOW)
+        chat.append(s.session_id, "x" * 5000, role="agent",
+                     now=NOW + timedelta(seconds=1))
+        chat.append(s.session_id, "近端小消息", role="agent",
+                     now=NOW + timedelta(seconds=2))
+
+        ctx = chat.assemble_context(s.session_id, reader, token_budget=3000)
+        texts = [m.text for m in ctx.messages]
+        assert "原问题" in texts, "超大消息不得把更早的原问题一起丢掉"
+        assert "近端小消息" in texts
+        assert all(len(m.text) < 1000 for m in ctx.messages)
+        assert ctx.dropped and all(item.startswith("history:") for item in ctx.dropped)
+        assert ctx.main_task == "原问题"
+
+    def test_is_follow_up_is_deterministic_and_short_only(self) -> None:
+        from st_agent.l3.chat import is_follow_up
+
+        assert is_follow_up("继续") is True
+        assert is_follow_up("继续。") is True
+        assert is_follow_up("接着来") is True
+        assert is_follow_up("请继续分析一下 sh.600000 的估值") is False
+        assert is_follow_up("") is False

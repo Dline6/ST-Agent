@@ -135,7 +135,8 @@ class TestSessionContextWiring:
         且循环第一轮的 prompt 里确有本会话历史（不是无历史单次查证）。"""
         _make_autonomous(rig.m5)
 
-        turn = rig.m5.chat.post(TASK_TEXT)
+        first = rig.m5.chat.post("先前的对话")
+        turn = rig.m5.chat.post(TASK_TEXT, session_id=first.session_id)
         outcome = rig.m5.chat.confirm_and_dispatch(turn.session_id)
 
         assert outcome.session_id == turn.session_id

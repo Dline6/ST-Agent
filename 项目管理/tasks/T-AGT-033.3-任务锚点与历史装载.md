@@ -8,9 +8,9 @@ arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P0
 milestone: M11
 depends_on: [T-AGT-009.2, T-AGT-029.1]
-status: todo
-decisions: [D-090, D-142, D-154]
-verify:
+status: done
+decisions: [D-090, D-142, D-154, D-166]
+verify: D-166；范围套件 4386 passed / 4 例测试期望滞后（已修正并定向复验）/ 2 例本机 test_shell 环境性 ERROR；改动区复跑 655 passed；live 3 passed；verify_docs --strict PASS。详见执行日志对应条目。
 ---
 
 # T-AGT-033.3 · 任务锚点与历史装载
@@ -29,14 +29,19 @@ verify:
 
 ## 接口面
 
-待 ④ 对齐实填。预计落点：
-
-- 输入：`ChatSession` / `ChatMessage` / `SessionStore.chain`（[`session.py`](../../src/st_agent/l3/chat/session.py)）· `assemble_context` 的消息选择（[`session.py`](../../src/st_agent/l3/chat/session.py)）· `_context_inputs`（[`composition/agent.py`](../../src/st_agent/composition/agent.py)）· `start_turn`（[`facades/chat.py`](../../src/st_agent/composition/facades/chat.py)）· `WorkContext._render_history_lines`（[`context.py`](../../src/st_agent/l3/runtime/context.py)）。
-- 输出：会话主任务字段/锚点 · 跟进语解析 · 历史选择策略（原问题 + 近端 + 跳过超大）· 当前消息去重 · 模型可见历史摘要 ·（可选）活动叶子。
+- **输入**：
+  - `ChatSession` / `ChatMessage` / `SessionStore.chain`（[`session.py`](../../src/st_agent/l3/chat/session.py)）；
+  - `assemble_context` 的消息选择与记忆主题（同上）；`_context_inputs`（[`composition/agent.py`](../../src/st_agent/composition/agent.py)）；
+  - `run_agent_loop` 的历史 / 记忆入参（[`loop.py`](../../src/st_agent/l3/runtime/loop.py)）；`WorkContext._render_history_lines`（[`context.py`](../../src/st_agent/l3/runtime/context.py)）。
+- **输出**：
+  - `SessionContext.main_task` / `follow_up`：主任务锚点与跟进判定（`is_follow_up()` 确定性短句匹配）；
+  - `assemble_context` 历史选择：优先近端、**超大消息跳过并记 `dropped`**、不再 `break`；记忆按实际命中占预算、余量回流历史；
+  - `WorkContext.main_task` / `follow_up` 渲染；助手轮历史只给**紧凑摘要 + 证据引用**（`skill_run_id` / `log_ref` 指向）；
+  - 组合根从历史去掉当前消息（task 与 history 不重复），并把会话层 `dropped` 带进 `agent_run.context_dropped`。
 
 ## 可关闭的遗留
 
-无（新建任务；④ 对齐时逐册复核）。
+无（逐册复核 L0 / L1 / L2 / L3 / L5 / L6 未闭区：无归属＝本任务、或无解封条件＝本任务 `done` 的条目）。
 
 ## 假设与前提
 

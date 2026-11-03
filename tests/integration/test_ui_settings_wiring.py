@@ -421,7 +421,7 @@ def test_agent_authorization_page_shows_and_writes_loop_budget(m5) -> None:
             "investigate.llm_max_attempts",
             "investigate.llm_retry_backoff_ms",
         ]
-        assert [item["current"] for item in entries] == [8, 12, 16000, 300000, 90000, 3, 500]
+        assert [item["current"] for item in entries] == [8, 12, 0, 300000, 90000, 3, 500]
 
         applied = _post(
             running, "/api/settings/apply",

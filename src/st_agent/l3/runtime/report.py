@@ -43,7 +43,12 @@ from st_agent.l3.runtime.context import (
     PlanStep,
     result_will_truncate,
 )
-from st_agent.l3.runtime.loop import LoopOutcome, SubAgentRun, TerminationReason
+from st_agent.l3.runtime.loop import (
+    BudgetRequestRecord,
+    LoopOutcome,
+    SubAgentRun,
+    TerminationReason,
+)
 from st_agent.l3.runtime.steer import SteerMessage
 from st_agent.l3.runtime.tool_search import ToolSearchRecord
 
@@ -180,13 +185,20 @@ class AgentRunRecord(BaseModel):
     max_llm_calls: int = Field(ge=1)
     """本次生效的 **LLM 调用次数上界**。"""
     budget_chars: int = Field(default=0, ge=0)
-    """本次生效的**工作上下文预算**（[01 §7](../../../../docs/技术架构-v2/01-平台共享契约.md)
-    的 `investigate.context_budget`；0 即未跑装配的终止）。"""
+    """本次生效的**上下文字符预算**（由 :class:`ContextEnvelope` 派生；0 即未跑装配的终止）。"""
+    context_window_tokens: int = Field(default=0, ge=0)
+    """端点声明的上下文窗口（信封来源；0 即未派生）。"""
+    context_available_tokens: int = Field(default=0, ge=0)
+    """信封扣除输出预留 / 工具目录 / 系统提示词后的可用 token（0 即未派生）。"""
+    context_envelope_note: str = ""
+    """信封派生说明（端点窗口未知 / 用户封顶生效 / 可用预算触底；无即空）。"""
     context_dropped: tuple[str, ...] = ()
     """被预算**舍弃**的上下文项（``memory:<node_id>`` / ``history:<message_id>``）——
     [05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 要求如实标注被舍项。"""
     tool_searches: tuple[ToolSearchRecord, ...] = ()
     """本次循环的工具检索记录（**决策**：不产 Trace 步 / ``skill_run``，故在此留痕）。"""
+    budget_requests: tuple[BudgetRequestRecord, ...] = ()
+    """本次循环的预算申请（批准 / 拒绝均留痕；不产 Trace 步）。"""
     at_bound_kind: str = ""
     """触界的那一条（``step_limit`` / ``llm_call_limit``；未触界为空）。"""
     recorded_at: datetime
@@ -273,8 +285,12 @@ def record_agent_run(
         max_steps=outcome.max_steps,
         max_llm_calls=outcome.max_llm_calls,
         budget_chars=outcome.budget_chars,
+        context_window_tokens=outcome.context_window_tokens,
+        context_available_tokens=outcome.context_available_tokens,
+        context_envelope_note=outcome.context_envelope_note,
         context_dropped=outcome.dropped,
         tool_searches=tuple(outcome.tool_searches),
+        budget_requests=tuple(outcome.budget_requests),
         recorded_at=now if now is not None else _now(),
     )
     store.put("execution_log", agent_log_ref_of(agent_run_id),
@@ -399,6 +415,7 @@ def _without_steps(
         return ResultEnvelope.empty(_handback_reason(outcome, reason))
     if termination in (
         "catalog_empty", "step_limit", "llm_call_limit", "cancelled", "manual_step_done",
+        "no_progress",
     ):
         return ResultEnvelope.empty(reason)
     return ResultEnvelope.failed(reason, log_ref=log_ref)

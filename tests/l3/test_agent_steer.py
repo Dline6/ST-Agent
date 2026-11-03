@@ -181,11 +181,15 @@ def test_inbox_rejects_blank_and_drains_once():
 
 
 def test_steer_is_dropped_only_after_memory_and_history(tools):
-    base = assemble_work_context(TASK, tools, budget_chars=10**6)
+    base = assemble_work_context(
+        TASK, tools, budget_chars=10**6, max_result_chars=10**6,
+        tool_lazy_chars=10**6,
+    )
     size = base.data.size_chars
     steer = SteerMessage(text="x" * 200, received_at=NOW)
     sized = assemble_work_context(
-        TASK, tools, budget_chars=size + 1, steer_messages=(steer,),
+        TASK, tools, budget_chars=size + 1, max_result_chars=10**6,
+        tool_lazy_chars=10**6, steer_messages=(steer,),
     )
     assert sized.status == "ok"
     assert sized.data.steers == ()

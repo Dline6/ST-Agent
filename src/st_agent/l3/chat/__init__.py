@@ -7,8 +7,7 @@ from __future__ import annotations
 
 from st_agent.l3.chat.session import (
     CHAT_PARTITION,
-    DEFAULT_CONTEXT_BUDGET,
-    MEMORY_BUDGET_SHARE,
+    FOLLOW_UP_PHRASES,
     ROLE_LABELS,
     SESSION_PREFIX,
     ChatMessage,
@@ -20,14 +19,15 @@ from st_agent.l3.chat.session import (
     SessionStore,
     assemble_context,
     checked_session,
+    default_context_budget,
+    is_follow_up,
     new_message_id,
     new_session_id,
 )
 
 __all__ = [
     "CHAT_PARTITION",
-    "DEFAULT_CONTEXT_BUDGET",
-    "MEMORY_BUDGET_SHARE",
+    "FOLLOW_UP_PHRASES",
     "ROLE_LABELS",
     "SESSION_PREFIX",
     "ChatMessage",
@@ -39,6 +39,8 @@ __all__ = [
     "SessionStore",
     "assemble_context",
     "checked_session",
+    "default_context_budget",
+    "is_follow_up",
     "new_message_id",
     "new_session_id",
 ]

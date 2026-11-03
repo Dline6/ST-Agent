@@ -30,13 +30,12 @@ from st_agent.contracts.trace import Trace
 from st_agent.l1.runner.models import SkillRun
 from st_agent.l3.errors import AgentRunNotFoundError, AgentRuntimeValidationError
 from st_agent.l3.runtime.context import (
-    DEFAULT_WORK_CONTEXT_BUDGET,
-    RESULT_TRUNCATE_CHARS,
     WorkStep,
     new_work_step,
 )
 from st_agent.l3.runtime.loop import (
     ASK_USER_TOOL,
+    BUDGET_REQUEST_TOOL,
     DEFAULT_LLM_MAX_ATTEMPTS,
     DEFAULT_LLM_RETRY_BACKOFF_MS,
     DEFAULT_MAX_LLM_CALLS,
@@ -74,13 +73,15 @@ CONTINUATION_TTL = timedelta(minutes=30)
 """
 
 RESUMABLE_TERMINATIONS: tuple[str, ...] = (
-    "needs_confirmation", "needs_user_input", "llm_failed",
+    "needs_confirmation", "needs_user_input", "llm_failed", "context_overflow",
 )
-"""可续跑的终止原因（两种交还 + 重试耗尽的 ``llm_failed``）。"""
+"""可续跑的终止原因（两种交还 + 重试耗尽的 ``llm_failed`` + 上下文超出端点窗口）。"""
 
 ResumeDecision = Literal["approve", "answer", "retry", "rerun", "cancel"]
 
-_CONTROL_TOOLS: tuple[str, ...] = (PLAN_UPDATE_TOOL, ASK_USER_TOOL)
+_CONTROL_TOOLS: tuple[str, ...] = (
+    PLAN_UPDATE_TOOL, ASK_USER_TOOL, BUDGET_REQUEST_TOOL,
+)
 """控制原语（计划 / 提问）——它们不经 L1 执行面，故不能按工具重放。"""
 
 
@@ -133,8 +134,10 @@ def resume_agent_run(
     purpose: str = DEFAULT_TURN_PURPOSE,
     max_steps: int = DEFAULT_MAX_STEPS,
     max_llm_calls: int = DEFAULT_MAX_LLM_CALLS,
-    budget_chars: int = DEFAULT_WORK_CONTEXT_BUDGET,
-    max_result_chars: int = RESULT_TRUNCATE_CHARS,
+    budget_chars: int | None = None,
+    context_window_tokens: int | None = None,
+    context_budget_tokens: int = 0,
+    max_result_chars: int | None = None,
     session_id: str | None = None,
     history: Sequence[Any] = (),
     memory: Sequence[Any] = (),
@@ -228,11 +231,11 @@ def resume_agent_run(
                 "待确认请选择确认并继续或重跑"
             ),
         )
-    if decision == "retry" and record.termination != "llm_failed":
+    if decision == "retry" and record.termination not in ("llm_failed", "context_overflow"):
         return ResumeOutcome(
             envelope=ResultEnvelope.validation_failed(
                 f"留痕 {record.agent_run_id!r} 的终止原因是 {record.termination!r}，"
-                "不是「LLM 调用失败」，没有可继续的重试现场"
+                "不是「LLM 调用失败」或「上下文超限」，没有可继续的现场"
             ),
         )
     if decision == "approve" and (
@@ -293,8 +296,8 @@ def resume_agent_run(
                 plan_updated=plan_updated,
                 max_steps=max_steps,
                 max_llm_calls=max_llm_calls,
-                budget_chars=budget_chars,
-                max_result_chars=max_result_chars,
+                budget_chars=budget_chars or 0,
+                max_result_chars=max_result_chars or 1,
                 executed_steps=1,
             )
             manual_report = conclude_agent_run(
@@ -322,6 +325,8 @@ def resume_agent_run(
         max_steps=max_steps,
         max_llm_calls=max_llm_calls,
         budget_chars=budget_chars,
+        context_window_tokens=context_window_tokens,
+        context_budget_tokens=context_budget_tokens,
         max_result_chars=max_result_chars,
         trace=initial_trace,
         session_id=session_id,

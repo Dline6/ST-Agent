@@ -7,7 +7,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import Any, NamedTuple
 from st_agent.contracts.result_envelope import ResultEnvelope
 from st_agent.contracts.trace import Trace
 from st_agent.l1.skills.tool_selection import (
@@ -58,6 +58,17 @@ SESSION_INVALID_NOTE = "会话标识无法读取（会话不存在或记录损�
 
 CONTEXT_ABSENT_NOTE = "会话 / 记忆读面未装配：本次按无历史的单次查证运行"
 """带会话但组合根未注入读面时的**显式标注**（装配缺口如实呈现，不静默当空历史）。"""
+
+
+class _ContextInputs(NamedTuple):
+    """一次循环预取的历史 / 记忆 / 会话层取舍 / 主任务锚点 + 显式说明。"""
+
+    history: tuple[Any, ...] = ()
+    memory: tuple[Any, ...] = ()
+    dropped: tuple[str, ...] = ()
+    main_task: str = ""
+    follow_up: bool = False
+    note: str = ""
 
 
 @dataclass(frozen=True)
@@ -229,7 +240,7 @@ class _AgentInvestigator:
         session = (session_id or "").strip() or None
         task = str(merged.get("task") or getattr(confirmation, "target", "") or "").strip()
         if not task:
-            _history, _memory, note = self._context_inputs(session, task)
+            note = self._context_inputs(session, task).note
             return InvestigationOutcome(
                 envelope=ResultEnvelope.validation_failed(M5_ABSENT_TASK_REASON),
                 session_id=session,
@@ -244,18 +255,18 @@ class _AgentInvestigator:
                 session_id=session,
             )
         try:
-            history, memory, note = self._context_inputs(session, task)
-            events = RunEventLog(self._store, run_id)
             tools, tool_error = self._tools_for_run()
             if tool_error:
                 return InvestigationOutcome(
                     envelope=ResultEnvelope.unavailable(
                         tool_error, last_updated_at=datetime.now().astimezone()),
                     session_id=session,
-                    context_note=note,
+                    context_note="",
                 )
-            budget_chars = self._bounds.budget_chars()
             system_prompt = build_system_prompt(now=_moment(now))
+            context_inputs = self._context_inputs(session, task)
+            note = context_inputs.note
+            events = RunEventLog(self._store, run_id)
             outcome = run_agent_loop(
                 task=task,
                 endpoint_id=self._endpoint_id,
@@ -270,10 +281,14 @@ class _AgentInvestigator:
                 llm_idle_timeout_ms=self._bounds.llm_idle_timeout_ms(),
                 llm_max_attempts=self._bounds.llm_max_attempts(),
                 llm_retry_backoff_ms=self._bounds.llm_retry_backoff_ms(),
-                budget_chars=budget_chars,
+                context_window_tokens=self._context_window_tokens(),
+                context_budget_tokens=self._context_budget_tokens(),
                 session_id=session,
-                history=history,
-                memory=memory,
+                main_task=context_inputs.main_task,
+                follow_up=context_inputs.follow_up,
+                prior_dropped=context_inputs.dropped,
+                history=context_inputs.history,
+                memory=context_inputs.memory,
                 parallel_safe=True,
                 nested_recorder=self._nested_recorder,
                 subprotocols=self._subprotocols,
@@ -325,7 +340,8 @@ class _AgentInvestigator:
         except AgentRuntimeValidationError as exc:
             return ResumeOutcome(envelope=ResultEnvelope.validation_failed(str(exc)))
         try:
-            history, memory, note = self._context_inputs(session, record.task)
+            context_inputs = self._context_inputs(session, record.task)
+            note = context_inputs.note
             events = RunEventLog(self._store, run_id)
             tools, tool_error = self._tools_for_run()
             if tool_error:
@@ -348,10 +364,11 @@ class _AgentInvestigator:
                 llm_idle_timeout_ms=self._bounds.llm_idle_timeout_ms(),
                 llm_max_attempts=self._bounds.llm_max_attempts(),
                 llm_retry_backoff_ms=self._bounds.llm_retry_backoff_ms(),
-                budget_chars=self._bounds.budget_chars(),
+                context_window_tokens=self._context_window_tokens(),
+                context_budget_tokens=self._context_budget_tokens(),
                 session_id=session,
-                history=history,
-                memory=memory,
+                history=context_inputs.history,
+                memory=context_inputs.memory,
                 parallel_safe=True,
                 nested_recorder=self._nested_recorder,
                 now=now,
@@ -457,26 +474,67 @@ class _AgentInvestigator:
         except Exception:  # noqa: BLE001 —— 档位读不出时由闸门 fail-closed，不用它决定形态
             return True
 
-    def _context_inputs(self, session_id: str | None, task: str) -> tuple[Any, Any, str]:
-        """取近端历史与记忆切片（[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)）。
+    def _context_inputs(self, session_id: str | None, task: str) -> _ContextInputs:
+        """取近端历史、记忆切片、会话层舍弃项与主任务锚点（[05 §10]）。
 
-        只并入 ``assemble_context`` 的**两个产出**（``messages`` / ``memory.slices``），不把
-        会话上下文当工作上下文（调研报告 §8.4）。三种降级**各有显式标注**——无会话、
-        会话读不出、读面未装配：都返回空上下文，但 ``context_note`` 不同，叫作方不能
-        把「没有」与「没注入」混为一谈。
+        只并入 ``assemble_context`` 的产出，不把会话上下文当工作上下文（调研报告 §8.4）。
+        三种降级**各有显式标注**——无会话、会话读不出、读面未装配：都返回空上下文，
+        但 ``note`` 不同，叫作方不能把「没有」与「没注入」混为一谈。
+
+        当前消息已作为 ``task`` 单独传入，故从历史里去掉最后一条同文用户消息，
+        避免 task 与 history 重复（[`T-AGT-033.3`](../../项目管理/tasks/T-AGT-033.3-任务锚点与历史装载.md)）。
         """
         if session_id is None:
-            return (), (), NO_SESSION_NOTE
+            return _ContextInputs(note=NO_SESSION_NOTE)
         if self._sessions is None or self._reader is None:
-            return (), (), CONTEXT_ABSENT_NOTE
+            return _ContextInputs(note=CONTEXT_ABSENT_NOTE)
         try:
             context = self._sessions.assemble_context(
-                session_id, self._reader, topic=task,
-                token_budget=self._bounds.budget_chars(),
+                session_id, self._reader,
+                token_budget=self._context_budget_tokens() or None,
             )
         except (SessionNotFoundError, SessionValidationError):
-            return (), (), SESSION_INVALID_NOTE
-        return tuple(context.messages), tuple(context.memory.slices), ""
+            return _ContextInputs(note=SESSION_INVALID_NOTE)
+        messages = list(context.messages)
+        current_id = ""
+        if messages and messages[-1].role == "user" and messages[-1].text == task:
+            current_id = messages.pop().message_id
+        dropped = tuple(
+            item for item in context.dropped
+            if item != f"history:{current_id}"
+        )
+        return _ContextInputs(
+            history=tuple(messages),
+            memory=tuple(context.memory.slices),
+            dropped=dropped,
+            main_task=context.main_task,
+            follow_up=context.follow_up,
+            note="",
+        )
+
+    def _context_budget_tokens(self) -> int:
+        """用户上下文封顶（0 即不封顶；读面未提供该能力时按不封顶处理）。"""
+        getter = getattr(self._bounds, "context_budget_tokens", None)
+        if not callable(getter):
+            return 0
+        try:
+            value = getter()
+        except Exception:  # noqa: BLE001 —— 配置读不出由循环按缺省继续，不在此伪造封顶
+            return 0
+        return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    def _context_window_tokens(self) -> int | None:
+        """端点声明的上下文窗口（协议端口未提供 / 读不出 ⇒ ``None``，走保守 fallback）。"""
+        getter = getattr(self._protocol, "context_window_tokens", None)
+        if not callable(getter):
+            return None
+        try:
+            value = getter()
+        except Exception:  # noqa: BLE001 —— 窗口读不出不是运行失败，按未知处理
+            return None
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+            return value
+        return None
 
 
 def _join(*parts: str) -> str:

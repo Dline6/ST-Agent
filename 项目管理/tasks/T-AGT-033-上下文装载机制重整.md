@@ -8,7 +8,7 @@ arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P0
 milestone: M11
 depends_on: [T-AGT-009.3, T-L0-003, T-AGT-017.1, T-AGT-009.2, T-AGT-029.1, T-AGT-004.2, T-AGT-004.1, T-AGT-017.2, T-AGT-031.2]
-status: todo
+status: done
 decisions: [D-090, D-142, D-145, D-160]
 verify:
 ---

@@ -8,9 +8,9 @@ arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P0
 milestone: M11
 depends_on: [T-AGT-033.1, T-AGT-004.1, T-AGT-017.2]
-status: todo
-decisions: [D-090, D-145, D-160]
-verify:
+status: done
+decisions: [D-090, D-145, D-160, D-166]
+verify: D-166；范围套件 4386 passed / 4 例测试期望滞后（已修正并定向复验）/ 2 例本机 test_shell 环境性 ERROR；改动区复跑 655 passed；live 3 passed；verify_docs --strict PASS。详见执行日志对应条目。
 ---
 
 # T-AGT-033.5 · 截断、回读与预览派生
@@ -32,14 +32,20 @@ verify:
 
 ## 接口面
 
-待 ④ 对齐实填。预计落点：
-
-- 输入：`ContextEnvelope`（[`T-AGT-033.1`](T-AGT-033.1-预算信封与计量口径.md)）· `result_will_truncate` / 预览判定（[`truncation.py`](../../src/st_agent/l3/runtime/truncation.py)）· 回读提示（[`context.py`](../../src/st_agent/l3/runtime/context.py)）· `sk_result_read` 的 `_normalize_max_chars` / `_payload_text`（[`results.py`](../../src/st_agent/l1/builtin/results.py)）。
-- 输出：从步骤预算派生的单条上限/预览/分片参数 · 运行时钳制 · “已读 offset”提示或去重 · 截断件的模型可见形态（不含 `log_ref` 路径）。
+- **输入**：
+  - `ContextEnvelope.budget_chars`（[`envelope.py`](../../src/st_agent/l3/runtime/envelope.py)）· 本轮剩余步数（[`loop.py`](../../src/st_agent/l3/runtime/loop.py)）；
+  - `derive_result_chars` / `preview_chars_for`（[`truncation.py`](../../src/st_agent/l3/runtime/truncation.py)，新）；
+  - `_apply_truncation` / `_render_result`（[`context.py`](../../src/st_agent/l3/runtime/context.py)）；
+  - `sk_result_read` 的 `_normalize_max_chars` / `_payload_text`（[`l1/builtin/results.py`](../../src/st_agent/l1/builtin/results.py)）。
+- **输出**：
+  - 单条上限 `clamp(预算 / (剩余步数+1), 400, 4000)`；预览 `min(400, 上限/3)`；`WorkContext.max_result_chars` / `result_read_chars` 公开生效值；
+  - 回读提示按 `result_read_chars`（扣包装后再折半，防 JSON 转义翻倍）给出分片参数，按该参数回读不会被二次截断；
+  - `sk_result_read` 对越界 `max_chars` **钳制并回写** `max_chars` 实际生效值（不再直接拒绝）；
+  - 截断件模型可见面只给 `skill_run_id` / `next_offset` / `read_tool` / 预览，**不含 `log_ref` 路径**；同一 offset 已读时给「已读」提示。
 
 ## 可关闭的遗留
 
-无（新建任务；④ 对齐时逐册复核）。
+无（逐册复核 L0 / L1 / L2 / L3 / L5 / L6 未闭区：无归属＝本任务、或无解封条件＝本任务 `done` 的条目）。
 
 ## 假设与前提
 

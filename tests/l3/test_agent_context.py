@@ -22,8 +22,8 @@ from st_agent.l3.errors import AgentRuntimeValidationError
 from l3_helpers import NOW as L3_NOW, node
 from st_agent.l3.runtime import (
     CATALOG_EMPTY_REASON,
-    DEFAULT_WORK_CONTEXT_BUDGET,
-    TRUNCATED_PREVIEW_CHARS,
+    default_work_context_budget,
+    preview_chars_for,
     TruncatedResult,
     WorkStep,
     assemble_work_context,
@@ -142,7 +142,7 @@ def test_gwt3_large_result_truncated_with_real_pointer():
     assert got.log_ref == log_ref_of(RUN_ID_A) == f"{RUN_PREFIX}{RUN_ID_A}.json"
     assert got.log_ref == got.envelope.data.log_ref          # 指针一致
     assert got.envelope.data.original_chars == len(json.dumps(big, ensure_ascii=False, sort_keys=True))
-    assert got.envelope.data.preview == json.dumps(big, ensure_ascii=False, sort_keys=True)[:TRUNCATED_PREVIEW_CHARS]
+    assert got.envelope.data.preview == json.dumps(big, ensure_ascii=False, sort_keys=True)[:preview_chars_for(THRESHOLD)]
 
 
 def test_gwt3_pointer_form_matches_l1_execution_log_layout():
@@ -218,7 +218,7 @@ def test_budget_size_matches_full_visible_face_and_flags_overrun():
     """规模口径＝模型可见形态（含目录）的字符数；超限**如实标注**、不压缩不丢弃。"""
     context = assemble(steps=[step()])
     assert context.size_chars == len(context.render_prompt(include_tools=True))
-    assert context.budget_chars == DEFAULT_WORK_CONTEXT_BUDGET
+    assert context.budget_chars == default_work_context_budget()
     assert context.over_budget is False
 
     tight = assemble_work_context(
@@ -291,7 +291,10 @@ def test_gwt1_history_and_memory_are_rendered_into_the_prompt():
         chat("已给出公告摘要", role="agent", index=1),
     )
     history = (history[0], history[1].model_copy(
-        update={"payload": {"type": "table", "rows": [{"title": "公告 A"}]}}
+        update={"payload": {
+            "type": "table", "rows": [{"title": "公告 A"}],
+            "skill_run_id": "run_0123456789abcdef0123",
+        }}
     ))
     memory = (mem("mn_" + "a" * 20),)
 
@@ -301,7 +304,8 @@ def test_gwt1_history_and_memory_are_rendered_into_the_prompt():
     assert "会话历史（近端 2 条，按时间序）：" in prompt
     assert "用户：查一下 sh.600000" in prompt
     assert "副驾：已给出公告摘要" in prompt
-    assert '出站载荷：{"rows": [{"title": "公告 A"}], "type": "table"}' in prompt
+    assert "证据引用：skill_run_id=run_0123456789abcdef0123" in prompt
+    assert '出站载荷：{"rows": [{"title": "公告 A"}], "type": "table"}' not in prompt
     assert "相关记忆（1 条）：" in prompt
     assert "mn_" + "a" * 20 in prompt
     assert context.history == history and context.memory == memory
@@ -371,3 +375,90 @@ def test_bad_history_and_memory_shapes_rejected():
         assemble_work_context("任务", [entry()], history=({"text": "x"},))
     with pytest.raises(AgentRuntimeValidationError, match="记忆切片须为 MemorySlice"):
         assemble_work_context("任务", [entry()], memory=({"node": "x"},))
+
+
+# ───────────────────────── T-AGT-033 · 信封 / 目录配额 / 压缩 / 回读 ─────────────────────────
+
+
+def test_context_envelope_is_derived_from_the_endpoint_window():
+    from st_agent.l3.runtime.envelope import derive_context_envelope
+
+    env = derive_context_envelope(window_tokens=128_000)
+    assert env.source == "endpoint"
+    assert env.window_tokens == 128_000
+    assert env.available_tokens == int(128_000 * 0.8) - 2048
+    assert env.budget_chars == env.available_tokens
+    assert env.catalog_budget_chars == int(env.budget_chars * 0.45)
+
+    unknown = derive_context_envelope(window_tokens=None)
+    assert unknown.source == "fallback"
+    assert "未知" in unknown.note
+
+    capped = derive_context_envelope(window_tokens=128_000, user_cap_tokens=50_000)
+    assert capped.available_tokens == 50_000
+    assert "封顶" in capped.note
+
+    tools = [entry("sk_a", description="描" * 100)]
+    with_tools = derive_context_envelope(window_tokens=128_000, tools=tools)
+    assert with_tools.tools_tokens > 0
+    assert with_tools.available_tokens < env.available_tokens
+
+
+def test_context_envelope_is_deterministic():
+    from st_agent.l3.runtime.envelope import derive_context_envelope
+
+    args = dict(window_tokens=64_000, tools=[entry("sk_a")], system_prompt="系统提示")
+    assert (
+        derive_context_envelope(**args).model_dump_json()
+        == derive_context_envelope(**args).model_dump_json()
+    )
+
+
+def test_catalog_lazy_state_triggers_at_its_own_quota():
+    long = "描述" * 400
+    tools = [entry(f"sk_{index}", description=long) for index in range(12)]
+    tight = assemble_work_context("任务", tools, budget_chars=2000).data
+    assert tight.lazy_tools is True, "目录超过预算的 45% 即应进入惰性态"
+    roomy = assemble_work_context("任务", tools, budget_chars=10**6).data
+    assert roomy.lazy_tools is False
+
+
+def test_older_steps_are_compacted_into_evidence_summaries():
+    steps = [step(f"sk_t{index}", run_id=f"run_{index:020d}",
+                  data={"text": "y" * 800}) for index in range(10)]
+    context = assemble_work_context(
+        "任务", [entry()], steps, budget_chars=3000, max_result_chars=4000,
+    ).data
+    assert context.compacted_steps > 0
+    prompt = context.render_prompt(include_tools=True)
+    assert "[已压缩]" in prompt
+    assert len(context.steps) == 10, "压缩只改可见形态，不改执行记录"
+    # 近期步骤保留全文（最后一步仍可按依据/结果渲染）
+    assert f"调用 {steps[-1].tool_name}" in prompt
+
+
+def test_result_chars_and_preview_are_derived_from_the_budget():
+    from st_agent.l3.runtime.truncation import derive_result_chars, preview_chars_for
+
+    assert derive_result_chars(16_000, 7) == 2000
+    assert derive_result_chars(10, 7) == 400          # 下限
+    assert derive_result_chars(10**6, 1) == 4000      # 上限
+    assert preview_chars_for(2000) == 400
+    assert preview_chars_for(900) == 300
+    assert preview_chars_for(300) == 100
+
+
+def test_truncated_rendering_hides_log_ref_and_marks_already_read():
+    big = {"text": "z" * 4000}
+    truncated = step(data=big)
+    read = step("sk_result_read", run_id=RUN_ID_B, arguments={
+        "skill_run_id": truncated.skill_run_id, "offset": 0,
+    }, data={"text": "z" * 100})
+    context = assemble_work_context(
+        "任务", [entry()], [truncated, read], budget_chars=10**6, max_result_chars=500,
+    ).data
+    prompt = context.render_prompt(include_tools=True)
+    assert "[已截断，原 " in prompt
+    assert "log_ref" not in prompt
+    assert f'"max_chars": {context.result_read_chars}' in prompt
+    assert "offset 0 已读过" in prompt

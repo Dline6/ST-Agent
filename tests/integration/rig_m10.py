@@ -271,7 +271,7 @@ def seeded_m10(
 
 SKILL_RUN_ID_RE = re.compile(r'\\?"skill_run_id\\?": \\?"(run_[0-9a-f]{20})\\?"')
 NEXT_OFFSET_RE = re.compile(r'\\?"next_offset\\?": (\d+)')
-ORIGINAL_CHARS_RE = re.compile(r"original_chars=(\d+)")
+ORIGINAL_CHARS_RE = re.compile(r"原 (\d+) 字符")
 
 
 def latest_next_offset(prompt: str) -> int:
