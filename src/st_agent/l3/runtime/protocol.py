@@ -28,7 +28,7 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from st_agent.contracts.result_envelope import ResultEnvelope
-from st_agent.l0.llm import LlmUsageRecord, ToolCall
+from st_agent.l0.llm import LlmFailure, LlmUsageRecord, ToolCall
 from st_agent.l3.errors import AgentRuntimeValidationError
 from st_agent.l3.runtime.context import WorkContext
 
@@ -65,6 +65,8 @@ class TurnResult(BaseModel):
     """本轮用量（正常结束时由 ``done`` 事件携带）。"""
     envelope: ResultEnvelope | None = None
     """本轮端点侧失败的信封（[01 §5](../../../../docs/技术架构-v2/01-平台共享契约.md)）；正常为 ``None``。"""
+    failure: LlmFailure | None = None
+    """本轮失败的结构化分类（可重试 / 阶段 / 生效时限；正常为 ``None``）。"""
 
     @model_validator(mode="after")
     def _failure_excludes_calls(self) -> "TurnResult":
@@ -72,6 +74,8 @@ class TurnResult(BaseModel):
             raise AgentRuntimeValidationError(
                 "一轮失败（envelope 非空）时不得同时携带工具调用——无法判定该执行还是该停"
             )
+        if self.failure is not None and self.envelope is None:
+            raise AgentRuntimeValidationError("failure 只随失败信封出现")
         return self
 
 
@@ -88,12 +92,15 @@ class ToolCallProtocol(Protocol):
         *,
         initiator: str,
         purpose: str,
+        timeout_ms: int | None = None,
+        idle_timeout_ms: int | None = None,
         cancel: threading.Event | None = None,
     ) -> TurnResult:
         """问一轮：把工作上下文与工具目录交出去，拿回工具调用或「结束」。
 
         ``cancel`` 是**协作式**取消事件：实现应在发到端点后按事件状态尽早收口
         （[`T-AGT-024.1`](../../../项目管理/tasks/T-AGT-024.1-取消透传与cancelled终止.md)）。
+        ``timeout_ms`` / ``idle_timeout_ms`` 是本次调用的总时限与空闲时限（由 L3 配置穿透）。
         """
         ...
 
@@ -144,20 +151,27 @@ class NativeToolCallProtocol:
         *,
         initiator: str,
         purpose: str,
+        timeout_ms: int | None = None,
+        idle_timeout_ms: int | None = None,
         cancel: threading.Event | None = None,
     ) -> TurnResult:
-        """发起一轮原生工具调用（工具条目走 ``tools`` 入参；取消事件透传 L0 的调用面）。"""
+        """发起一轮原生工具调用（工具条目走 ``tools`` 入参；取消与超时透传 L0）。"""
         specs = context.tool_specs()
         text_parts: list[str] = []
         calls: list[ToolCall] = []
         usage: LlmUsageRecord | None = None
         envelope: ResultEnvelope | None = None
+        failure: LlmFailure | None = None
         for event in self._llm.invoke(
             self._endpoint_id,
             context.render_prompt(),
             initiator=initiator,
             purpose=purpose,
             tools=specs or None,
+            timeout_ms=timeout_ms,
+            idle_timeout_ms=idle_timeout_ms,
+            system_prompt=context.system_prompt or None,
+            system_prompt_version=context.system_prompt_version,
             cancel=cancel,
         ):
             if event.kind == "chunk":
@@ -168,9 +182,11 @@ class NativeToolCallProtocol:
                 usage = event.usage
             elif event.kind == "error":
                 envelope = event.error_envelope
+                failure = event.failure
         return TurnResult(
             text="".join(text_parts),
             tool_calls=tuple(calls),
             usage=usage,
             envelope=envelope,
+            failure=failure,
         )

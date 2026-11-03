@@ -412,21 +412,30 @@ class EgressGateway:
         started = time.monotonic()
         elapsed_ms = lambda: int((time.monotonic() - started) * 1000)
         bytes_in = 0
+        logged = False
         try:
             _, _, chunks = active_sender(req_kind, target_host, timeout_ms)
             for piece in chunks:
                 if cancel is not None and cancel.is_set():
                     self._log(req_kind, target_host, initiator, purpose,
                               bytes_out, bytes_in, "cancelled", "调用中被取消")
+                    logged = True
                     raise EgressCancelledError("调用中被取消")
                 if elapsed_ms() > timeout_ms:
                     self._log(req_kind, target_host, initiator, purpose,
                               bytes_out, bytes_in, "failed",
                               f"调用超时（>{timeout_ms}ms）")
+                    logged = True
                     raise EgressTimeoutError(f"调用超时（>{timeout_ms}ms）")
                 bytes_in += _wire_bytes(piece)
                 yield piece
-        except EgressError:
+        except EgressError as exc:
+            # 发送器自行抛出的超时 / 不可达 / 中断同样要落审计（此前直接 re-raise
+            # 会漏记）；已由本方法记过的那两类不重复写。
+            if not logged:
+                status = "cancelled" if isinstance(exc, EgressCancelledError) else "failed"
+                self._log(req_kind, target_host, initiator, purpose,
+                          bytes_out, bytes_in, status, str(exc) or "出网失败")
             raise
         except Exception as exc:  # 发包实现抛裸异常 → 包成 failed 审计
             self._log(req_kind, target_host, initiator, purpose,
@@ -638,6 +647,9 @@ class EgressGateway:
             key: str | None,
             timeout_ms: int,
             tools: "Sequence[ToolSpec] | None" = None,
+            *,
+            idle_timeout_ms: int | None = None,
+            system_prompt: str | None = None,
         ) -> Iterable[StreamItem]:
             from st_agent.l0.llm.client import (
                 TransportCancelledError,
@@ -651,28 +663,41 @@ class EgressGateway:
                     f"提供方 {endpoint.provider!r} 未登记目标主机"
                 )
             purpose = f"LLM 调用（端点 {endpoint.endpoint_id}，提供方 {endpoint.provider}）"
+            bytes_out = len(prompt.encode("utf-8")) + len((system_prompt or "").encode("utf-8"))
             try:
                 # 载荷（prompt / key / tools）只进按次 sender 闭包，网关只见字节数
                 per_call: Sender | None = (
-                    sender_factory(endpoint, prompt, key, timeout_ms, tools)
+                    sender_factory(
+                        endpoint, prompt, key, timeout_ms, tools,
+                        idle_timeout_ms=idle_timeout_ms,
+                        system_prompt=system_prompt,
+                    )
                     if sender_factory is not None else None
                 )
                 yield from self.stream(
                     "llm_call", host,
                     initiator=f"llm-endpoint:{endpoint.endpoint_id}",
                     purpose=purpose,
-                    bytes_out=len(prompt.encode("utf-8")),
+                    bytes_out=bytes_out,
                     timeout_ms=timeout_ms,
                     sender=per_call,
                 )
             except EgressUnavailableError as exc:
-                raise TransportUnavailableError(str(exc)) from exc
+                raise TransportUnavailableError(
+                    str(exc), retryable=getattr(exc, "retryable", False),
+                ) from exc
             except EgressTimeoutError as exc:
-                raise TransportTimeoutError(str(exc)) from exc
+                raise TransportTimeoutError(
+                    str(exc), stage=getattr(exc, "stage", ""),
+                ) from exc
             except EgressCancelledError as exc:
                 raise TransportCancelledError(str(exc)) from exc
             except EgressError as exc:
-                raise TransportError(str(exc)) from exc
+                raise TransportError(
+                    str(exc), stage=getattr(exc, "stage", ""),
+                    status_code=getattr(exc, "status_code", None),
+                    retryable=getattr(exc, "retryable", False),
+                ) from exc
 
         return _transport
 

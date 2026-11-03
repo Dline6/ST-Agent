@@ -9,6 +9,7 @@
   明文，存 ``execution_log`` 分区）
 - ``ToolSpec`` / ``ToolCall``：工具调用通道的两端形态（入参工具条目 /
   出参结构化调用；02 §4）
+- ``LlmFailure``：失败的结构化分类（类别 / 阶段 / 是否可重试 / 生效时限）
 - ``StreamEvent``：统一流式协议事件（chunk / tool_call / done / error 四态）
 """
 
@@ -29,6 +30,7 @@ __all__ = [
     "CapabilityRequirement",
     "EndpointCapability",
     "LlmEndpoint",
+    "LlmFailure",
     "LlmUsageRecord",
     "OfflineLevel",
     "StreamEvent",
@@ -103,6 +105,13 @@ class EndpointCapability(BaseModel):
     **缺省必须是 ``False``**——「缺省不得假定为真」是 [02 §4](../../../docs/技术架构-v2/02-L0-本地优先基座.md)
     的明文口径：把 ``tools`` 发给不认识它的端点，会让上层拿到「静默无视」的
     结果，**比不门控更糟**。真实档位由启动探测落定（`T-AGT-002`），本层只声明。
+    """
+    supports_system_role: bool = True
+    """是否接受 ``system`` 角色（02 §4）。
+
+    OpenAI 兼容端点的标准请求体支持该角色，故缺省为真；为假时上层把系统提示词
+    以确定性前缀并入 ``user`` 消息并标注（[`T-AGT-031.1`](../../../项目管理/tasks/T-AGT-031.1-系统提示词.md)），
+    **不静默丢弃**。
     """
 
 
@@ -188,6 +197,20 @@ class LlmUsageRecord(BaseModel):
     duration_ms: int = Field(ge=0)
     status: Literal["ok", "failed"] = "ok"
     fail_reason: str = ""
+    fail_kind: str = ""
+    """失败类别（`timeout` / `rate_limited` / `server_error` / `connection` /
+    `unavailable` / `auth` / `validation` / `capability` / `cancelled` / `unknown`；
+    成功为空）。供 L3 判定是否重试，**不解析原因文本**。"""
+    fail_stage: str = ""
+    """失败阶段（`connect` / `first_byte` / `stream`；非超时或未定位为空）。"""
+    timeout_ms: int | None = Field(default=None, ge=1)
+    """本次生效的**总时限**（毫秒；未传入时为空，端点缺省不重复写）。"""
+    idle_timeout_ms: int | None = Field(default=None, ge=1)
+    """本次生效的**空闲时限**（毫秒；未启用为空）。"""
+    system_prompt_version: str = ""
+    """系统提示词版本（不落明文；无系统提示词为空）。"""
+    system_prompt_chars: int = Field(default=0, ge=0)
+    """系统提示词长度（字符数；只记长度，不记内容）。"""
 
     @field_validator("endpoint_id")
     @classmethod
@@ -272,6 +295,27 @@ class ToolCall(BaseModel):
         return self.model_dump_json().encode("utf-8")
 
 
+class LlmFailure(BaseModel):
+    """一次 LLM 调用的**结构化失败**（02 §4 / [D-165](../../../项目管理/决策日志.md)）。
+
+    `retryable` 由失败来源（超时 / 429 / 5xx / 连接重置）判定，L3 据此决定是否重试；
+    `stage` 让「连接没通」「首字节没到」「流中断开」三类超时可区分。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: Literal[
+        "timeout", "rate_limited", "server_error", "connection", "unavailable",
+        "auth", "validation", "capability", "cancelled", "unknown",
+    ] = "unknown"
+    retryable: bool = False
+    stage: Literal["", "connect", "first_byte", "stream"] = ""
+    status_code: int | None = Field(default=None, ge=100, le=599)
+    elapsed_ms: int = Field(default=0, ge=0)
+    timeout_ms: int | None = Field(default=None, ge=1)
+    idle_timeout_ms: int | None = Field(default=None, ge=1)
+
+
 class StreamEvent(BaseModel):
     """统一流式协议事件（GWT-3；四态互斥，构造期强制）。
 
@@ -289,6 +333,8 @@ class StreamEvent(BaseModel):
     tool_call: ToolCall | None = None
     usage: LlmUsageRecord | None = None
     error_envelope: ResultEnvelope | None = None
+    failure: LlmFailure | None = None
+    """失败的结构化分类（仅 ``error`` 事件携带；正常事件为空）。"""
 
     @model_validator(mode="after")
     def _kind_shape(self) -> "StreamEvent":
@@ -308,4 +354,6 @@ class StreamEvent(BaseModel):
             raise LlmValidationError("chunk/tool_call/done 事件不得携带 error_envelope")
         if self.kind in ("chunk", "tool_call", "error") and self.usage is not None:
             raise LlmValidationError("usage 只属于 done 事件")
+        if self.kind != "error" and self.failure is not None:
+            raise LlmValidationError("failure 只属于 error 事件")
         return self

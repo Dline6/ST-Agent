@@ -37,6 +37,8 @@ from st_agent.l3.runtime.context import (
 )
 from st_agent.l3.runtime.loop import (
     ASK_USER_TOOL,
+    DEFAULT_LLM_MAX_ATTEMPTS,
+    DEFAULT_LLM_RETRY_BACKOFF_MS,
     DEFAULT_MAX_LLM_CALLS,
     DEFAULT_MAX_STEPS,
     PLAN_UPDATE_TOOL,
@@ -71,10 +73,12 @@ CONTINUATION_TTL = timedelta(minutes=30)
 超期不静默重放旧证据——交还改为「显式提示 + 允许重跑」（GWT-3）。
 """
 
-RESUMABLE_TERMINATIONS: tuple[str, ...] = ("needs_confirmation", "needs_user_input")
-"""可续跑的终止原因（两种交还）。"""
+RESUMABLE_TERMINATIONS: tuple[str, ...] = (
+    "needs_confirmation", "needs_user_input", "llm_failed",
+)
+"""可续跑的终止原因（两种交还 + 重试耗尽的 ``llm_failed``）。"""
 
-ResumeDecision = Literal["approve", "answer", "rerun", "cancel"]
+ResumeDecision = Literal["approve", "answer", "retry", "rerun", "cancel"]
 
 _CONTROL_TOOLS: tuple[str, ...] = (PLAN_UPDATE_TOOL, ASK_USER_TOOL)
 """控制原语（计划 / 提问）——它们不经 L1 执行面，故不能按工具重放。"""
@@ -145,11 +149,18 @@ def resume_agent_run(
     emit: Any = None,
     cancel: Any = None,
     steer_inbox: Any = None,
+    llm_timeout_ms: int | None = None,
+    llm_idle_timeout_ms: int | None = None,
+    llm_max_attempts: int = DEFAULT_LLM_MAX_ATTEMPTS,
+    llm_retry_backoff_ms: int = DEFAULT_LLM_RETRY_BACKOFF_MS,
+    system_prompt: str = "",
+    system_prompt_version: str = "",
 ) -> ResumeOutcome:
     """按用户的选择续跑一次交还（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
 
     :param decision: ``approve``（确认待确认步）/ ``answer``（提交问项答案）/
-        ``rerun``（原任务重跑、不带前序）/ ``cancel``（放弃续跑）
+        ``retry``（从 ``llm_failed`` 的已有证据继续）/ ``rerun``（原任务重跑、不带前序）/
+        ``cancel``（放弃续跑）
     :param answers: ``answer`` 时的答案（一问一参的 ``parameter → 值``）
     :param now: 当前时刻（过期判定用；缺省取本地时区当前时刻）
     :param ttl: 续跑依据有效期（缺省 :data:`CONTINUATION_TTL`）
@@ -164,7 +175,7 @@ def resume_agent_run(
     :param steer_inbox: 运行中插话的收件箱（同 :func:`run_agent_loop` 的 ``steer_inbox``；
         续跑同样在步骤边界接受插话）。
     """
-    if decision not in ("approve", "answer", "rerun", "cancel"):
+    if decision not in ("approve", "answer", "retry", "rerun", "cancel"):
         raise AgentRuntimeValidationError(f"未知的续跑选择 {decision!r}")
     moment = now if now is not None else datetime.now().astimezone()
     try:
@@ -215,6 +226,13 @@ def resume_agent_run(
             envelope=ResultEnvelope.validation_failed(
                 "当前交还不是「待用户输入」，没有可作答的问项；"
                 "待确认请选择确认并继续或重跑"
+            ),
+        )
+    if decision == "retry" and record.termination != "llm_failed":
+        return ResumeOutcome(
+            envelope=ResultEnvelope.validation_failed(
+                f"留痕 {record.agent_run_id!r} 的终止原因是 {record.termination!r}，"
+                "不是「LLM 调用失败」，没有可继续的重试现场"
             ),
         )
     if decision == "approve" and (
@@ -322,6 +340,12 @@ def resume_agent_run(
         emit=emit,
         cancel=cancel,
         steer_inbox=steer_inbox,
+        llm_timeout_ms=llm_timeout_ms,
+        llm_idle_timeout_ms=llm_idle_timeout_ms,
+        llm_max_attempts=llm_max_attempts,
+        llm_retry_backoff_ms=llm_retry_backoff_ms,
+        system_prompt=system_prompt,
+        system_prompt_version=system_prompt_version,
     )
     if decision == "answer":
         outcome = outcome.model_copy(update={

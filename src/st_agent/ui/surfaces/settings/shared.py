@@ -226,11 +226,16 @@ _BUDGET_CONFIG_IDS = (
     "investigate.max_steps",
     "investigate.max_llm_calls",
     "investigate.context_budget",
+    "investigate.llm_timeout_ms",
+    "investigate.llm_idle_timeout_ms",
+    "investigate.llm_max_attempts",
+    "investigate.llm_retry_backoff_ms",
 )
-"""运行期授权页「自主查证预算」的三条目（[01 §7] 的 `investigate.*` 族）。
+"""运行期授权页「自主查证预算」的 `investigate.*` 族条目（[01 §7]）。
 
-展示顺序固定为「步数 → 调用次数 → 上下文预算」——即用户调整时的决策顺序，
-不随注册表内部排序漂移。缺条目即跳过（族未接线时面板如实为空，不臆造）。
+展示顺序固定为「步数 → 调用次数 → 上下文预算 → LLM 总时限 → 空闲时限 →
+最多尝试次数 → 退避基数」——即用户调整时的决策顺序，不随注册表内部排序漂移。
+缺条目即跳过（族未接线时面板如实为空，不臆造）。
 """
 
 _BUDGET_SUGGESTED_MAX = {
@@ -242,9 +247,9 @@ _BUDGET_SUGGESTED_MAX = {
 
 
 def _budget_entries(registry: Any) -> list[dict[str, Any]]:
-    """把三条 `investigate.*` 预算摆成 `setting_panel` 的 entries（自由文本 + `set` 动作）。
+    """把 `investigate.*` 预算摆成 `setting_panel` 的 entries（自由文本 + `set` 动作）。
 
-    三条目都是整数标量，取值域由 owner 的 ``value_schema`` 校验：前端只回传字符串，
+    七条目都是整数标量，取值域由 owner 的 ``value_schema`` 校验：前端只回传字符串，
     ``_coerce_value`` 按声明类型还原；**建议上限只作提示**，超出仍可保存。
     """
     out: list[dict[str, Any]] = []

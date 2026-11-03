@@ -641,9 +641,9 @@ class DialogFacade(RunControlMixin):
     def _continuation_payload(investigation: Any) -> dict[str, Any] | None:
         """交还的可续跑载荷（[05 §10](../../../docs/技术架构-v2/05-L3-对话主入口.md) 的续跑）。
 
-        只有 **待确认 / 待用户输入** 两种终止才给；其余（含已续跑完成）返回 ``None``——
-        渲染面据此决定是否出「确认并继续 / 提交答案 / 重跑」入口。载荷只取留痕里的
-        客观字段，不含任何渲染文案。
+        只有 **待确认 / 待用户输入 / LLM 重试耗尽** 三种终止才给；其余（含已续跑完成）返回
+        ``None``——渲染面据此决定是否出「确认并继续 / 提交答案 / 从已有证据继续 / 重跑」入口。
+        载荷只取留痕里的客观字段，不含任何渲染文案。
         """
         report = getattr(investigation, "report", None)
         if report is None:
@@ -661,12 +661,17 @@ class DialogFacade(RunControlMixin):
             return None
         record = getattr(report, "record", None)
         termination = getattr(record, "termination", "")
-        if termination not in ("needs_confirmation", "needs_user_input"):
+        if termination not in ("needs_confirmation", "needs_user_input", "llm_failed"):
             return None
         pending = getattr(record, "pending", None)
+        kind = {
+            "needs_confirmation": "pending_step",
+            "needs_user_input": "user_input",
+            "llm_failed": "retry",
+        }[termination]
         return {
             "agent_run_id": getattr(report, "agent_run_id", ""),
-            "kind": "pending_step" if termination == "needs_confirmation" else "user_input",
+            "kind": kind,
             "task": getattr(record, "task", ""),
             "plan": [
                 {"title": step.title, "status": step.status}

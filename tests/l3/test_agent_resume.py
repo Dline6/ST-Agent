@@ -16,7 +16,7 @@ from datetime import timedelta
 import pytest
 
 from st_agent.contracts.result_envelope import ResultEnvelope
-from st_agent.l0.llm import ToolCall
+from st_agent.l0.llm import LlmFailure, ToolCall
 from st_agent.l0.storage import Store
 from st_agent.l1.builtin import install_builtins
 from st_agent.l1.builtin.ask_user import ASK_USER
@@ -326,3 +326,60 @@ def test_manual_step_done_is_not_a_resumable_handback(rig):
     )
     assert result.report is not None
     assert result.report.record.pending is None
+
+
+# ───────────────────── T-AGT-031.3 · llm_failed 从已有证据继续 ─────────────────────
+
+
+def _llm_failed_record(rig):
+    """跑一次「先成功一步、随后 LLM 失败」的循环 → 终止原因 ``llm_failed``。"""
+    _store, _runner, _tools = rig
+    failure = ResultEnvelope.failed("端点鉴权失败", log_ref="llm-run/x.json")
+    outcome = _initial_run(
+        rig,
+        ScriptedProtocol([
+            call(SK_A, {}, call_id="c1"),
+            TurnResult(
+                envelope=failure,
+                failure=LlmFailure(kind="auth", retryable=False),
+            ),
+        ]),
+        SelectiveGate({SK_A, SK_B}),
+    )
+    assert outcome.termination == "llm_failed"
+    report = conclude_agent_run(rig[0], outcome, now=NOW)
+    return report.record
+
+
+def test_llm_failed_can_continue_from_collected_evidence(rig):
+    store, _runner, _tools = rig
+    record = _llm_failed_record(rig)
+
+    result = _resume(rig, record, ScriptedProtocol([finish()]), decision="retry", now=NOW)
+
+    assert result.envelope.status == "ok"
+    assert result.report is not None
+    resumed = result.report.record
+    assert resumed.termination == "finished"
+    assert resumed.task == record.task                      # 任务仍是原任务
+    assert resumed.resumed_from == record.agent_run_id
+    assert [step.tool_name for step in resumed.steps] == [SK_A]
+    assert len(_skill_runs(store)) == 1                     # 前序证据未重跑
+
+
+def test_retry_decision_rejects_non_llm_failed_record(rig):
+    record = _blocked_record(rig)
+    result = _resume(rig, record, ScriptedProtocol([finish()]), decision="retry", now=NOW)
+    assert result.envelope.status == "validation_failed"
+    assert "LLM 调用失败" in result.envelope.reason
+
+
+def test_retry_after_ttl_reports_stale(rig):
+    record = _llm_failed_record(rig)
+    result = _resume(
+        rig, record, ScriptedProtocol([finish()]), decision="retry",
+        now=NOW + CONTINUATION_TTL + timedelta(seconds=1),
+    )
+    assert result.stale is True
+    assert result.report is None
+    assert "过期" in result.envelope.reason

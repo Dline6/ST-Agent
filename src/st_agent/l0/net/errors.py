@@ -48,7 +48,25 @@ class CapabilityNotFoundError(NetError, KeyError):
 
 
 class EgressError(NetError):
-    """出网执行失败基类（``stream`` 形态上报；``execute`` 形态映射为信封）。"""
+    """出网执行失败基类（``stream`` 形态上报；``execute`` 形态映射为信封）。
+
+    ``stage`` / ``status_code`` / ``retryable`` 是**结构化失败**的可选附件：
+    超时类带上失败阶段（连接 / 首字节 / 流中），HTTP 错误带状态码与是否可重试
+    （429 / 5xx 可重试；其余 4xx 不可）。旧调用方只读 ``str(exc)``，行为不变。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str = "",
+        status_code: int | None = None,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.status_code = status_code
+        self.retryable = retryable
 
 
 class EgressUnavailableError(EgressError):

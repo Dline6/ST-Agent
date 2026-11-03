@@ -229,6 +229,14 @@ class WorkContext(BaseModel):
 
     task: str = Field(min_length=1)
     """本次循环要查证的任务（用户意图的中性转述）。"""
+    system_prompt: str = ""
+    """每轮请求携带的**确定性系统提示词**（[`T-AGT-031.1`](../../../项目管理/tasks/T-AGT-031.1-系统提示词.md)）。
+
+    由组合根在调用时刻装配、随本轮请求下发；**不并入** :meth:`render_prompt` 的
+    文本段落（它是独立的 ``system`` 消息），但计入规模口径。空串＝沿用无系统
+    提示词的既有形态（请求体逐字节不变）。"""
+    system_prompt_version: str = ""
+    """系统提示词的版本号（只进用量记录，不落明文）。"""
     tools: tuple[ToolEntry, ...] = ()
     """工具目录（**模型可见面与执行目标的共同来源**；每条可回指 ``skill_id``，GWT-1）。"""
     steps: tuple[WorkStep, ...] = ()
@@ -460,6 +468,8 @@ def assemble_work_context(
     unknown_tool_note: str = "",
     subprotocol_note: str = "",
     tool_lazy_chars: int | None = None,
+    system_prompt: str = "",
+    system_prompt_version: str = "",
 ) -> ResultEnvelope:
     """装配循环工作上下文（纯函数，GWT-6）。
 
@@ -541,6 +551,8 @@ def assemble_work_context(
         subagent_note=str(subagent_note or ""),
         unknown_tool_note=str(unknown_tool_note or ""),
         subprotocol_note=str(subprotocol_note or ""),
+        system_prompt=str(system_prompt or ""),
+        system_prompt_version=str(system_prompt_version or ""),
     )
     return ResultEnvelope.ok(
         context.model_copy(update={"size_chars": size, "over_budget": size > budget_chars})
@@ -566,6 +578,8 @@ def _fit_budget(
     subagent_note: str,
     unknown_tool_note: str,
     subprotocol_note: str,
+    system_prompt: str = "",
+    system_prompt_version: str = "",
 ) -> tuple[WorkContext, int]:
     """按声明顺序取舍直至装下（或无可再舍），返回上下文与最终规模。
 
@@ -581,6 +595,7 @@ def _fit_budget(
     def build() -> WorkContext:
         return WorkContext(
             task=task, tools=tools, steps=steps,
+            system_prompt=system_prompt, system_prompt_version=system_prompt_version,
             history=tuple(kept_history), memory=tuple(kept_memory),
             steers=tuple(kept_steers),
             plan=plan, plan_updated=plan_updated, plan_error=plan_error,
@@ -592,22 +607,22 @@ def _fit_budget(
         )
 
     context = build()
-    size = len(context.render_prompt(include_tools=True))
+    size = len(context.render_prompt(include_tools=True)) + len(system_prompt)
     while size > budget_chars and kept_memory:
         item = kept_memory.pop()
         dropped.append(f"memory:{item.node.memory_node_id}")
         context = build()
-        size = len(context.render_prompt(include_tools=True))
+        size = len(context.render_prompt(include_tools=True)) + len(system_prompt)
     while size > budget_chars and kept_history:
         item = kept_history.pop(0)
         dropped.append(f"history:{item.message_id}")
         context = build()
-        size = len(context.render_prompt(include_tools=True))
+        size = len(context.render_prompt(include_tools=True)) + len(system_prompt)
     while size > budget_chars and kept_steers:
         item = kept_steers.pop(0)
         dropped.append(f"steer:{item.received_at.isoformat()}")
         context = build()
-        size = len(context.render_prompt(include_tools=True))
+        size = len(context.render_prompt(include_tools=True)) + len(system_prompt)
     return context, size
 
 

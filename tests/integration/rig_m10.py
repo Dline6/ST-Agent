@@ -26,7 +26,7 @@ from typing import Any, Callable, Sequence
 
 from rig import PASS, MarketData, RecordingSender, seed_market_db
 from rig_m1 import DeterministicUnderstander
-from rig_m5 import ENV
+from rig_m5 import ENV, _system_prompt, _user_prompt
 
 from st_agent.app import M5Runtime, build_m5_runtime
 from st_agent.l1.runtime import PROBE_TOOL
@@ -119,13 +119,15 @@ class M10Endpoint:
             (entry.get("function") or {}).get("name")
             for entry in (payload.get("tools") or ())
         )
-        prompt = (payload.get("messages") or [{}])[0].get("content") or ""
+        messages = payload.get("messages") or []
+        prompt = _user_prompt(messages)
         self.calls.append({
             "url": url,
             "headers": dict(headers),
             "body": payload,
             "tools": names,
             "prompt": prompt,
+            "system_prompt": _system_prompt(messages),
             "tools_chars": len(json.dumps(payload.get("tools") or (), ensure_ascii=False)),
         })
         if PROBE_TOOL.name in names:

@@ -39,13 +39,22 @@ from st_agent.l1.registry.naming import (
 )
 from st_agent.l3.errors import AgentRuntimeValidationError
 from st_agent.l3.runtime.context import DEFAULT_WORK_CONTEXT_BUDGET
-from st_agent.l3.runtime.loop import DEFAULT_MAX_LLM_CALLS, DEFAULT_MAX_STEPS
+from st_agent.l3.runtime.loop import (
+    DEFAULT_LLM_MAX_ATTEMPTS,
+    DEFAULT_LLM_RETRY_BACKOFF_MS,
+    DEFAULT_MAX_LLM_CALLS,
+    DEFAULT_MAX_STEPS,
+)
 
 __all__ = [
     "CHANGE_PREFIX",
     "CONTEXT_BUDGET_CEILING",
     "CONTEXT_BUDGET_CONFIG_ID",
     "INVESTIGATE_CONFIG_PREFIX",
+    "LLM_IDLE_TIMEOUT_CONFIG_ID",
+    "LLM_MAX_ATTEMPTS_CONFIG_ID",
+    "LLM_RETRY_BACKOFF_CONFIG_ID",
+    "LLM_TIMEOUT_CONFIG_ID",
     "MAX_LLM_CALLS_CEILING",
     "MAX_LLM_CALLS_CONFIG_ID",
     "MAX_STEPS_CEILING",
@@ -67,6 +76,24 @@ CONTEXT_BUDGET_CONFIG_ID = "investigate.context_budget"
 """工作上下文预算的 ``config_id``（[05 §10](../../../docs/技术架构-v2/05-L3-对话主入口.md)；
 落盘 ``config`` 分区 ``investigate/context_budget.json``）。"""
 
+LLM_TIMEOUT_CONFIG_ID = "investigate.llm_timeout_ms"
+"""单次 LLM 调用的**总时限**（毫秒；[D-165](../../项目管理/决策日志.md)）。"""
+
+LLM_IDLE_TIMEOUT_CONFIG_ID = "investigate.llm_idle_timeout_ms"
+"""单次 LLM 调用的**空闲时限**（毫秒；连续无任何活动即判超时）。"""
+
+LLM_MAX_ATTEMPTS_CONFIG_ID = "investigate.llm_max_attempts"
+"""单轮模型调用的**最多尝试次数**（含首次；仅可重试失败退避重试）。"""
+
+LLM_RETRY_BACKOFF_CONFIG_ID = "investigate.llm_retry_backoff_ms"
+"""重试退避基数（毫秒；第 n 次重试等待 n × 基数）。"""
+
+DEFAULT_LLM_TIMEOUT_MS = 300_000
+"""LLM 调用总时限缺省（5 分钟；显著高于端点常见的 60 秒，给长推理留出空间）。"""
+
+DEFAULT_LLM_IDLE_TIMEOUT_MS = 90_000
+"""LLM 调用空闲时限缺省（90 秒；只要还有心跳 / 推理增量就算活动）。"""
+
 CHANGE_PREFIX = "investigate-change/"
 """本族变更留痕（``ChangeRecord``）的落盘目录前缀。"""
 
@@ -84,11 +111,11 @@ def _system_now() -> datetime:
     return datetime.now().astimezone()
 
 
-def _check(value: object, *, config_id: str) -> int:
-    """取值域门：整数、非布尔、``≥1``（非法即抛，**不静默截断 / 回退**）。"""
-    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+def _check(value: object, *, config_id: str, minimum: int = 1) -> int:
+    """取值域门：整数、非布尔、``≥minimum``（非法即抛，**不静默截断 / 回退**）。"""
+    if not isinstance(value, int) or isinstance(value, bool) or value < minimum:
         raise AgentRuntimeValidationError(
-            f"{config_id} 须为 ≥1 的整数（上界是预算），得到 {value!r}"
+            f"{config_id} 须为 ≥{minimum} 的整数，得到 {value!r}"
         )
     return value
 
@@ -165,22 +192,103 @@ _CONTEXT_BUDGET_ENTRY = ConfigEntry(
 )
 """工作上下文预算条目（[05 §10](../../../docs/技术架构-v2/05-L3-对话主入口.md)，落 [01 §7](../../../docs/技术架构-v2/01-平台共享契约.md)）。"""
 
+_LLM_TIMEOUT_ENTRY = ConfigEntry(
+    config_id=LLM_TIMEOUT_CONFIG_ID,
+    display_name="单次 LLM 调用总时限（毫秒）",
+    value_schema={"type": "integer", "minimum": 1},
+    default=DEFAULT_LLM_TIMEOUT_MS,
+    description_for_chat=(
+        "自主查证循环里单次模型调用的总时限（毫秒）。"
+        f"缺省 {DEFAULT_LLM_TIMEOUT_MS}；到时限即中止，并如实记录实际耗时与失败阶段"
+    ),
+    panel_form_spec=PanelField(
+        widget="number", label="单次 LLM 调用总时限（毫秒）",
+        help_text=f"缺省 {DEFAULT_LLM_TIMEOUT_MS}（5 分钟）；整数且 ≥1",
+    ),
+    scope="global",
+    change_policy=ChangePolicy(requires_confirmation=True),
+)
+
+_LLM_IDLE_TIMEOUT_ENTRY = ConfigEntry(
+    config_id=LLM_IDLE_TIMEOUT_CONFIG_ID,
+    display_name="单次 LLM 调用空闲时限（毫秒）",
+    value_schema={"type": "integer", "minimum": 1},
+    default=DEFAULT_LLM_IDLE_TIMEOUT_MS,
+    description_for_chat=(
+        "连续多久没有任何活动（心跳 / 推理增量 / 正文）即判超时，单位毫秒。"
+        f"缺省 {DEFAULT_LLM_IDLE_TIMEOUT_MS}；只按「无活动」判，不按总耗时误杀长思考"
+    ),
+    panel_form_spec=PanelField(
+        widget="number", label="单次 LLM 调用空闲时限（毫秒）",
+        help_text=f"缺省 {DEFAULT_LLM_IDLE_TIMEOUT_MS}（90 秒）；整数且 ≥1",
+    ),
+    scope="global",
+    change_policy=ChangePolicy(requires_confirmation=True),
+)
+
+_LLM_MAX_ATTEMPTS_ENTRY = ConfigEntry(
+    config_id=LLM_MAX_ATTEMPTS_CONFIG_ID,
+    display_name="单轮 LLM 调用最多尝试次数",
+    value_schema={"type": "integer", "minimum": 1},
+    default=DEFAULT_LLM_MAX_ATTEMPTS,
+    description_for_chat=(
+        "单轮模型调用最多尝试几次（含首次），只对超时 / 429 / 5xx / 连接重置重试。"
+        f"缺省 {DEFAULT_LLM_MAX_ATTEMPTS}；每次尝试计一次调用次数上界，不计步"
+    ),
+    panel_form_spec=PanelField(
+        widget="number", label="单轮 LLM 调用最多尝试次数",
+        help_text=f"缺省 {DEFAULT_LLM_MAX_ATTEMPTS}；整数且 ≥1",
+    ),
+    scope="global",
+    change_policy=ChangePolicy(requires_confirmation=True),
+)
+
+_LLM_RETRY_BACKOFF_ENTRY = ConfigEntry(
+    config_id=LLM_RETRY_BACKOFF_CONFIG_ID,
+    display_name="LLM 重试退避基数（毫秒）",
+    value_schema={"type": "integer", "minimum": 0},
+    default=DEFAULT_LLM_RETRY_BACKOFF_MS,
+    description_for_chat=(
+        "第 n 次重试前等待 n × 该基数（毫秒）。"
+        f"缺省 {DEFAULT_LLM_RETRY_BACKOFF_MS}；0 表示不等待"
+    ),
+    panel_form_spec=PanelField(
+        widget="number", label="LLM 重试退避基数（毫秒）",
+        help_text=f"缺省 {DEFAULT_LLM_RETRY_BACKOFF_MS}；整数且 ≥0",
+    ),
+    scope="global",
+    change_policy=ChangePolicy(requires_confirmation=True),
+)
+
 _ENTRIES: dict[str, ConfigEntry] = {
     MAX_STEPS_CONFIG_ID: _MAX_STEPS_ENTRY,
     MAX_LLM_CALLS_CONFIG_ID: _MAX_LLM_CALLS_ENTRY,
     CONTEXT_BUDGET_CONFIG_ID: _CONTEXT_BUDGET_ENTRY,
+    LLM_TIMEOUT_CONFIG_ID: _LLM_TIMEOUT_ENTRY,
+    LLM_IDLE_TIMEOUT_CONFIG_ID: _LLM_IDLE_TIMEOUT_ENTRY,
+    LLM_MAX_ATTEMPTS_CONFIG_ID: _LLM_MAX_ATTEMPTS_ENTRY,
+    LLM_RETRY_BACKOFF_CONFIG_ID: _LLM_RETRY_BACKOFF_ENTRY,
 }
 
 _DEFAULTS: dict[str, int] = {
     MAX_STEPS_CONFIG_ID: DEFAULT_MAX_STEPS,
     MAX_LLM_CALLS_CONFIG_ID: DEFAULT_MAX_LLM_CALLS,
     CONTEXT_BUDGET_CONFIG_ID: DEFAULT_WORK_CONTEXT_BUDGET,
+    LLM_TIMEOUT_CONFIG_ID: DEFAULT_LLM_TIMEOUT_MS,
+    LLM_IDLE_TIMEOUT_CONFIG_ID: DEFAULT_LLM_IDLE_TIMEOUT_MS,
+    LLM_MAX_ATTEMPTS_CONFIG_ID: DEFAULT_LLM_MAX_ATTEMPTS,
+    LLM_RETRY_BACKOFF_CONFIG_ID: DEFAULT_LLM_RETRY_BACKOFF_MS,
+}
+
+_MINIMUMS: dict[str, int] = {
+    config_id: 0 if config_id == LLM_RETRY_BACKOFF_CONFIG_ID else 1
+    for config_id in _DEFAULTS
 }
 
 
 def loop_bounds_config_entries() -> tuple[ConfigEntry, ...]:
-    """三条目的**规范形态**（缺省＝运行期缺省；当前取值经 :meth:`LoopBounds.entry` 取）。"""
-    return (_MAX_STEPS_ENTRY, _MAX_LLM_CALLS_ENTRY, _CONTEXT_BUDGET_ENTRY)
+    """各条目的**规范形态**（缺省＝运行期缺省；当前取值经 :meth:`LoopBounds.entry` 取）。"""
+    return tuple(_ENTRIES.values())
 
 
 class LoopBounds:
@@ -212,12 +320,26 @@ class LoopBounds:
         """生效的**工作上下文预算**（未落值 → 缺省 16000；损坏 / 越界 → 显式抛）。"""
         return self._read(CONTEXT_BUDGET_CONFIG_ID)
 
+    def llm_timeout_ms(self) -> int:
+        """生效的 **LLM 调用总时限**（缺省 300000）。"""
+        return self._read(LLM_TIMEOUT_CONFIG_ID)
+
+    def llm_idle_timeout_ms(self) -> int:
+        """生效的 **LLM 调用空闲时限**（缺省 90000）。"""
+        return self._read(LLM_IDLE_TIMEOUT_CONFIG_ID)
+
+    def llm_max_attempts(self) -> int:
+        """生效的**单轮最多尝试次数**（缺省 3）。"""
+        return self._read(LLM_MAX_ATTEMPTS_CONFIG_ID)
+
+    def llm_retry_backoff_ms(self) -> int:
+        """生效的**重试退避基数**（缺省 500；0 表示不等待）。"""
+        return self._read(LLM_RETRY_BACKOFF_CONFIG_ID)
+
     def entries(self) -> tuple[ConfigEntry, ...]:
-        """三条目（`default` 携**当前生效值**，供面板 / 对话通道展示）。"""
-        return (  # type: ignore[return-value]
-            self.entry(MAX_STEPS_CONFIG_ID),
-            self.entry(MAX_LLM_CALLS_CONFIG_ID),
-            self.entry(CONTEXT_BUDGET_CONFIG_ID),
+        """各条目（`default` 携**当前生效值**，供面板 / 对话通道展示）。"""
+        return tuple(  # type: ignore[return-value]
+            self.entry(config_id) for config_id in _ENTRIES
         )
 
     def entry(self, config_id: str) -> ConfigEntry | None:
@@ -243,6 +365,30 @@ class LoopBounds:
         """落一次**工作上下文预算**（值未变 → ``None``）。"""
         return self._set(CONTEXT_BUDGET_CONFIG_ID, value, trace_id=trace_id)
 
+    def set_llm_timeout_ms(
+        self, value: object, *, trace_id: str | None = None
+    ) -> ChangeRecord | None:
+        """落一次 **LLM 调用总时限**（值未变 → ``None``）。"""
+        return self._set(LLM_TIMEOUT_CONFIG_ID, value, trace_id=trace_id)
+
+    def set_llm_idle_timeout_ms(
+        self, value: object, *, trace_id: str | None = None
+    ) -> ChangeRecord | None:
+        """落一次 **LLM 调用空闲时限**（值未变 → ``None``）。"""
+        return self._set(LLM_IDLE_TIMEOUT_CONFIG_ID, value, trace_id=trace_id)
+
+    def set_llm_max_attempts(
+        self, value: object, *, trace_id: str | None = None
+    ) -> ChangeRecord | None:
+        """落一次**单轮最多尝试次数**（值未变 → ``None``）。"""
+        return self._set(LLM_MAX_ATTEMPTS_CONFIG_ID, value, trace_id=trace_id)
+
+    def set_llm_retry_backoff_ms(
+        self, value: object, *, trace_id: str | None = None
+    ) -> ChangeRecord | None:
+        """落一次**重试退避基数**（值未变 → ``None``）。"""
+        return self._set(LLM_RETRY_BACKOFF_CONFIG_ID, value, trace_id=trace_id)
+
     # ───────────────────────── 内部 ─────────────────────────
 
     def _read(self, config_id: str) -> int:
@@ -257,10 +403,10 @@ class LoopBounds:
             raise AgentRuntimeValidationError(
                 f"{config_id} 的配置项损坏（{path}）：{exc}"
             ) from exc
-        return _check(value, config_id=config_id)
+        return _check(value, config_id=config_id, minimum=_MINIMUMS[config_id])
 
     def _set(self, config_id: str, value: object, *, trace_id: str | None) -> ChangeRecord | None:
-        value = _check(value, config_id=config_id)
+        value = _check(value, config_id=config_id, minimum=_MINIMUMS[config_id])
         old = self._read(config_id)
         if old == value:
             return None

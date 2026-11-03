@@ -17,6 +17,10 @@ from st_agent.l3.errors import AgentRuntimeValidationError
 from st_agent.l3.runtime.bounds import (
     CONTEXT_BUDGET_CONFIG_ID,
     INVESTIGATE_CONFIG_PREFIX,
+    LLM_IDLE_TIMEOUT_CONFIG_ID,
+    LLM_MAX_ATTEMPTS_CONFIG_ID,
+    LLM_RETRY_BACKOFF_CONFIG_ID,
+    LLM_TIMEOUT_CONFIG_ID,
     MAX_LLM_CALLS_CONFIG_ID,
     MAX_STEPS_CONFIG_ID,
     LoopBounds,
@@ -28,6 +32,10 @@ _WRITABLE: dict[str, str] = {
     MAX_STEPS_CONFIG_ID: "set_steps",
     MAX_LLM_CALLS_CONFIG_ID: "set_llm_calls",
     CONTEXT_BUDGET_CONFIG_ID: "set_context_budget",
+    LLM_TIMEOUT_CONFIG_ID: "set_llm_timeout_ms",
+    LLM_IDLE_TIMEOUT_CONFIG_ID: "set_llm_idle_timeout_ms",
+    LLM_MAX_ATTEMPTS_CONFIG_ID: "set_llm_max_attempts",
+    LLM_RETRY_BACKOFF_CONFIG_ID: "set_llm_retry_backoff_ms",
 }
 
 

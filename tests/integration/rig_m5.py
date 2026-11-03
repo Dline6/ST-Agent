@@ -36,6 +36,22 @@ ENV: dict[str, str] = {
 }
 """引导装载三键（`llm_env`）——端点由播种建、能力由探测写（``llm_post`` 拦截线上那一跳）。"""
 
+
+def _user_prompt(messages: list[dict[str, Any]]) -> str:
+    """取本轮 **user** 消息正文（系统提示词另成一条，不混进任务 prompt）。"""
+    for message in reversed(messages):
+        if message.get("role") == "user":
+            return str(message.get("content") or "")
+    return ""
+
+
+def _system_prompt(messages: list[dict[str, Any]]) -> str:
+    """取本轮两条消息里的系统提示词（GWT-1 的请求体证据；无则空）。"""
+    for message in messages:
+        if message.get("role") == "system":
+            return str(message.get("content") or "")
+    return ""
+
 SK_A = "sk_data_aggregate"
 """第一步调用的能力（官方 base；``dependencies=()`` ⇒ 一次调用＝一条 ``skill_run`` 步）。"""
 
@@ -113,12 +129,14 @@ class ScriptedEndpoint:
             (entry.get("function") or {}).get("name")
             for entry in (payload.get("tools") or ())
         )
+        messages = payload.get("messages") or []
         self.calls.append({
             "url": url,
             "headers": dict(headers),
             "body": payload,
             "tools": names,
-            "prompt": (payload.get("messages") or [{}])[0].get("content") or "",
+            "prompt": _user_prompt(messages),
+            "system_prompt": _system_prompt(messages),
         })
         if PROBE_TOOL.name in names:
             return iter(self._probe_lines())

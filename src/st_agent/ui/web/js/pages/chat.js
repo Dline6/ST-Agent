@@ -901,7 +901,9 @@ function continuationNode(cont) {
     ? '查证续跑依据已过期'
     : cont.kind === 'user_input'
       ? '查证待用户输入（可一键续跑）'
-      : '查证待确认（可一键续跑）';
+      : cont.kind === 'retry'
+        ? '查证调用失败（可从已有证据继续）'
+        : '查证待确认（可一键续跑）';
   box.append(el('p', 'chat__continuation-title', title));
   if (cont.stale) {
     box.append(el('p', 'state state--delayed',
@@ -988,6 +990,11 @@ function continuationNode(cont) {
       approve.type = 'button';
       approve.addEventListener('click', () => resume(cont, { decision: 'approve' }));
       bar.append(approve);
+    } else if (cont.kind === 'retry') {
+      const retry = el('button', 'chat__action', '从已有证据继续');
+      retry.type = 'button';
+      retry.addEventListener('click', () => resume(cont, { decision: 'retry' }));
+      bar.append(retry);
     } else {
       const submit = el('button', 'chat__action', '提交答案并继续');
       submit.type = 'button';

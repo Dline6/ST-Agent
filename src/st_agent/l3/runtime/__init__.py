@@ -102,6 +102,10 @@ from st_agent.l3.runtime.report import (
     record_agent_run,
 )
 from st_agent.l3.runtime.registry_adapter import InvestigateFamily, investigate_family
+from st_agent.l3.runtime.system_prompt import (
+    SYSTEM_PROMPT_VERSION,
+    build_system_prompt,
+)
 from st_agent.l3.runtime.runs import ActiveRun, ActiveRunRegistry, RunAlreadyActiveError
 from st_agent.l3.runtime.steer import SteerInbox, SteerMessage
 from st_agent.l3.runtime.subprotocols import (
@@ -173,6 +177,7 @@ __all__ = [
     "RunAlreadyActiveError",
     "RunEvent",
     "RunEventLog",
+    "SYSTEM_PROMPT_VERSION",
     "RunEventType",
     "SteerInbox",
     "SteerMessage",
@@ -185,6 +190,7 @@ __all__ = [
     "TruncatedResult",
     "TurnResult",
     "WorkContext",
+    "build_system_prompt",
     "WorkStep",
     "action_id_of",
     "agent_log_ref_of",
