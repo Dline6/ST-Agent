@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-004.2, T-AGT-029.1]
 status: done
 decisions: [D-090, D-154, D-165]
-verify: 见执行日志 [T-AGT-031.1]；范围套件 3019 passed / 2 环境性 errors；live 3 passed；verify_docs PASS
+verify: 见执行日志 [T-AGT-031.1]；范围套件 3019 passed / 2 环境性 errors；live 3 passed；verify_docs PASS；commit 362fc76
 ---
 
 # T-AGT-031.1 · 系统提示词

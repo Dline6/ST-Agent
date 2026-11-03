@@ -10,7 +10,7 @@ milestone: M11
 depends_on: [T-AGT-004.2, T-L0-003]
 status: done
 decisions: [D-090, D-154, D-165]
-verify: 见执行日志 [T-AGT-031.2]；范围套件 3019 passed / 2 环境性 errors；live 3 passed；verify_docs PASS
+verify: 见执行日志 [T-AGT-031.2]；范围套件 3019 passed / 2 环境性 errors；live 3 passed；verify_docs PASS；commit 362fc76
 ---
 
 # T-AGT-031.2 · LLM 超时语义与可配置
