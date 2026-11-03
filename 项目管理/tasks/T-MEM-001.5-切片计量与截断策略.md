@@ -17,7 +17,7 @@ verify:
 
 ## 目标
 
-让记忆切片的预算计量等于**实际渲染体量**：`_render_memory` 只输出节点本体，不输出边，计量不应把 `MemorySlice.model_dump_json()` 里的 `edges` 算进去（图视图需要边时另行计量）；截断遇到超大切片时**跳过**而不是 `break`，让后面更小的相关切片仍有机会进入。记忆配额在历史/步骤之间的回收由 [`T-AGT-033.1`](T-AGT-033.1-预算信封与计量口径.md) 承接，本叶不重复实现。
+让记忆切片的预算计量等于**实际渲染体量**：`_render_memory` 只输出节点本体，不输出边，计量不应把 `MemorySlice.model_dump_json()` 里的 `edges` 算进去（图视图需要边时另行计量）；截断遇到超大切片时**跳过**而不是 `break`，让后面更小的相关切片仍有机会进入。记忆配额在历史/步骤之间的回收由 [`T-AGT-033.1`](done/M11/T-AGT-033.1-预算信封与计量口径.md) 承接，本叶不重复实现。
 
 ## 验收标准（Given-When-Then）
 
@@ -25,13 +25,13 @@ verify:
 - GWT-2：Given graph 视图，Then 边参与计量（或按独立边预算），且不改变“三视图共享候选集、只改排序”的既有语义。
 - GWT-3：Given 第一条切片超大、后面还有更小的相关切片，Then 跳过超大者继续收后面的，不因 `break` 让整批记忆为空；被跳过项显式标注（或至少有可解释原因）。
 - GWT-4：Given 同一输入与预算，Then 截断结果确定；保留项的排序仍是原相关性序。
-- GWT-5：Given 记忆为空/配额回收，Then 由 [`T-AGT-033.1`](T-AGT-033.1-预算信封与计量口径.md) 处理，本叶不另造一套分配逻辑。
+- GWT-5：Given 记忆为空/配额回收，Then 由 [`T-AGT-033.1`](done/M11/T-AGT-033.1-预算信封与计量口径.md) 处理，本叶不另造一套分配逻辑。
 
 ## 接口面
 
 待 ④ 对齐实填。预计落点：
 
-- 输入：`MemorySlice` / `_truncate` / `_order`（[`reader.py`](../../src/st_agent/l2/memory/reader.py)）· `_render_memory`（[`context.py`](../../src/st_agent/l3/runtime/context.py)）· 记忆配额（[`T-AGT-033.1`](T-AGT-033.1-预算信封与计量口径.md)）。
+- 输入：`MemorySlice` / `_truncate` / `_order`（[`reader.py`](../../src/st_agent/l2/memory/reader.py)）· `_render_memory`（[`context.py`](../../src/st_agent/l3/runtime/context.py)）· 记忆配额（[`T-AGT-033.1`](done/M11/T-AGT-033.1-预算信封与计量口径.md)）。
 - 输出：按渲染体量的计量函数 · 跳过超大切片 · 图视图边计量 · 截断留痕/说明。
 
 ## 可关闭的遗留

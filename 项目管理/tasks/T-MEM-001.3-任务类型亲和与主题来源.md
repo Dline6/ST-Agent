@@ -17,7 +17,7 @@ verify:
 
 ## 目标
 
-给 Agent 循环一个更窄的 `task_type`（如 `investigate` / `agent`）亲和，而不是固定 `chat` 命中全部六类节点；主题来源改为**会话主任务**（由 [`T-AGT-033.3`](T-AGT-033.3-任务锚点与历史装载.md) 提供），不再把用户原话「继续」当作 topic。
+给 Agent 循环一个更窄的 `task_type`（如 `investigate` / `agent`）亲和，而不是固定 `chat` 命中全部六类节点；主题来源改为**会话主任务**（由 [`T-AGT-033.3`](done/M11/T-AGT-033.3-任务锚点与历史装载.md) 提供），不再把用户原话「继续」当作 topic。
 
 ## 验收标准（Given-When-Then）
 
@@ -31,7 +31,7 @@ verify:
 
 待 ④ 对齐实填。预计落点：
 
-- 输入：`TASK_TYPE_AFFINITY` / `SliceQuery.task_type` / `SliceQuery.topic`（[`reader.py`](../../src/st_agent/l2/memory/reader.py)）· `assemble_context` 的 `task_type="chat"`（[`session.py`](../../src/st_agent/l3/chat/session.py)）· `_context_inputs` 的 `topic=task`（[`composition/agent.py`](../../src/st_agent/composition/agent.py)）· 会话主任务（[`T-AGT-033.3`](T-AGT-033.3-任务锚点与历史装载.md)）。
+- 输入：`TASK_TYPE_AFFINITY` / `SliceQuery.task_type` / `SliceQuery.topic`（[`reader.py`](../../src/st_agent/l2/memory/reader.py)）· `assemble_context` 的 `task_type="chat"`（[`session.py`](../../src/st_agent/l3/chat/session.py)）· `_context_inputs` 的 `topic=task`（[`composition/agent.py`](../../src/st_agent/composition/agent.py)）· 会话主任务（[`T-AGT-033.3`](done/M11/T-AGT-033.3-任务锚点与历史装载.md)）。
 - 输出：`investigate` / `agent` 亲和表 · 主任务 topic 来源 · 未锚定显式标注 · 04 §3.1 同步。
 
 ## 可关闭的遗留
@@ -41,7 +41,7 @@ verify:
 ## 假设与前提
 
 - **A1**：`investigate` 的候选类型集合在 ④ 定（初版建议 `thesis` / `attention` / `identity` / `history`）；`pattern` / `evolution` 归反思演进。
-- **A2**：主任务字段由 [`T-AGT-033.3`](T-AGT-033.3-任务锚点与历史装载.md) 提供；本叶只消费，不重复实现锚定。
+- **A2**：主任务字段由 [`T-AGT-033.3`](done/M11/T-AGT-033.3-任务锚点与历史装载.md) 提供；本叶只消费，不重复实现锚定。
 - **A3**：`chat` 的全类型亲和保留，避免普通对话行为回退。
 
 ## 涉及契约（链接到具体小节）
