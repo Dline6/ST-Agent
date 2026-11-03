@@ -29,7 +29,7 @@ verify:
 
 子叶并集（详见各叶）：
 
-- **输入**：[`MemoryReader`](../../src/st_agent/l2/memory/reader.py) · [`MemoryGraph`](../../src/st_agent/l2/memory/graph.py) · [`MemoryWriter`](../../src/st_agent/l2/memory/writer.py) · [`OnboardingProtocol`](../../src/st_agent/l2/memory/onboarding.py) · `sk_memory_op` 承接（[`subprotocols.py`](../../src/st_agent/l3/runtime/subprotocols.py)）· `assemble_context` / `_context_inputs`（[`session.py`](../../src/st_agent/l3/chat/session.py) / [`composition/agent.py`](../../src/st_agent/composition/agent.py)）· 会话主任务（[`T-AGT-033.3`](T-AGT-033.3-任务锚点与历史装载.md)）。
+- **输入**：[`MemoryReader`](../../src/st_agent/l2/memory/reader.py) · [`MemoryGraph`](../../src/st_agent/l2/memory/graph.py) · [`MemoryWriter`](../../src/st_agent/l2/memory/writer.py) · [`OnboardingProtocol`](../../src/st_agent/l2/memory/onboarding.py) · `sk_memory_op` 承接（[`subprotocols.py`](../../src/st_agent/l3/runtime/subprotocols.py)）· `assemble_context` / `_context_inputs`（[`session.py`](../../src/st_agent/l3/chat/session.py) / [`composition/agent.py`](../../src/st_agent/composition/agent.py)）· 会话主任务（[`T-AGT-033.3`](done/M11/T-AGT-033.3-任务锚点与历史装载.md)）。
 - **输出**：按需记忆读取工具 · 中文主题检索与排序 · `investigate` 亲和 · 每查询时钟 · 按渲染体量的切片计量/截断 · 边索引 · 偏好写入生产路由与空存储初始化。
 
 ## 可关闭的遗留
@@ -48,4 +48,4 @@ verify:
 
 ## 备注
 
-12 条问题与叶的对应：①→`.1`、②→`.2`、③→`.3`、④→`.3`、⑤→`.4`、⑥→`.5`、⑦→`.6`、⑧→`.5`、⑨→**已由 [`T-AGT-033.1`](T-AGT-033.1-预算信封与计量口径.md) 的配额回收覆盖，不重复立项**、⑩→`.1`、⑪→`.7`、⑫→`.1`。本组挂 **M12 · 记忆可用**；集成关卡 [`T-INT-013`](T-INT-013-M12集成关卡记忆可用.md) 覆盖 7 叶。真实存储 `D:\Documents\STAgent\memory` 目前只有 `manifest.bin`，无节点/边。
+12 条问题与叶的对应：①→`.1`、②→`.2`、③→`.3`、④→`.3`、⑤→`.4`、⑥→`.5`、⑦→`.6`、⑧→`.5`、⑨→**已由 [`T-AGT-033.1`](done/M11/T-AGT-033.1-预算信封与计量口径.md) 的配额回收覆盖，不重复立项**、⑩→`.1`、⑪→`.7`、⑫→`.1`。本组挂 **M12 · 记忆可用**；集成关卡 [`T-INT-013`](T-INT-013-M12集成关卡记忆可用.md) 覆盖 7 叶。真实存储 `D:\Documents\STAgent\memory` 目前只有 `manifest.bin`，无节点/边。
