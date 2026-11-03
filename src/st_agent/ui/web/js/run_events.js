@@ -8,7 +8,7 @@
 
 import { streamUrl } from './api.js';
 
-/** D-154 B5 的 11 类运行事件 + 2026-11-02 增补的 `steer`（与后端 `RUN_EVENT_TYPES` 同序）。 */
+/** 后端 `RUN_EVENT_TYPES` 的同序镜像（含 `budget_request` / `sub_agent_started`）。 */
 export const RUN_EVENT_TYPES = [
   'run_started',
   'model_turn',
@@ -16,9 +16,11 @@ export const RUN_EVENT_TYPES = [
   'step_started',
   'step_finished',
   'tool_search',
+  'sub_agent_started',
   'sub_agent',
   'gate_pending',
   'ask_user',
+  'budget_request',
   'steer',
   'text_delta',
   'run_finished',

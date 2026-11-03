@@ -13,12 +13,13 @@
   目标主机与实际请求的目标主机**同源**，不会一处改了另一处没改
 
 协议面（``POST {base_url}/chat/completions``，SSE 流式）：请求体
-``{"model", "messages", "stream": true}``（带工具条目时**追加** ``tools``；不带时
-**逐字节不变**）；鉴权走 ``Authorization: Bearer <key>``（``key`` 为空则不带该头
+``{"model", "messages", "stream": true, "stream_options": {"include_usage": true}}``
+（带工具条目时**追加** ``tools``）；鉴权走 ``Authorization: Bearer <key>``（``key`` 为空则不带该头
 ——本地推理端点无凭据）。响应逐行 ``data: {...}``，取 ``choices[0].delta.content``
-作为文本增量、按 ``index`` 拼接 ``choices[0].delta.tool_calls`` 增量得**拼完的**
-工具调用（``data: [DONE]`` 时收束）；``data: [DONE]`` 结束。**工具调用增量不得
-当正文文本下发**，故流式项是 ``str | ToolCall`` 两态。
+作为文本增量、``delta.reasoning_content`` 作为推理增量、按 ``index`` 拼接
+``choices[0].delta.tool_calls`` 增量得**拼完的**工具调用（``data: [DONE]`` 时收束）；
+流末的 ``usage`` 产出一次 :class:`ProviderUsage`。**工具调用增量不得当正文文本下发**，
+故流式项是 ``str | ToolCall | ReasoningDelta | ProviderUsage`` 四态。
 
 失败一律以 [``Egress*``](../net/errors.py) 异常上报——网关原样透出、由
 ``EgressGateway.llm_transport`` 映射为 ``Transport*`` 体系：连接失败 / 无路由
@@ -42,7 +43,12 @@ from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from urllib.parse import urlsplit
 
-from st_agent.l0.llm.models import ToolCall, ToolSpec
+from st_agent.l0.llm.models import (
+    ProviderUsage,
+    ReasoningDelta,
+    ToolCall,
+    ToolSpec,
+)
 from st_agent.l0.net.errors import (
     EgressError,
     EgressTimeoutError,
@@ -66,8 +72,9 @@ CHAT_COMPLETIONS_PATH = "/chat/completions"
 #: 注入式 HTTP 发送口：(url, headers, body, timeout_s) -> 响应行可迭代
 Post = Callable[[str, Mapping[str, str], bytes, float], Iterable[str]]
 
-#: 流式项：文本增量（``str``）或**拼完**的工具调用（:class:`ToolCall`）两态。
-StreamItem = str | ToolCall
+#: 流式项：文本增量（``str``）、**拼完**的工具调用（:class:`ToolCall`）、
+#: 推理增量（:class:`ReasoningDelta`）或提供方用量（:class:`ProviderUsage`）。
+StreamItem = str | ToolCall | ReasoningDelta | ProviderUsage
 
 
 @dataclass(frozen=True)
@@ -180,6 +187,8 @@ def openai_compat_sender_factory(
             "model": route.model,
             "messages": messages,
             "stream": True,
+            # 要求流末回 usage（OpenAI 兼容标准选项）；不支持时静默忽略，L0 回退估算
+            "stream_options": {"include_usage": True},
         }
         wire_tools = tools_payload(tools)
         if wire_tools:
@@ -282,12 +291,13 @@ def _stream_items(
     total_timeout_ms: int | None = None,
     monotonic: Callable[[], float] | None = None,
 ) -> Iterable[StreamItem]:
-    """SSE 行 → 流式项（文本增量 :class:`str` ∪ **拼完**的工具调用）。
+    """SSE 行 → 流式项（文本增量 ∪ 推理增量 ∪ **拼完**的工具调用 ∪ 提供方用量）。
 
-    ``data:`` 行取 ``delta.content`` 作文本增量、按 ``index`` 累积
-    ``delta.tool_calls`` 的 ``id`` / ``function.name`` / ``function.arguments``
-    增量串，在流收束（``[DONE]`` 或行尽）时**按 index 升序**产出完整的
-    :class:`ToolCall`——**增量片段不外泄为文本**。
+    ``data:`` 行取 ``delta.content`` 作文本增量、取 ``delta.reasoning_content``
+    （或等价的 ``delta.reasoning``）作**推理增量**、按 ``index`` 累积
+    ``delta.tool_calls`` 增量串，在流收束（``[DONE]`` 或行尽）时**按 index 升序**产出完整的
+    :class:`ToolCall`——**增量片段不外泄为文本**。``usage`` 若出现，在收束处产出一次
+    :class:`ProviderUsage`。
 
     非 JSON 的 ``data:`` 行（心跳 / 注释 / 提供方自定格式）忽略，但**仍算活动**：
     总时限在每一行到达时检查，故长思考只要有增量就不会被总时限外的“无输出”误判；
@@ -296,6 +306,7 @@ def _stream_items(
     clock = monotonic if monotonic is not None else time.monotonic
     started = clock()
     acc: dict[int, _ToolCallAccumulator] = {}
+    provider_usage: ProviderUsage | None = None
     for raw in lines:
         if total_timeout_ms is not None and clock() - started > total_timeout_ms / 1000:
             raise EgressTimeoutError(
@@ -309,6 +320,8 @@ def _stream_items(
         payload = line[len("data:"):].strip()
         if payload == "[DONE]":
             yield from _assembled_tool_calls(acc)
+            if provider_usage is not None:
+                yield provider_usage
             return
         try:
             obj = json.loads(payload)
@@ -318,12 +331,20 @@ def _stream_items(
             continue
         if obj.get("error"):
             raise EgressError(f"提供方返回错误：{obj['error']}")
+        parsed_usage = _provider_usage_of(obj.get("usage"))
+        if parsed_usage is not None:
+            provider_usage = parsed_usage
         for choice in obj.get("choices") or ():
             if not isinstance(choice, dict):
                 continue
             delta = choice.get("delta") or {}
             if not isinstance(delta, dict):
                 continue
+            reasoning = delta.get("reasoning_content")
+            if not isinstance(reasoning, str) or not reasoning:
+                reasoning = delta.get("reasoning")
+            if isinstance(reasoning, str) and reasoning:
+                yield ReasoningDelta(text=reasoning)
             piece = delta.get("content")
             if piece:
                 yield piece
@@ -332,6 +353,35 @@ def _stream_items(
                     _accumulate_tool_call(acc, fragment)
     # 无 ``[DONE]`` 收尾（部分端点直接断流）——行尽同样收束，不把拼到一半的丢静默
     yield from _assembled_tool_calls(acc)
+    if provider_usage is not None:
+        yield provider_usage
+
+
+def _provider_usage_of(raw: object) -> ProviderUsage | None:
+    """``usage`` 对象 → :class:`ProviderUsage`（字段不全即忽略，不猜、不补零冒充）。"""
+    if not isinstance(raw, dict):
+        return None
+    prompt = raw.get("prompt_tokens")
+    completion = raw.get("completion_tokens")
+    if (
+        not isinstance(prompt, int) or isinstance(prompt, bool) or prompt < 0
+        or not isinstance(completion, int) or isinstance(completion, bool)
+        or completion < 0
+    ):
+        return None
+    reasoning = 0
+    details = raw.get("completion_tokens_details")
+    if isinstance(details, dict):
+        value = details.get("reasoning_tokens")
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            reasoning = min(value, completion)
+    total = raw.get("total_tokens")
+    if not isinstance(total, int) or isinstance(total, bool) or total < 0:
+        total = prompt + completion
+    return ProviderUsage(
+        prompt_tokens=prompt, completion_tokens=completion,
+        reasoning_tokens=reasoning, total_tokens=total,
+    )
 
 
 class _ToolCallAccumulator:

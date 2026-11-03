@@ -435,15 +435,29 @@ def test_loop_port_declares_parallel_safety_and_nested_recorder(rig, monkeypatch
 
     assert captured["parallel_safe"] is True
     assert callable(captured["nested_recorder"])
+    assert callable(captured["child_events"])
 
     child = LoopOutcome(
         task="子任务：查证一条公告", endpoint_id="ep_child",
         termination="finished", trace=Trace(trace_id=TraceId.generate()),
         max_steps=1, max_llm_calls=1,
     )
-    ref = captured["nested_recorder"](child)
+    from st_agent.l3.runtime import new_agent_run_id
+    child_id = new_agent_run_id()
+    ref = captured["nested_recorder"](child, child_id)
+    assert ref.agent_run_id == child_id
     assert load_agent_run(rig.m5.store, ref.agent_run_id).task == "子任务：查证一条公告"
     assert ref.log_ref
+
+    # 子运行事件流：登记进活动表 → 写事件日志 → 收口释放（T-AGT-032.2）
+    stream = captured["child_events"]()
+    assert rig.m5.investigations.is_active(stream.agent_run_id)
+    stream.emit("run_started", {"task": "子任务：查证一条公告"})
+    assert [e.event for e in rig.m5.investigations.events(stream.agent_run_id)] == [
+        "run_started"
+    ]
+    stream.close()
+    assert not rig.m5.investigations.is_active(stream.agent_run_id)
 
 
 class TestToolSelection:

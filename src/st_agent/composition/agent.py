@@ -26,6 +26,7 @@ from st_agent.l3.runtime import (
     AgentRunReport,
     LoopBounds,
     NativeToolCallProtocol,
+    NestedEventStream,
     NestedRunRef,
     RunAlreadyActiveError,
     RunEventLog,
@@ -179,8 +180,10 @@ class _AgentInvestigator:
         self._subprotocols = subprotocols
 
         if nested_recorder is None:
-            def _record(outcome: Any) -> NestedRunRef:
-                report = conclude_agent_run(self._store, outcome)
+            def _record(outcome: Any, agent_run_id: str) -> NestedRunRef:
+                report = conclude_agent_run(
+                    self._store, outcome, agent_run_id=agent_run_id,
+                )
                 return NestedRunRef(
                     agent_run_id=report.agent_run_id,
                     log_ref=agent_log_ref_of(report.agent_run_id),
@@ -291,6 +294,9 @@ class _AgentInvestigator:
                 memory=context_inputs.memory,
                 parallel_safe=True,
                 nested_recorder=self._nested_recorder,
+                child_events=self._child_events,
+                subagent_llm_timeout_ms=self._subagent_llm_timeout_ms(),
+                subagent_llm_max_attempts=self._subagent_llm_max_attempts(),
                 subprotocols=self._subprotocols,
                 emit=events.emit,
                 cancel=run.cancel_event,
@@ -371,6 +377,9 @@ class _AgentInvestigator:
                 memory=context_inputs.memory,
                 parallel_safe=True,
                 nested_recorder=self._nested_recorder,
+                child_events=self._child_events,
+                subagent_llm_timeout_ms=self._subagent_llm_timeout_ms(),
+                subagent_llm_max_attempts=self._subagent_llm_max_attempts(),
                 now=now,
                 new_run_id=run_id,
                 continue_after_approval=self._continues_after_approval(session),
@@ -522,6 +531,44 @@ class _AgentInvestigator:
         except Exception:  # noqa: BLE001 —— 配置读不出由循环按缺省继续，不在此伪造封顶
             return 0
         return value if isinstance(value, int) and not isinstance(value, bool) else 0
+
+    def _subagent_llm_timeout_ms(self) -> int | None:
+        """子 Agent 的独立总时限（读面缺席 ⇒ ``None``，由循环用缺省 120000）。"""
+        getter = getattr(self._bounds, "subagent_llm_timeout_ms", None)
+        if not callable(getter):
+            return None
+        try:
+            value = getter()
+        except Exception:  # noqa: BLE001 —— 配置读不出不阻断运行，按缺省继续
+            return None
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    def _subagent_llm_max_attempts(self) -> int | None:
+        """子 Agent 的最多尝试次数（读面缺席 ⇒ ``None``，由循环用缺省 2）。"""
+        getter = getattr(self._bounds, "subagent_llm_max_attempts", None)
+        if not callable(getter):
+            return None
+        try:
+            value = getter()
+        except Exception:  # noqa: BLE001 —— 同上
+            return None
+        return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+    def _child_events(self) -> NestedEventStream:
+        """为一次派生子 Agent 开事件流（[T-AGT-032.2](../../项目管理/tasks/T-AGT-032.2-子Agent事件流与独立超时.md)）。
+
+        子运行铸**独立** ``agent_run_id`` 并登记进活动表（``session_id=None``，不占会话
+        互斥），故运行面板可像父运行一样实时跟随 / 回放；事件日志与 ``agent_run`` 留痕
+        共用同一标识。``close`` 在子运行收口后释放登记。
+        """
+        child_id = new_agent_run_id()
+        self._runs.register(child_id, None)
+        log = RunEventLog(self._store, child_id)
+
+        def close() -> None:
+            self._runs.finish(child_id)
+
+        return NestedEventStream(agent_run_id=child_id, emit=log.emit, close=close)
 
     def _context_window_tokens(self) -> int | None:
         """端点声明的上下文窗口（协议端口未提供 / 读不出 ⇒ ``None``，走保守 fallback）。"""

@@ -33,6 +33,8 @@ __all__ = [
     "LlmFailure",
     "LlmUsageRecord",
     "OfflineLevel",
+    "ProviderUsage",
+    "ReasoningDelta",
     "StreamEvent",
     "ToolCall",
     "ToolSpec",
@@ -210,6 +212,10 @@ class LlmUsageRecord(BaseModel):
     prompt_tokens: int = Field(ge=0)
     completion_tokens: int = Field(ge=0)
     total_tokens: int = Field(ge=0)
+    reasoning_tokens: int = Field(default=0, ge=0)
+    """推理 token（``completion_tokens`` 的细分项；提供方给出或按推理增量估算）。"""
+    usage_source: Literal["provider", "estimate"] = "estimate"
+    """``provider`` = 采用提供方流末 ``usage``；``estimate`` = 本地字符估算（不伪装成提供方值）。"""
     duration_ms: int = Field(ge=0)
     status: Literal["ok", "failed"] = "ok"
     fail_reason: str = ""
@@ -244,6 +250,8 @@ class LlmUsageRecord(BaseModel):
     def _totals_consistent(self) -> "LlmUsageRecord":
         if self.total_tokens != self.prompt_tokens + self.completion_tokens:
             raise LlmValidationError("total_tokens 必须等于 prompt_tokens + completion_tokens")
+        if self.reasoning_tokens > self.completion_tokens:
+            raise LlmValidationError("reasoning_tokens 是 completion_tokens 的细分项，不得超过它")
         if self.status == "failed" and not self.fail_reason.strip():
             raise LlmValidationError("失败用量须给出 fail_reason（禁止裸失败）")
         return self
@@ -309,6 +317,37 @@ class ToolCall(BaseModel):
         与文本块按 UTF-8 长度计同一口径——用其规范序列化长度**近似**线上字节。
         """
         return self.model_dump_json().encode("utf-8")
+
+
+class ProviderUsage(BaseModel):
+    """提供方在流末给出的用量（OpenAI 兼容 ``usage``；[T-AGT-032.3](../../../项目管理/tasks/T-AGT-032.3-LLM用量记账接入提供方usage.md)）。
+
+    ``reasoning_tokens`` 是 ``completion_tokens`` 的**细分项**（提供方给出
+    ``completion_tokens_details.reasoning_tokens`` 时才有值），不是额外增量。
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    prompt_tokens: int = Field(ge=0)
+    completion_tokens: int = Field(ge=0)
+    reasoning_tokens: int = Field(default=0, ge=0)
+    total_tokens: int = Field(default=0, ge=0)
+
+    def to_wire_bytes(self) -> bytes:
+        """本条用量在返回流中的字节口径（出网审计的 ``bytes_in`` 计它）。"""
+        return self.model_dump_json().encode("utf-8")
+
+
+class ReasoningDelta(BaseModel):
+    """一条**推理增量**（``delta.reasoning_content``；只计活动与 token，不进答案文本）。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    text: str = Field(min_length=1)
+
+    def to_wire_bytes(self) -> bytes:
+        """本条增量在返回流中的字节口径（与文本增量同口径）。"""
+        return self.text.encode("utf-8")
 
 
 class LlmFailure(BaseModel):

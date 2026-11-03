@@ -150,3 +150,36 @@ def test_background_dispatch_returns_run_id_and_records_final_turn(http_post, au
         assert payload["session_id"] == "sess_1"
         assert face.recorded_event.wait(3.0), "工作线程应落助手轮"
     assert face.recorded and face.recorded[0][1]["agent_run_id"] == RUN
+
+
+# ─────────────────── 前端事件表与子运行进度（T-AGT-032.2） ───────────────────
+
+
+def test_frontend_event_types_mirror_the_backend_enum():
+    """前端 `RUN_EVENT_TYPES` 必须与后端枚举同序（漏一项即该事件永不送达面板）。"""
+    import re
+    from pathlib import Path
+
+    from st_agent.l3.runtime import RUN_EVENT_TYPES
+
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "src" / "st_agent" / "ui" / "web" / "js" / "run_events.js"
+    )
+    text = path.read_text(encoding="utf-8")
+    block = text.split("export const RUN_EVENT_TYPES = [", 1)[1].split("];", 1)[0]
+    names = tuple(re.findall(r"'([a-z_]+)'", block))
+    assert names == RUN_EVENT_TYPES
+
+
+def test_chat_panel_handles_subagent_progress_and_step_accounting():
+    from pathlib import Path
+
+    path = (
+        Path(__file__).resolve().parents[2]
+        / "src" / "st_agent" / "ui" / "web" / "js" / "pages" / "chat.js"
+    )
+    text = path.read_text(encoding="utf-8")
+    assert "sub_agent_started" in text
+    assert "watchChildEvents" in text
+    assert "stepNote" in text

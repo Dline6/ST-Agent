@@ -43,6 +43,8 @@ from st_agent.l3.runtime.loop import (
     DEFAULT_LLM_RETRY_BACKOFF_MS,
     DEFAULT_MAX_LLM_CALLS,
     DEFAULT_MAX_STEPS,
+    DEFAULT_SUBAGENT_LLM_MAX_ATTEMPTS,
+    DEFAULT_SUBAGENT_LLM_TIMEOUT_MS,
 )
 
 __all__ = [
@@ -58,6 +60,8 @@ __all__ = [
     "MAX_LLM_CALLS_CONFIG_ID",
     "MAX_STEPS_CEILING",
     "MAX_STEPS_CONFIG_ID",
+    "SUBAGENT_LLM_MAX_ATTEMPTS_CONFIG_ID",
+    "SUBAGENT_LLM_TIMEOUT_CONFIG_ID",
     "LoopBounds",
     "loop_bounds_config_entries",
 ]
@@ -86,6 +90,12 @@ LLM_MAX_ATTEMPTS_CONFIG_ID = "investigate.llm_max_attempts"
 
 LLM_RETRY_BACKOFF_CONFIG_ID = "investigate.llm_retry_backoff_ms"
 """重试退避基数（毫秒；第 n 次重试等待 n × 基数）。"""
+
+SUBAGENT_LLM_TIMEOUT_CONFIG_ID = "investigate.subagent_llm_timeout_ms"
+"""子 Agent 单次 LLM 调用的独立总时限（毫秒；[T-AGT-032.2](../../../项目管理/tasks/T-AGT-032.2-子Agent事件流与独立超时.md)）。"""
+
+SUBAGENT_LLM_MAX_ATTEMPTS_CONFIG_ID = "investigate.subagent_llm_max_attempts"
+"""子 Agent 单轮模型调用的最多尝试次数（含首次）。"""
 
 DEFAULT_LLM_TIMEOUT_MS = 300_000
 """LLM 调用总时限缺省（5 分钟；显著高于端点常见的 60 秒，给长推理留出空间）。"""
@@ -262,6 +272,41 @@ _LLM_RETRY_BACKOFF_ENTRY = ConfigEntry(
     change_policy=ChangePolicy(requires_confirmation=True),
 )
 
+_SUBAGENT_LLM_TIMEOUT_ENTRY = ConfigEntry(
+    config_id=SUBAGENT_LLM_TIMEOUT_CONFIG_ID,
+    display_name="子 Agent 单次 LLM 调用总时限（毫秒）",
+    value_schema={"type": "integer", "minimum": 1},
+    default=DEFAULT_SUBAGENT_LLM_TIMEOUT_MS,
+    description_for_chat=(
+        "派生子 Agent 时，子循环单次模型调用的总时限（毫秒）。"
+        f"缺省 {DEFAULT_SUBAGENT_LLM_TIMEOUT_MS}；与主循环的时限相互独立，"
+        "子任务应更快失败或继续"
+    ),
+    panel_form_spec=PanelField(
+        widget="number", label="子 Agent 单次 LLM 调用总时限（毫秒）",
+        help_text=f"缺省 {DEFAULT_SUBAGENT_LLM_TIMEOUT_MS}（120 秒）；整数且 ≥1",
+    ),
+    scope="global",
+    change_policy=ChangePolicy(requires_confirmation=True),
+)
+
+_SUBAGENT_LLM_MAX_ATTEMPTS_ENTRY = ConfigEntry(
+    config_id=SUBAGENT_LLM_MAX_ATTEMPTS_CONFIG_ID,
+    display_name="子 Agent 单轮 LLM 最多尝试次数",
+    value_schema={"type": "integer", "minimum": 1},
+    default=DEFAULT_SUBAGENT_LLM_MAX_ATTEMPTS,
+    description_for_chat=(
+        "派生子 Agent 时，子循环单轮模型调用最多尝试几次（含首次）。"
+        f"缺省 {DEFAULT_SUBAGENT_LLM_MAX_ATTEMPTS}；只对可重试失败生效"
+    ),
+    panel_form_spec=PanelField(
+        widget="number", label="子 Agent 单轮 LLM 最多尝试次数",
+        help_text=f"缺省 {DEFAULT_SUBAGENT_LLM_MAX_ATTEMPTS}；整数且 ≥1",
+    ),
+    scope="global",
+    change_policy=ChangePolicy(requires_confirmation=True),
+)
+
 _ENTRIES: dict[str, ConfigEntry] = {
     MAX_STEPS_CONFIG_ID: _MAX_STEPS_ENTRY,
     MAX_LLM_CALLS_CONFIG_ID: _MAX_LLM_CALLS_ENTRY,
@@ -270,6 +315,8 @@ _ENTRIES: dict[str, ConfigEntry] = {
     LLM_IDLE_TIMEOUT_CONFIG_ID: _LLM_IDLE_TIMEOUT_ENTRY,
     LLM_MAX_ATTEMPTS_CONFIG_ID: _LLM_MAX_ATTEMPTS_ENTRY,
     LLM_RETRY_BACKOFF_CONFIG_ID: _LLM_RETRY_BACKOFF_ENTRY,
+    SUBAGENT_LLM_TIMEOUT_CONFIG_ID: _SUBAGENT_LLM_TIMEOUT_ENTRY,
+    SUBAGENT_LLM_MAX_ATTEMPTS_CONFIG_ID: _SUBAGENT_LLM_MAX_ATTEMPTS_ENTRY,
 }
 
 _DEFAULTS: dict[str, int] = {
@@ -280,6 +327,8 @@ _DEFAULTS: dict[str, int] = {
     LLM_IDLE_TIMEOUT_CONFIG_ID: DEFAULT_LLM_IDLE_TIMEOUT_MS,
     LLM_MAX_ATTEMPTS_CONFIG_ID: DEFAULT_LLM_MAX_ATTEMPTS,
     LLM_RETRY_BACKOFF_CONFIG_ID: DEFAULT_LLM_RETRY_BACKOFF_MS,
+    SUBAGENT_LLM_TIMEOUT_CONFIG_ID: DEFAULT_SUBAGENT_LLM_TIMEOUT_MS,
+    SUBAGENT_LLM_MAX_ATTEMPTS_CONFIG_ID: DEFAULT_SUBAGENT_LLM_MAX_ATTEMPTS,
 }
 
 _MINIMUMS: dict[str, int] = {
@@ -349,6 +398,14 @@ class LoopBounds:
         """生效的**重试退避基数**（缺省 500；0 表示不等待）。"""
         return self._read(LLM_RETRY_BACKOFF_CONFIG_ID)
 
+    def subagent_llm_timeout_ms(self) -> int:
+        """子 Agent 单次 LLM 调用的生效总时限（缺省 120000）。"""
+        return self._read(SUBAGENT_LLM_TIMEOUT_CONFIG_ID)
+
+    def subagent_llm_max_attempts(self) -> int:
+        """子 Agent 单轮模型调用的生效最多尝试次数（缺省 2）。"""
+        return self._read(SUBAGENT_LLM_MAX_ATTEMPTS_CONFIG_ID)
+
     def entries(self) -> tuple[ConfigEntry, ...]:
         """各条目（`default` 携**当前生效值**，供面板 / 对话通道展示）。"""
         return tuple(  # type: ignore[return-value]
@@ -401,6 +458,18 @@ class LoopBounds:
     ) -> ChangeRecord | None:
         """落一次**重试退避基数**（值未变 → ``None``）。"""
         return self._set(LLM_RETRY_BACKOFF_CONFIG_ID, value, trace_id=trace_id)
+
+    def set_subagent_llm_timeout_ms(
+        self, value: object, *, trace_id: str | None = None
+    ) -> ChangeRecord | None:
+        """落一次**子 Agent 总时限**（值未变 → ``None``）。"""
+        return self._set(SUBAGENT_LLM_TIMEOUT_CONFIG_ID, value, trace_id=trace_id)
+
+    def set_subagent_llm_max_attempts(
+        self, value: object, *, trace_id: str | None = None
+    ) -> ChangeRecord | None:
+        """落一次**子 Agent 最多尝试次数**（值未变 → ``None``）。"""
+        return self._set(SUBAGENT_LLM_MAX_ATTEMPTS_CONFIG_ID, value, trace_id=trace_id)
 
     # ───────────────────────── 内部 ─────────────────────────
 

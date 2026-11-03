@@ -208,3 +208,78 @@ class TestFetch:
         assert len(out.data["text"]) == 1000
         assert out.data["truncated"] is True
         assert out.data["total_chars"] == 1500
+
+    def test_json_object_is_returned_as_structured_data(self, env):
+        """T-AGT-032.1 GWT-1：对象 → `data`，可直接按字段读取；不再塞进 `text` 字符串。"""
+        set_egress_enabled(env.store, True)
+        set_allowed_hosts(env.store, "docs.example.com")
+        body = {"rc": 0, "data": {"name": "浦发银行", "price": 10.5}}
+        env.http.payload = FetchedPayload(
+            200, "application/json; charset=utf-8",
+            json.dumps(body, ensure_ascii=False).encode("utf-8"),
+        )
+        out = env.fetch("https://docs.example.com/api")
+        assert out.status == "ok"
+        assert out.data["format"] == "json"
+        assert out.data["data"] == body
+        assert out.data["truncated"] is False
+        assert out.data["total_chars"] == len(
+            json.dumps(body, ensure_ascii=False, sort_keys=True)
+        )
+        assert "text" not in out.data
+        assert "不可信数据" in out.data["note"]
+
+    def test_json_array_is_returned_as_records(self, env):
+        set_egress_enabled(env.store, True)
+        set_allowed_hosts(env.store, "docs.example.com")
+        rows = [{"code": "600000", "name": "浦发银行"}]
+        env.http.payload = FetchedPayload(
+            200, "application/json", json.dumps(rows, ensure_ascii=False).encode("utf-8"),
+        )
+        out = env.fetch("https://docs.example.com/api")
+        assert out.status == "ok"
+        assert out.data["format"] == "json"
+        assert out.data["records"] == rows
+        assert "data" not in out.data
+
+    def test_invalid_json_falls_back_to_text_with_an_explicit_note(self, env):
+        """GWT-2：坏 JSON 不冒充结构化成功，回退文本并说明原因。"""
+        set_egress_enabled(env.store, True)
+        set_allowed_hosts(env.store, "docs.example.com")
+        env.http.payload = FetchedPayload(200, "application/json", b'{"rc": 0,')
+        out = env.fetch("https://docs.example.com/api")
+        assert out.status == "ok"
+        assert out.data["format"] == "text"
+        assert out.data["text"] == '{"rc": 0,'
+        assert "data" not in out.data and "records" not in out.data
+        assert "不是合法 JSON" in out.data["note"]
+
+    def test_oversized_json_omits_structure_and_stays_truncated(self, env):
+        """GWT-4：结构化不绕过体量控制；完整报文超限时只给截断文本与回读提示。"""
+        set_egress_enabled(env.store, True)
+        set_allowed_hosts(env.store, "docs.example.com")
+        body = {"blob": "x" * 2000}
+        env.http.payload = FetchedPayload(
+            200, "application/json", json.dumps(body).encode("utf-8"),
+        )
+        out = env.fetch("https://docs.example.com/api", max_chars=1000)
+        assert out.status == "ok"
+        assert out.data["format"] == "text"
+        assert out.data["truncated"] is True
+        assert len(out.data["text"]) == 1000
+        assert "data" not in out.data and "records" not in out.data
+        assert "超过上限" in out.data["note"]
+        assert "sk_result_read" in out.data["note"]
+
+    def test_structured_payload_serializes_without_double_escaping(self, env):
+        """GWT-3：回读/上下文序列化该信封时，结构里的 JSON 不再被再转义成字符串。"""
+        set_egress_enabled(env.store, True)
+        set_allowed_hosts(env.store, "docs.example.com")
+        body = {"rc": 0, "content_type": "application/json"}
+        env.http.payload = FetchedPayload(
+            200, "application/json", json.dumps(body).encode("utf-8"),
+        )
+        out = env.fetch("https://docs.example.com/api")
+        text = json.dumps(out.data, ensure_ascii=False, sort_keys=True)
+        assert '"rc": 0' in text
+        assert '\\"rc\\"' not in text

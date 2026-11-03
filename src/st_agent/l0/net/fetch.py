@@ -7,8 +7,9 @@
 2. **一次 GET 的按次 sender**——交给 ``EgressGateway.stream``；不自动跟随
    重定向（3xx 显式拒绝），否则重定向可绕过域名名单。
 3. **正文抽取**——按 ``Content-Type`` 只接受文本类；HTML 用标准库
-   ``HTMLParser`` 去标签、跳过脚本 / 样式，输出纯文本。非文本 / 二进制 /
-   解码失败一律显式失败，**不返回乱码**。
+   ``HTMLParser`` 去标签、跳过脚本 / 样式，输出纯文本；``application/json``
+   只做解码、保留原始空白（JSON 字符串内的空白有语义），结构化归 L1。
+   非文本 / 二进制 / 解码失败一律显式失败，**不返回乱码**。
 
 网页正文是**不可信数据**：本模块只把它变成文本，不解释、不执行其中的指令。
 """
@@ -87,7 +88,11 @@ def build_fetch_sender(
 
 
 def extract_fetched_text(payload: FetchedPayload) -> dict:
-    """响应体 → 纯文本（含标题）；非文本 / 解码失败 → ``EgressError``。"""
+    """响应体 → 文本（含标题与格式）；非文本 / 解码失败 → ``EgressError``。
+
+    返回 ``format``：``html`` / ``json`` / ``text``。``json`` 只做**解码**、不做空白折叠
+    ——JSON 字符串内的空白有语义，折叠会破坏载荷；解析与结构化归 L1（本层不猜结构）。
+    """
     if not isinstance(payload, FetchedPayload):
         raise EgressError("抓取结果形态不符（缺 HTTP 载荷）")
     content_type = (payload.content_type or "").strip()
@@ -95,8 +100,9 @@ def extract_fetched_text(payload: FetchedPayload) -> dict:
     if not lowered:
         raise EgressError("网页未标注 Content-Type，无法确认是文本")
     is_html = "html" in lowered or "xml" in lowered
+    is_json = "json" in lowered
     if not (lowered.startswith("text/") or lowered.startswith("application/")
-            and ("json" in lowered or "xhtml" in lowered or "xml" in lowered)):
+            and (is_json or "xhtml" in lowered or "xml" in lowered)):
         raise EgressError(f"不支持的响应类型：{content_type}（只抓取文本）")
     if b"\x00" in payload.body:
         raise EgressError("响应含二进制内容（NUL 字节），不作为文本返回")
@@ -110,11 +116,20 @@ def extract_fetched_text(payload: FetchedPayload) -> dict:
             "title": parser.title_text(),
             "text": parser.body_text(),
             "content_type": content_type,
+            "format": "html",
+        }
+    if is_json:
+        return {
+            "title": "",
+            "text": text.lstrip("﻿").strip(),
+            "content_type": content_type,
+            "format": "json",
         }
     return {
         "title": "",
         "text": _normalize(text),
         "content_type": content_type,
+        "format": "text",
     }
 
 

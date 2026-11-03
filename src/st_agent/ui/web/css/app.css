@@ -941,6 +941,7 @@ body {
 .chat__run-sub-answer,
 .chat__run-sub-reason,
 .chat__run-sub-evidence,
+.chat__run-sub-note,
 .chat__run-sub-ref {
   margin: var(--space-1) 0 0; color: var(--fg-muted);
   font-size: var(--text-body-sm); line-height: var(--leading-body-sm); overflow-wrap: anywhere;

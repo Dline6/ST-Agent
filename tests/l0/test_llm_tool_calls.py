@@ -136,17 +136,20 @@ def invoke(client: LlmClient, *, tools=None, requirement=None, prompt: str = PRO
     ))
 
 
-# ───────────────────────── GWT-1 不带 tools 逐字节一致 ─────────────────────
+# ─────────────── GWT-1 不带 tools 的请求体形态（消息字段不变） ───────────────
 
 
-class TestGwt1UntooledBodyUnchanged:
-    def test_body_without_tools_is_byte_identical(self, store, gateway):
+class TestGwt1UntooledBodyShape:
+    def test_body_without_tools_keeps_messages_and_adds_stream_options(
+        self, store, gateway,
+    ):
+        """T-AGT-032.3：messages / model / stream 不变；新增标准 `stream_options` 取用量。"""
         post = Recorder([sse_text("ok"), "data: [DONE]"])
         client = make_client(store, gateway, post)
         invoke(client)
         expected = json.dumps(
             {"model": MODEL, "messages": [{"role": "user", "content": PROMPT}],
-             "stream": True},
+             "stream": True, "stream_options": {"include_usage": True}},
             ensure_ascii=False,
         ).encode("utf-8")
         assert post.calls[0]["body"] == expected
