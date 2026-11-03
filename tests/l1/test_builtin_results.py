@@ -145,13 +145,16 @@ def test_negative_offset_is_rejected(store, execute):
     assert "为负" in envelope.reason
 
 
-def test_max_chars_bounds_are_enforced(store, execute):
-    _write_run(store, {"text": "x" * 100})
+def test_max_chars_is_clamped_and_effective_value_is_reported(store, execute):
+    """越界**钳制**而非拒绝：运行时在信封内自选分片，钳制结果如实回写。"""
+    _write_run(store, {"text": "x" * (MAX_RESULT_READ_CHARS + 100)})
     too_big = execute(
         SimpleNamespace(inputs={"skill_run_id": RUN_ID, "max_chars": MAX_RESULT_READ_CHARS + 1}),
         {},
     )
-    assert too_big.status == "validation_failed"
+    assert too_big.status == "ok"
+    assert too_big.data["max_chars"] == MAX_RESULT_READ_CHARS
+    assert len(too_big.data["text"]) == MAX_RESULT_READ_CHARS
     not_int = execute(
         SimpleNamespace(inputs={"skill_run_id": RUN_ID, "max_chars": "10"}), {},
     )

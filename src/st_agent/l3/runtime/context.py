@@ -28,7 +28,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -40,6 +40,7 @@ from st_agent.l1.skills.tool_catalog import ToolEntry
 from st_agent.l2.memory.reader import MemorySlice
 from st_agent.l3.chat.session import ROLE_LABELS, ChatMessage
 from st_agent.l3.errors import AgentRuntimeValidationError
+from st_agent.l3.runtime.envelope import CATALOG_BUDGET_SHARE
 from st_agent.l3.runtime.steer import SteerMessage
 from st_agent.l3.runtime.tool_search import (
     SUMMARY_CHARS,
@@ -50,51 +51,50 @@ from st_agent.l3.runtime.tool_search import (
 )
 from st_agent.l3.runtime.truncation import (
     RESULT_SUMMARY_CHARS,
-    RESULT_TRUNCATE_CHARS,
+    derive_result_chars,
     json_text,
+    preview_chars_for,
     result_will_truncate,
     summarize_result,
 )
 
 __all__ = [
     "CATALOG_EMPTY_REASON",
-    "DEFAULT_WORK_CONTEXT_BUDGET",
+    "RESULT_READ_WRAPPER_CHARS",
     "RESULT_SUMMARY_CHARS",
-    "RESULT_TRUNCATE_CHARS",
-    "TRUNCATED_PREVIEW_CHARS",
     "AskQuestion",
     "PlanStep",
     "TruncatedResult",
     "WorkContext",
     "WorkStep",
     "assemble_work_context",
+    "default_work_context_budget",
     "log_ref_of",
     "new_work_step",
     "result_will_truncate",
     "summarize_result",
 ]
 
-DEFAULT_WORK_CONTEXT_BUDGET = 16000
-"""工作上下文的默认规模预算（**字符数**近似）。
 
-取与 [`:data:`DEFAULT_CONTEXT_BUDGET <../chat/session.py>`] 同一量级（§1 未定默认值）
-——两处**共用口径**而**不共用装配逻辑**（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
-取值属实现口径，可经参数覆盖。
+def default_work_context_budget() -> int:
+    """未显式给预算时的**派生**值（端点窗口未知的保守 fallback）。
 
-2026-10-29 由 4000 提到 6000（[D-144](../../../项目管理/决策日志.md)），再提到 **12000**
-（[D-145](../../../项目管理/决策日志.md)）：M9 取数 / 同步 / 文档三条原语进场后，出厂工具
-目录为 **19 个能力**（12 官方 Skill + 7 内置原语），其模型可见形态实测约 **7.75k 字符**
-——6000 的余量不足 1.3k，历史与记忆在出厂配置下会被整条舍弃。12000 留出约 4.2k 给两者
-（与 D-144 时 6000 留出的余量同量级）；仍远低于 `investigate.context_budget` 的 32000 上限。
+    不再保留 ``16000`` 这类与端点窗口脱节的固定缺省（[`T-AGT-033.1`](../../../项目管理/tasks/T-AGT-033.1-预算信封与计量口径.md)）；
+    调用方应优先传入 :func:`~st_agent.l3.runtime.envelope.derive_context_envelope` 的结果。
+    """
+    from st_agent.l3.runtime.envelope import derive_context_envelope
 
-2026-11-02 再提到 **16000**（[D-160](../../../项目管理/决策日志.md)）：五个子协议动作
-（`sk_configure` / `sk_memory_op` / `sk_analyze` / `sk_train` / `sk_explain`）进场后，出厂
-工具目录为 **35 个能力**，模型可见形态实测 **12030 字符**——12000 下历史与记忆会被整条
-舍弃；16000 留出约 3.9k，维持与 D-144 / D-145 同量级的余量。
-"""
+    return derive_context_envelope(window_tokens=None).budget_chars
 
-TRUNCATED_PREVIEW_CHARS = 200
-"""截断形态保留的预览长度（字符数）——够让模型判断「这步拿到了什么量级的东西」。"""
+
+RESULT_READ_WRAPPER_CHARS = 200
+"""回读结果的 JSON 包装开销（``total_chars`` / ``text`` 等字段）——分片长度据此留出余量。"""
+
+DEFAULT_EXPECTED_STEPS = 8
+"""直接装配（不经循环）时用于派生单条结果上限的预期步数（与缺省步数上界同量级）。"""
+
+COMPACT_KEEP_RECENT_STEPS = 3
+"""步骤压缩时**保留全文**的近期步数；更早的步骤压成证据摘要。"""
 
 CATALOG_EMPTY_REASON = "工具目录为空（L1 注册表尚无 Skill），本次循环无可调用的能力（05 §10）"
 """空目录时的显式原因（GWT-2：不留「可调用但无工具」的上下文让模型空转）。"""
@@ -229,6 +229,12 @@ class WorkContext(BaseModel):
 
     task: str = Field(min_length=1)
     """本次循环要查证的任务（用户意图的中性转述）。"""
+    main_task: str = ""
+    """**会话主任务锚点**（[`T-AGT-033.3`](../../../项目管理/tasks/T-AGT-033.3-任务锚点与历史装载.md)）：
+    最近一条非跟进用户消息；当前消息是「继续」一类跟进语时，模型仍能回指原任务。
+    独立于历史预算，不被超大消息挤出。"""
+    follow_up: bool = False
+    """当前消息是否为**跟进语**（回指 ``main_task``）。"""
     system_prompt: str = ""
     """每轮请求携带的**确定性系统提示词**（[`T-AGT-031.1`](../../../项目管理/tasks/T-AGT-031.1-系统提示词.md)）。
 
@@ -259,6 +265,8 @@ class WorkContext(BaseModel):
     lazy_tools: bool = False
     """工具目录是否进入**惰性态**（模型可见形态超阈值；见 :func:`assemble_work_context`）。
     为假时目录整份下发，装配输出与未引入检索时逐字节一致。"""
+    compacted_steps: int = 0
+    """更早步骤中被压成**证据摘要**的条数（从最旧开始；近期步骤保留全文）。"""
     retrieved_tools: tuple[str, ...] = ()
     """已按检索**展开**的工具名（惰性态下完整描述与参数只给这些条目）。"""
     tool_search_note: str = ""
@@ -269,6 +277,10 @@ class WorkContext(BaseModel):
     subprotocol_note: str = ""
     """上一次**子协议动作**的显式说明（失败原因 / 训练复述 / 无卡说明；无即空）。
     动作由 L3 拦截承接、不进 ``steps``，故以本段回灌给模型（[05 §3.1](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。"""
+    budget_note: str = ""
+    """上一次**预算申请**的结果（批准 / 拒绝与原因；无申请即空）。"""
+    progress_note: str = ""
+    """**进展检查**的提示（同一结果同一 offset 重复读取；无重复即空）。"""
     subagent_note: str = ""
     """**子 Agent 的结论与引用**（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）。
     子步骤不进主上下文，只这一段的结论 + ``skill_run_id`` 引用；无派生即空。"""
@@ -284,6 +296,11 @@ class WorkContext(BaseModel):
     与历史 / 记忆不同，它是本次任务的新输入，故**恒保留**、不参与预算取舍。"""
     budget_chars: int = Field(ge=1)
     """本次装配的规模预算（字符数）。"""
+    max_result_chars: int = Field(default=1, ge=1)
+    """本次生效的单条结果上限（由步骤预算派生；截断 / 回读提示同源）。"""
+    result_read_chars: int = Field(default=1, ge=1)
+    """``sk_result_read`` 的推荐分片长度（单条上限扣包装后**再折半**——回读文本会作为
+    字符串整体进入 JSON，引号 / 换行转义最坏翻倍，折半保证回读这一片不会被二次截断）。"""
     size_chars: int = Field(ge=0)
     """本次装配的实际规模（:meth:`render_prompt` 带工具的字符数口径）。"""
     over_budget: bool = False
@@ -314,6 +331,8 @@ class WorkContext(BaseModel):
             （目录经 ``tools`` 入参下发），走 prompt 约定的端口则需要；由端口按自身形态选。
         """
         lines: list[str] = [f"任务：{self.task}"]
+        if self.follow_up and self.main_task and self.main_task != self.task:
+            lines.append(f"会话主任务（当前消息为跟进）：{self.main_task}")
         lines.append("")
         lines.extend(self._render_plan_lines())
         lines.append("")
@@ -325,6 +344,12 @@ class WorkContext(BaseModel):
             lines.append("")
         if self.subprotocol_note:
             lines.append(f"子协议动作反馈：{self.subprotocol_note}")
+            lines.append("")
+        if self.budget_note:
+            lines.append(f"预算申请反馈：{self.budget_note}")
+            lines.append("")
+        if self.progress_note:
+            lines.append(f"进展检查：{self.progress_note}")
             lines.append("")
         if self.subagent_note:
             lines.append("子 Agent 结果（子上下文不进本窗，仅回传结论与引用）：")
@@ -348,12 +373,19 @@ class WorkContext(BaseModel):
             lines.append("已执行动作与结果：无（尚未执行任何动作）")
         else:
             lines.append(f"已执行动作与结果（按发生顺序，共 {len(self.steps)} 步）：")
+            read_offsets = _read_offsets(self.steps)
             for index, step in enumerate(self.steps, start=1):
+                if index <= self.compacted_steps:
+                    lines.append(_render_compact_step(index, step))
+                    continue
                 lines.append(
                     f"{index}. 调用 {step.tool_name}（执行目标 {step.skill_id}）"
                 )
                 lines.append(f"   依据：{_json(step.arguments)}")
-                lines.append(f"   结果：{_render_result(step)}")
+                rendered = _render_result(
+                    step, read_chars=self.result_read_chars, read_offsets=read_offsets,
+                )
+                lines.append(f"   结果：{rendered}")
         lines.append("")
         lines.extend(self._render_memory_lines())
         return "\n".join(lines)
@@ -375,7 +407,12 @@ class WorkContext(BaseModel):
         return out
 
     def _render_history_lines(self) -> list[str]:
-        """会话历史段（**空态显式**，且区分「本来没有」与「被预算舍弃」）。"""
+        """会话历史段（**空态显式**，且区分「本来没有」与「被预算舍弃」）。
+
+        助手轮只给**紧凑摘要 + 证据引用**：``text`` 是中性摘要，载荷中只取
+        ``skill_run_id`` / ``log_ref`` 指向（[`T-AGT-033.3`](../../../项目管理/tasks/T-AGT-033.3-任务锚点与历史装载.md)）；
+        完整出站载荷仍留在会话记录里供 UI 回放，两者不混为一份。
+        """
         if self.history:
             out = [f"会话历史（近端 {len(self.history)} 条，按时间序）："]
             for message in self.history:
@@ -383,10 +420,9 @@ class WorkContext(BaseModel):
                 if getattr(message, "steer", False):
                     label = f"{label}（运行中插入）"
                 out.append(f"- {label}：{message.text}")
-                if message.payload is not None:
-                    # 助手轮的结果在出站载荷里（text 只是中性摘要）——不带它就答不了
-                    # 「上一轮拿到了什么」；超出预算时整条消息一起被舍（不半截丢）。
-                    out.append(f"  出站载荷：{_json(message.payload)}")
+                refs = _history_refs(message.payload)
+                if refs:
+                    out.append("  证据引用：" + "；".join(refs))
             return out
         dropped = sum(1 for item in self.dropped if item.startswith("history:"))
         if dropped:
@@ -453,6 +489,8 @@ def assemble_work_context(
     tools: Sequence[ToolEntry],
     steps: Sequence[WorkStep] = (),
     *,
+    main_task: str = "",
+    follow_up: bool = False,
     history: Sequence[ChatMessage] = (),
     memory: Sequence[MemorySlice] = (),
     steer_messages: Sequence[SteerMessage] = (),
@@ -460,13 +498,15 @@ def assemble_work_context(
     plan_updated: bool = False,
     plan_error: str = "",
     user_inputs: dict[str, Any] | None = None,
-    budget_chars: int = DEFAULT_WORK_CONTEXT_BUDGET,
-    max_result_chars: int = RESULT_TRUNCATE_CHARS,
+    budget_chars: int | None = None,
+    max_result_chars: int | None = None,
     retrieved_tools: Sequence[str] = (),
     tool_search_note: str = "",
     subagent_note: str = "",
     unknown_tool_note: str = "",
     subprotocol_note: str = "",
+    budget_note: str = "",
+    progress_note: str = "",
     tool_lazy_chars: int | None = None,
     system_prompt: str = "",
     system_prompt_version: str = "",
@@ -511,6 +551,10 @@ def assemble_work_context(
     """
     if not isinstance(task, str) or not task.strip():
         raise AgentRuntimeValidationError("循环任务不得为空（工作上下文的第一样，05 §10）")
+    if budget_chars is None:
+        budget_chars = default_work_context_budget()
+    if max_result_chars is None:
+        max_result_chars = derive_result_chars(budget_chars, DEFAULT_EXPECTED_STEPS)
     if not isinstance(budget_chars, int) or isinstance(budget_chars, bool) or budget_chars < 1:
         raise AgentRuntimeValidationError(f"规模预算须为 ≥1 的整数，得到 {budget_chars!r}")
     if not isinstance(max_result_chars, int) or isinstance(max_result_chars, bool) \
@@ -528,13 +572,18 @@ def assemble_work_context(
     if not entries:
         return ResultEnvelope.empty(CATALOG_EMPTY_REASON)
     ordered = _checked_steps(steps)
-    threshold = budget_chars if tool_lazy_chars is None else tool_lazy_chars
+    threshold = (
+        max(1, int(budget_chars * CATALOG_BUDGET_SHARE))
+        if tool_lazy_chars is None else tool_lazy_chars
+    )
     retrieved_names = set(retrieved_tools)
     retrieved = tuple(
         entry.name for entry in entries if entry.name in retrieved_names
     )
     context, size = _fit_budget(
         task=task,
+        main_task=str(main_task or ""),
+        follow_up=bool(follow_up),
         tools=entries,
         steps=tuple(_apply_truncation(step, max_result_chars) for step in ordered),
         history=_checked_history(history),
@@ -545,12 +594,16 @@ def assemble_work_context(
         plan_error=str(plan_error or ""),
         user_inputs=dict(user_inputs or {}),
         budget_chars=budget_chars,
+        max_result_chars=max_result_chars,
+        result_read_chars=max(1, (max_result_chars - RESULT_READ_WRAPPER_CHARS) // 2),
         lazy_tools=_tools_section_chars(entries) > threshold,
         retrieved_tools=retrieved,
         tool_search_note=str(tool_search_note or ""),
         subagent_note=str(subagent_note or ""),
         unknown_tool_note=str(unknown_tool_note or ""),
         subprotocol_note=str(subprotocol_note or ""),
+        budget_note=str(budget_note or ""),
+        progress_note=str(progress_note or ""),
         system_prompt=str(system_prompt or ""),
         system_prompt_version=str(system_prompt_version or ""),
     )
@@ -562,6 +615,8 @@ def assemble_work_context(
 def _fit_budget(
     *,
     task: str,
+    main_task: str = "",
+    follow_up: bool = False,
     tools: tuple[ToolEntry, ...],
     steps: tuple[WorkStep, ...],
     history: tuple[ChatMessage, ...],
@@ -572,12 +627,16 @@ def _fit_budget(
     plan_error: str,
     user_inputs: dict[str, Any],
     budget_chars: int,
+    max_result_chars: int,
+    result_read_chars: int,
     lazy_tools: bool,
     retrieved_tools: tuple[str, ...],
     tool_search_note: str,
     subagent_note: str,
     unknown_tool_note: str,
     subprotocol_note: str,
+    budget_note: str = "",
+    progress_note: str = "",
     system_prompt: str = "",
     system_prompt_version: str = "",
 ) -> tuple[WorkContext, int]:
@@ -590,20 +649,25 @@ def _fit_budget(
     kept_history = list(history)
     kept_memory = list(memory)
     kept_steers = list(steers)
+    compacted = 0
     dropped: list[str] = []
 
     def build() -> WorkContext:
         return WorkContext(
-            task=task, tools=tools, steps=steps,
+            task=task, main_task=main_task, follow_up=follow_up,
+            tools=tools, steps=steps,
             system_prompt=system_prompt, system_prompt_version=system_prompt_version,
             history=tuple(kept_history), memory=tuple(kept_memory),
             steers=tuple(kept_steers),
             plan=plan, plan_updated=plan_updated, plan_error=plan_error,
             user_inputs=dict(user_inputs),
             dropped=tuple(dropped), budget_chars=budget_chars, size_chars=0,
+            compacted_steps=compacted,
+            max_result_chars=max_result_chars, result_read_chars=result_read_chars,
             lazy_tools=lazy_tools, retrieved_tools=retrieved_tools,
             tool_search_note=tool_search_note, subagent_note=subagent_note,
             unknown_tool_note=unknown_tool_note, subprotocol_note=subprotocol_note,
+            budget_note=budget_note, progress_note=progress_note,
         )
 
     context = build()
@@ -621,6 +685,11 @@ def _fit_budget(
     while size > budget_chars and kept_steers:
         item = kept_steers.pop(0)
         dropped.append(f"steer:{item.received_at.isoformat()}")
+        context = build()
+        size = len(context.render_prompt(include_tools=True)) + len(system_prompt)
+    max_compact = max(0, len(steps) - COMPACT_KEEP_RECENT_STEPS)
+    while size > budget_chars and compacted < max_compact:
+        compacted += 1
         context = build()
         size = len(context.render_prompt(include_tools=True)) + len(system_prompt)
     return context, size
@@ -730,7 +799,7 @@ def _apply_truncation(step: WorkStep, max_result_chars: int) -> WorkStep:
         log_ref=step.log_ref,
         skill_run_id=step.skill_run_id,
         original_chars=len(payload),
-        preview=payload[:TRUNCATED_PREVIEW_CHARS],
+        preview=payload[:preview_chars_for(max_result_chars)],
     )
     return step.model_copy(
         update={
@@ -740,23 +809,92 @@ def _apply_truncation(step: WorkStep, max_result_chars: int) -> WorkStep:
     )
 
 
-def _render_result(step: WorkStep) -> str:
+def _render_compact_step(index: int, step: WorkStep) -> str:
+    """更早步骤的**证据摘要**（工具 / 参数 / 结论 / 执行标识；不冒充完整结果）。"""
+    args = _json(step.arguments)
+    if len(args) > 120:
+        args = args[:120] + "…"
+    return (
+        f"{index}. [已压缩] 调用 {step.tool_name}（执行目标 {step.skill_id}）"
+        f"；依据 {args}；状态 {step.envelope.status}"
+        f"；结论 {summarize_result(step.envelope)}"
+        f"；证据 {step.skill_run_id}"
+    )
+
+
+def _read_offsets(steps: Sequence[WorkStep]) -> dict[str, set[int]]:
+    """已通过 ``sk_result_read`` 读取过的 ``skill_run_id → offsets``（确定性）。"""
+    out: dict[str, set[int]] = {}
+    for step in steps:
+        if step.tool_name != "sk_result_read":
+            continue
+        run_id = str(step.arguments.get("skill_run_id") or "").strip()
+        offset = step.arguments.get("offset", 0)
+        if not run_id or not isinstance(offset, int) or isinstance(offset, bool):
+            continue
+        out.setdefault(run_id, set()).add(offset)
+    return out
+
+
+def _render_result(
+    step: WorkStep, *, read_chars: int = 1,
+    read_offsets: Mapping[str, set[int]] | None = None,
+) -> str:
     """一步结果的可读形态（ok 给载荷；其余给状态 + 原因——失败**照实**呈现）。
 
-    截断件后附**回读提示**：完整载荷仍在 ``execution_log`` 的记录里，模型可经
-    ``sk_result_read`` 按 ``offset`` 分片取回（T-AGT-017.2；[01 §5]）。
+    截断件只呈现 ``skill_run_id`` / ``next_offset`` / ``read_tool`` 与预览；
+    ``log_ref`` 是留痕路径，**不进模型可见面**（[`T-AGT-033.5`](../../../项目管理/tasks/T-AGT-033.5-截断回读与预览派生.md)）。
+    回读提示给出的分片长度由本轮预算派生，按该长度回读不会被二次截断；同一
+    ``skill_run_id`` 的同一 offset 已读过时显式提示「已读」，不把重复读取当新证据。
     """
     envelope = step.envelope
     if envelope.status == "ok":
-        rendered = _json(envelope.data)
         if step.truncated:
-            return rendered + (
-                "\n   （完整结果已外置；回读：sk_result_read"
-                f' {{"skill_run_id": "{step.skill_run_id}", "offset": 0, "max_chars": 2000}}'
-                "，越界会被拒绝）"
+            data = envelope.data
+            preview = getattr(data, "preview", "")
+            original = getattr(data, "original_chars", 0)
+            read_tool = getattr(data, "read_tool", "sk_result_read")
+            offset = int(getattr(data, "next_offset", 0) or 0)
+            seen = (read_offsets or {}).get(step.skill_run_id, set())
+            if offset in seen:
+                also = f"（offset {offset} 已读过；同一段重复读取不产生新证据）"
+            else:
+                also = "（按此分片回读不会被二次截断；续读用返回的 next_offset）"
+            return (
+                f"[已截断，原 {original} 字符；预览：{preview}]\n"
+                f"   回读：{read_tool} "
+                f'{{"skill_run_id": "{step.skill_run_id}", "offset": {offset}, '
+                f'"max_chars": {read_chars}}}' + also
             )
-        return rendered
+        return _json(envelope.data)
     return f"[{envelope.status}] {envelope.reason or ''}".rstrip()
+
+
+def _history_refs(payload: Any, *, limit: int = 20) -> tuple[str, ...]:
+    """从助手轮出站载荷里提取**证据引用**（``skill_run_id`` / ``log_ref``）。
+
+    只做**指向**，不复制完整载荷；遍历是确定性的（字典按键排序），同一输入逐字节一致。
+    """
+    found: list[str] = []
+
+    def walk(value: Any) -> None:
+        if len(found) >= limit:
+            return
+        if isinstance(value, Mapping):
+            for key in sorted(value, key=str):
+                item = value[key]
+                if key in ("skill_run_id", "log_ref") and isinstance(item, str) and item.strip():
+                    text = f"{key}={item.strip()}"
+                    if text not in found:
+                        found.append(text)
+                else:
+                    walk(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                walk(item)
+
+    walk(payload)
+    return tuple(found)
 
 
 def _summary(description: str) -> str:

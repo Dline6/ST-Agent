@@ -23,7 +23,6 @@ from st_agent.l3.runtime import (
     AGENT_GATE_METHOD,
     DEFAULT_MAX_LLM_CALLS,
     DEFAULT_MAX_STEPS,
-    DEFAULT_WORK_CONTEXT_BUDGET,
     GateDecision,
     ToolCallProtocol,
     TurnResult,
@@ -594,10 +593,11 @@ def test_gwt1_session_history_and_memory_reach_the_model_context(runner, tools):
     context = protocol.contexts[0]
     assert context.history == history
     assert context.memory == memory
-    assert context.budget_chars == DEFAULT_WORK_CONTEXT_BUDGET
+    assert context.budget_chars == outcome.budget_chars
     assert "会话历史（近端 1 条" in context.render_prompt(include_tools=True)
     assert outcome.session_id == SESSION
-    assert outcome.budget_chars == DEFAULT_WORK_CONTEXT_BUDGET
+    assert outcome.budget_chars > 0
+    assert outcome.context_window_tokens > 0
     assert outcome.dropped == ()
 
 
@@ -612,3 +612,89 @@ def test_gwt3_over_budget_drops_are_carried_on_the_outcome(runner, tools):
         f"history:msg_{0:020x}",
         f"history:msg_{1:020x}",
     )
+
+
+# ───────────────────────── T-AGT-033 · 信封 / 自调 / 进展检查 ─────────────────────────
+
+
+def _with_control_tools(tools, *names):
+    from st_agent.l1.skills.tool_catalog import ToolEntry
+
+    extra = tuple(
+        ToolEntry(
+            name=name, skill_id=f"{name}_v1.0", description=f"{name} 控制动作",
+            parameters={"type": "object", "properties": {}},
+        )
+        for name in names
+    )
+    return tuple(tools) + extra
+
+
+def test_context_envelope_falls_back_when_window_is_unknown(runner, tools):
+    outcome = drive(runner, tools, FakeProtocol([finish()]))
+    assert outcome.context_window_tokens == 32768
+    assert "未知" in outcome.context_envelope_note
+    assert outcome.budget_chars > 0
+
+
+def test_context_overflow_terminates_before_the_request(runner, tools):
+    """端点窗口装不下目录 + 任务时，显式以 ``context_overflow`` 收口。"""
+    outcome = drive(
+        runner, tools, FakeProtocol([finish()]), context_window_tokens=200,
+    )
+    assert outcome.termination == "context_overflow"
+    assert "窗口" in outcome.reason
+    assert outcome.context_window_tokens == 200
+
+
+def test_budget_request_is_approved_inside_the_envelope(runner, tools):
+    catalog = _with_control_tools(tools, "sk_budget_request")
+    protocol = FakeProtocol([
+        call("sk_budget_request", {"extra_steps": 1}, call_id="call_b"),
+        finish(),
+    ])
+    outcome = drive(runner, catalog, protocol)
+    assert outcome.termination == "finished"
+    assert len(outcome.budget_requests) == 1
+    record = outcome.budget_requests[0]
+    assert record.approved is True and record.extra_steps == 1
+    assert "预算申请反馈：已批准" in protocol.contexts[1].render_prompt()
+
+
+def test_budget_request_beyond_the_envelope_is_refused(runner, tools):
+    catalog = _with_control_tools(tools, "sk_budget_request")
+    protocol = FakeProtocol([
+        call("sk_budget_request", {"extra_steps": 100}, call_id="call_b"),
+        finish(),
+    ])
+    outcome = drive(runner, catalog, protocol)
+    assert outcome.termination == "finished"
+    assert outcome.budget_requests[0].approved is False
+    assert "余量" in outcome.budget_requests[0].reason
+    assert "预算申请反馈" in protocol.contexts[1].render_prompt()
+
+
+def test_repeated_read_of_the_same_offset_terminates_as_no_progress(runner, tools):
+    catalog = _with_control_tools(tools, "sk_result_read")
+    runner.register_executor(
+        "sk_result_read_v1.0",
+        lambda ctx, params: ResultEnvelope.ok({"text": "chunk", "next_offset": 0}),
+    )
+    step_call = call("sk_result_read", {
+        "skill_run_id": "run_0123456789abcdef0123", "offset": 0,
+    })
+    outcome = drive(
+        runner, catalog,
+        FakeProtocol([step_call, step_call, step_call, finish()]),
+    )
+    assert outcome.termination == "no_progress"
+    assert "重复读取 3 次" in outcome.reason
+
+
+def test_session_layer_drops_are_carried_on_the_outcome(runner, tools):
+    """会话层的 ``dropped`` 与工作层取舍合并进同一份留痕（不出现「会话层丢了、报告空」）。"""
+    outcome = drive(
+        runner, tools, FakeProtocol([finish()]),
+        prior_dropped=("history:msg_00000000000000000001",),
+    )
+    assert outcome.dropped == ("history:msg_00000000000000000001",)

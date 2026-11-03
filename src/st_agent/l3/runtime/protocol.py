@@ -86,6 +86,15 @@ class ToolCallProtocol(Protocol):
         """端点是否声明支持本协议所需的工具调用（缺省为假时循环 fail-closed）。"""
         ...
 
+    def context_window_tokens(self) -> int | None:
+        """端点声明的上下文窗口（``max_context_tokens``）。
+
+        返回 ``None`` 表示端点能力读不出——循环按保守 fallback 派生上下文信封并
+        显式标注（[05 §10](../../../docs/技术架构-v2/05-L3-对话主入口.md)）；**不得**
+        假报一个看似精确的值。
+        """
+        ...
+
     def invoke_turn(
         self,
         context: WorkContext,
@@ -144,6 +153,17 @@ class NativeToolCallProtocol:
         except Exception:  # noqa: BLE001 —— 读不出即「没有可用的声明」，一律按不支持
             return False
         return bool(endpoint.capability.supports_function_calling)
+
+    def context_window_tokens(self) -> int | None:
+        """读端点 `max_context_tokens`（端点未登记 / 读不出 ⇒ ``None``，不猜）。"""
+        try:
+            endpoint = self._endpoints.get(self._endpoint_id)
+        except Exception:  # noqa: BLE001 —— 读不出即「窗口未知」，交循环走保守 fallback
+            return None
+        value = getattr(getattr(endpoint, "capability", None), "max_context_tokens", None)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 1:
+            return value
+        return None
 
     def invoke_turn(
         self,

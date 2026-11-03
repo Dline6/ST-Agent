@@ -13,7 +13,8 @@
 
 **本叶不接组合根**：安装入口由 :func:`st_agent.l1.runtime.build_l1_runtime` 与官方
 Pack 同点调用；种子表 :data:`BUILTIN_PRIMITIVES` 目前含本地数据面、取数 / 同步、
-文档取数、循环控制、子协议动作、文件面、开放网络、本地命令、结果回读与 MCP resources 共 23 条原语。
+文档取数、循环控制（计划 / 提问 / 预算申请）、子协议动作、文件面、开放网络、本地命令、
+结果回读与 MCP resources 共 24 条原语。
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from typing import Any
 from st_agent.contracts.capability_types import Provenance
 from st_agent.contracts.registry_types import validate_permissions
 from st_agent.l1.builtin.ask_user import ASK_USER
+from st_agent.l1.builtin.budget_request import BUDGET_REQUEST
 from st_agent.l1.builtin.data_fetch import DATA_FETCH
 from st_agent.l1.builtin.data_status import DATA_STATUS
 from st_agent.l1.builtin.data_sync import DATA_SYNC
@@ -47,6 +49,7 @@ __all__ = ["BUILTIN_PRIMITIVES", "install_builtins"]
 
 BUILTIN_PRIMITIVES: tuple[BuiltinPrimitive, ...] = (
     LOCAL_SQL, DATA_STATUS, DATA_SYNC, DATA_FETCH, DOCS, PLAN_UPDATE, ASK_USER,
+    BUDGET_REQUEST,
     FILE_READ, FILE_GLOB, FILE_GREP, FILE_WRITE, WEB_SEARCH, WEB_FETCH,
     RUN_COMMAND, RESULT_READ, SPAWN_AGENT, *SUB_PROTOCOL_PRIMITIVES,
     MCP_LIST_RESOURCES, MCP_READ_RESOURCE,

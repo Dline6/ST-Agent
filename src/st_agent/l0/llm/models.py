@@ -79,15 +79,31 @@ def check_tool_name(value: str) -> str:
     return value
 
 
-def estimate_tokens(text: str) -> int:
-    """本地 token 估算（无分词器时的计数口径：每 4 字符计 1 token，向上取整）。
+def _is_cjk(char: str) -> bool:
+    """是否中日韩表意字符（这些字符的 token 密度接近 1 字符/token）。"""
+    code = ord(char)
+    return (
+        0x3400 <= code <= 0x4DBF        # CJK 扩展 A
+        or 0x4E00 <= code <= 0x9FFF     # CJK 基本区
+        or 0xF900 <= code <= 0xFAFF     # CJK 兼容表意
+        or 0x3040 <= code <= 0x30FF     # 日文假名
+        or 0xAC00 <= code <= 0xD7AF     # 韩文音节
+    )
 
-    仅用于本地用量展示（02 §4「本地统计，不外发」）；提供方账单以其实际
-    计量为准。空串计 0。
+
+def estimate_tokens(text: str) -> int:
+    """本地 token 估算（**中文保守口径**；02 §4「本地统计，不外发」）。
+
+    没有分词器时按「中日韩字符 1 字符 ≈ 1 token、其余 4 字符 ≈ 1 token」估算：
+    中文比旧的统一 4 字符/token 更接近真实，且**不会低估**——端点上限检查宁可
+    提前判超限，也不把注定被拒的请求发出去（[`T-AGT-033.1`](../../../项目管理/tasks/T-AGT-033.1-预算信封与计量口径.md)）。
+    提供方账单以其实际计量为准。空串计 0。
     """
     if not text:
         return 0
-    return (len(text) + 3) // 4
+    cjk = sum(1 for char in text if _is_cjk(char))
+    other = len(text) - cjk
+    return cjk + (other + 3) // 4
 
 
 class EndpointCapability(BaseModel):
@@ -306,7 +322,7 @@ class LlmFailure(BaseModel):
 
     kind: Literal[
         "timeout", "rate_limited", "server_error", "connection", "unavailable",
-        "auth", "validation", "capability", "cancelled", "unknown",
+        "auth", "validation", "capability", "cancelled", "context_overflow", "unknown",
     ] = "unknown"
     retryable: bool = False
     stage: Literal["", "connect", "first_byte", "stream"] = ""

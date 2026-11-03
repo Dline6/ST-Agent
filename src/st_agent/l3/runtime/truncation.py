@@ -6,8 +6,10 @@
 - 运行事件（[`loop.py`](loop.py) 的 ``step_finished``）——标 ``truncated`` 并给结果摘要；
 - 循环留痕与终轮证据表（[`report.py`](report.py) / 描述件）——同一判定标「结果已截断」。
 
-本模块**只**依赖契约层的信封模型（无 L1 / L2 / 循环内模块的 import），故可被
-``render`` 侧直接引用而不成环（``report`` 反向消费 ``render``）。
+阈值**由本轮预算派生**（[`T-AGT-033.5`](../../../项目管理/tasks/T-AGT-033.5-截断回读与预览派生.md)）：
+单条上限 = ``clamp(步骤预算 / 预期剩余步数, 400, 4000)``，预览 = ``min(400, 上限/3)``，
+不再写死 1200 / 200。本模块**只**依赖契约层的信封模型（无 L1 / L2 / 循环内模块的 import），
+故可被 ``render`` 侧直接引用而不成环（``report`` 反向消费 ``render``）。
 """
 
 from __future__ import annotations
@@ -19,20 +21,38 @@ from st_agent.contracts.result_envelope import ResultEnvelope
 
 __all__ = [
     "RESULT_SUMMARY_CHARS",
-    "RESULT_TRUNCATE_CHARS",
+    "RESULT_TRUNCATE_MAX",
+    "RESULT_TRUNCATE_MIN",
+    "derive_result_chars",
     "json_text",
+    "preview_chars_for",
     "result_will_truncate",
     "summarize_result",
 ]
 
-RESULT_TRUNCATE_CHARS = 1200
-"""单条结果的截断阈值（字符数；超者截断 + 留指针）。
+RESULT_TRUNCATE_MIN = 400
+"""单条结果上限的下限（字符）——再紧也要让模型看清一条证据的头部。"""
 
-取值属实现口径：在当前缺省预算（16000 字符）下，单条结果占十分之一以上即无谓挤占后续步骤的位置。
-"""
+RESULT_TRUNCATE_MAX = 4000
+"""单条结果上限的上限（字符）——再多就该用 ``sk_result_read`` 分片回读。"""
 
 RESULT_SUMMARY_CHARS = 200
-"""运行面板的结果摘要长度（字符数）——与截断预览同量级，只够判断拿到了什么，不替代完整结果。"""
+"""运行面板的结果摘要长度（字符数）——只够判断拿到了什么，不替代完整结果。"""
+
+PREVIEW_MAX_CHARS = 400
+"""截断预览的上限（字符数；实际取 ``min(400, 单条上限/3)``）。"""
+
+
+def derive_result_chars(step_budget_chars: int, remaining_steps: int) -> int:
+    """由**本轮步骤预算**与**预期剩余步数**派生单条结果上限（确定性）。"""
+    budget = max(1, int(step_budget_chars))
+    steps = max(1, int(remaining_steps))
+    return max(RESULT_TRUNCATE_MIN, min(RESULT_TRUNCATE_MAX, budget // (steps + 1)))
+
+
+def preview_chars_for(max_result_chars: int) -> int:
+    """截断预览长度：``min(400, 单条上限/3)``（随预算变化，不写死）。"""
+    return max(1, min(PREVIEW_MAX_CHARS, int(max_result_chars) // 3))
 
 
 def json_text(value: Any) -> str:

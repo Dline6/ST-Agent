@@ -109,6 +109,7 @@ _OUTPUT_SCHEMA: dict[str, Any] = {
         "offset": {"type": "integer"},
         "next_offset": {"type": "integer"},
         "truncated": {"type": "boolean"},
+        "max_chars": {"type": "integer"},
         "text": {"type": "string"},
     },
 }
@@ -157,6 +158,7 @@ def _executor_factory(context: Any) -> Any:
             "offset": offset,
             "next_offset": next_offset,
             "truncated": next_offset < total,
+            "max_chars": max_chars,
             "text": chunk,
         })
 
@@ -175,17 +177,12 @@ def _normalize_offset(raw: Any) -> tuple[int, str]:
 
 
 def _normalize_max_chars(raw: Any) -> tuple[int, str]:
-    """``max_chars`` 归一化（缺省 2000；越界 / 非整数即拒）。"""
+    """``max_chars`` 归一化（缺省 2000；**越界钳制并如实回写**，非整数即拒）。"""
     if raw is None:
         return DEFAULT_RESULT_READ_CHARS, ""
     if isinstance(raw, bool) or not isinstance(raw, int):
         return 0, f"max_chars 须为整数，得到 {type(raw).__name__}"
-    if raw < 1 or raw > MAX_RESULT_READ_CHARS:
-        return 0, (
-            f"max_chars {raw} 越界（取值域 1–{MAX_RESULT_READ_CHARS}；"
-            "要更多内容请用 next_offset 续读）"
-        )
-    return raw, ""
+    return max(1, min(raw, MAX_RESULT_READ_CHARS)), ""
 
 
 def _now() -> datetime:

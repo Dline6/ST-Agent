@@ -24,7 +24,6 @@ from st_agent.l3.runtime import (
     CONTEXT_BUDGET_CONFIG_ID,
     DEFAULT_MAX_LLM_CALLS,
     DEFAULT_MAX_STEPS,
-    DEFAULT_WORK_CONTEXT_BUDGET,
     MAX_LLM_CALLS_CEILING,
     MAX_LLM_CALLS_CONFIG_ID,
     MAX_STEPS_CEILING,
@@ -118,7 +117,7 @@ def test_gwt1_entries_registered_with_both_channels(store) -> None:
     # T-AGT-009.3：工作上下文预算也是本族条目（缺省取装配件常量，单一事实源）
     budget_entry = facade.entry(CONTEXT_BUDGET_CONFIG_ID)
     assert budget_entry is not None
-    assert budget_entry.default == DEFAULT_WORK_CONTEXT_BUDGET
+    assert budget_entry.default == 0
     assert "maximum" not in budget_entry.value_schema
     assert CONTEXT_BUDGET_CONFIG_ID in ids
 

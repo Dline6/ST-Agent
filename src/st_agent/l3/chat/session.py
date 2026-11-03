@@ -48,8 +48,7 @@ from st_agent.l3.errors import SessionNotFoundError, SessionValidationError
 
 __all__ = [
     "CHAT_PARTITION",
-    "DEFAULT_CONTEXT_BUDGET",
-    "MEMORY_BUDGET_SHARE",
+    "FOLLOW_UP_PHRASES",
     "ROLE_LABELS",
     "SESSION_PREFIX",
     "ChatMessage",
@@ -61,6 +60,8 @@ __all__ = [
     "SessionStore",
     "assemble_context",
     "checked_session",
+    "default_context_budget",
+    "is_follow_up",
     "new_message_id",
     "new_session_id",
 ]
@@ -71,11 +72,42 @@ CHAT_PARTITION = "chat_history"
 SESSION_PREFIX = "session/"
 """``chat_history`` 分区内会话记录的路径前缀（一会话一文件）。"""
 
-DEFAULT_CONTEXT_BUDGET = 4000
-"""上下文装配的默认 Token 预算（字符数近似；§1 未定默认值）。"""
+FOLLOW_UP_PHRASES: tuple[str, ...] = (
+    "继续", "接着", "然后", "下一步", "往下", "再说说", "展开", "说下去",
+    "continue", "go on", "next",
+)
+"""跟进语（确定性匹配；命中即视为对上一条非跟进任务的回指）。
 
-MEMORY_BUDGET_SHARE = 0.5
-"""预算中划给记忆切片的比例（其余留给会话消息）——两者共用一份预算的分配口径。"""
+只收**短句**：整句去掉标点空白后等于或以上述词开头，且长度不超过
+:data:`_FOLLOW_UP_MAX_CHARS`——长句里含「继续」多半是新问题，不能误判。
+"""
+
+_FOLLOW_UP_MAX_CHARS = 12
+
+
+def is_follow_up(text: str) -> bool:
+    """该用户消息是否为**跟进语**（确定性规则；不引入额外 LLM 调用）。"""
+    normalized = "".join(
+        char for char in str(text or "").strip().lower()
+        if not char.isspace() and char not in "，。！？、,.!?；;：:"
+    )
+    if not normalized or len(normalized) > _FOLLOW_UP_MAX_CHARS:
+        return False
+    return any(
+        normalized == phrase or normalized.startswith(phrase)
+        for phrase in FOLLOW_UP_PHRASES
+    )
+
+
+def default_context_budget() -> int:
+    """未显式给预算时的**派生**值（端点窗口未知的保守 fallback）。
+
+    不再保留 ``4000`` 这类与端点窗口脱节的固定缺省
+    （[`T-AGT-033.1`](../../../项目管理/tasks/T-AGT-033.1-预算信封与计量口径.md)）。
+    """
+    from st_agent.l3.runtime.envelope import derive_context_envelope
+
+    return derive_context_envelope(window_tokens=None).budget_chars
 
 ChatRole = Literal["user", "agent"]
 """消息角色。**功能化取值**（铁律 2：不用人名 / 人格化称谓）。"""
@@ -252,6 +284,12 @@ class SessionContext(BaseModel):
     used: int
     """消息 + 切片合计占用的字符数（**不超过** ``token_budget``）。"""
     as_of: datetime | None = None
+    dropped: tuple[str, ...] = ()
+    """被预算**舍弃**的项（``history:<message_id>``）——如实标注，不静默丢。"""
+    main_task: str = ""
+    """**会话主任务锚点**（最近一条非跟进用户消息）——独立于历史预算，不被挤出。"""
+    follow_up: bool = False
+    """当前（最后一条）用户消息是否为跟进语（回指 ``main_task``）。"""
 
 
 class SessionStore:
@@ -507,9 +545,11 @@ class SessionStore:
         reader: MemoryReader,
         *,
         topic: str = "",
-        token_budget: int = DEFAULT_CONTEXT_BUDGET,
+        token_budget: int | None = None,
     ) -> SessionContext:
         """装配会话上下文（会话消息 + 记忆切片，共用 ``token_budget``）。"""
+        if token_budget is None:
+            token_budget = default_context_budget()
         if token_budget < 1:
             raise SessionValidationError("token_budget 须 ≥ 1")
         return assemble_context(
@@ -524,35 +564,35 @@ def assemble_context(
     *,
     store: SessionStore | None = None,
     topic: str = "",
-    token_budget: int = DEFAULT_CONTEXT_BUDGET,
+    token_budget: int | None = None,
 ) -> SessionContext:
-    """装配会话上下文：默认链路的**近端若干条**消息 + 记忆切片。
+    """装配会话上下文：**主任务锚点** + 近端消息 + 记忆切片。
 
-    预算分配（假设 A4）：记忆切片先划 ``token_budget * MEMORY_BUDGET_SHARE``，
-    余下留给消息；消息**优先保近**——从链路末端往前收，收不下即停（与 L2 的截断
-    同向：超预算即停，不跳过大的去凑小的）。两侧合计**不超** ``token_budget``。
+    预算分配（[`T-AGT-033.1`](../../../项目管理/tasks/T-AGT-033.1-预算信封与计量口径.md)）：
+    记忆按**实际命中**占用预算，未用部分回流给历史（不再固定 50%）；历史优先保近端，
+    遇到**单条超过整份预算**的超大消息则跳过并记 ``dropped``，而不是把更早内容一起
+    丢掉（[`T-AGT-033.3`](../../../项目管理/tasks/T-AGT-033.3-任务锚点与历史装载.md)）。
+
+    ``main_task`` 是**独立于历史预算的锚点**：最近一条非跟进用户消息；当前消息若是
+    跟进语（「继续」等），它仍指向原任务，不会被超大消息挤出。
     """
+    if token_budget is None:
+        token_budget = default_context_budget()
     if token_budget < 1:
         raise SessionValidationError("token_budget 须 ≥ 1")
 
     chain = store.chain(session) if store is not None else _default_chain(session)
-    memory_budget = max(1, int(token_budget * MEMORY_BUDGET_SHARE))
-    message_budget = max(0, token_budget - memory_budget)
-
-    kept: list[ChatMessage] = []
-    used = 0
-    for m in reversed(chain):
-        size = len(m.model_dump_json())
-        if used + size > message_budget:
-            break
-        kept.append(m)
-        used += size
-    kept.reverse()
+    main_task, follow_up = _task_anchor(chain)
+    current_task = _current_user_text(chain) or main_task
 
     memory = reader.query(SliceQuery(
-        task_type="chat", topic=topic, token_budget=memory_budget,
+        task_type="chat", topic=topic or (main_task if follow_up else current_task),
+        token_budget=token_budget,
     ))
-    used += sum(len(s.model_dump_json()) for s in memory.slices)
+    memory_used = sum(len(s.model_dump_json()) for s in memory.slices)
+    message_budget = max(0, token_budget - memory_used)
+    kept, dropped, message_used = _select_history(chain, message_budget)
+    used = message_used + memory_used
 
     if not kept and not memory.slices:
         envelope = ResultEnvelope.empty(
@@ -561,9 +601,68 @@ def assemble_context(
     else:
         envelope = ResultEnvelope.ok(list(kept), as_of=memory.as_of)
     return SessionContext(
-        envelope=envelope, messages=tuple(kept), memory=memory,
+        envelope=envelope, messages=kept, memory=memory,
         token_budget=token_budget, used=used, as_of=memory.as_of,
+        dropped=dropped, main_task=main_task, follow_up=follow_up,
     )
+
+
+def _task_anchor(chain: tuple[ChatMessage, ...]) -> tuple[str, bool]:
+    """主任务锚点 + 当前消息是否跟进（确定性规则；不额外调用模型）。"""
+    main = ""
+    first_user = ""
+    for message in chain:
+        if message.role != "user":
+            continue
+        if not first_user:
+            first_user = message.text
+        if not is_follow_up(message.text):
+            main = message.text
+    current = chain[-1] if chain else None
+    follow_up = bool(
+        current is not None and current.role == "user" and is_follow_up(current.text)
+    )
+    return (main or first_user), follow_up
+
+
+def _current_user_text(chain: tuple[ChatMessage, ...]) -> str:
+    """链路里最后一条用户消息的文本（无用户消息即空）。"""
+    for message in reversed(chain):
+        if message.role == "user":
+            return message.text
+    return ""
+
+
+def _select_history(
+    chain: tuple[ChatMessage, ...], message_budget: int,
+) -> tuple[tuple[ChatMessage, ...], tuple[str, ...], int]:
+    """自近向远选消息；**超大消息跳过**（不 ``break`` 连累更早内容）。
+
+    返回（保留消息、被舍项、占用字符数）。被舍项含两类：单条就超过整份预算的超大
+    消息，以及预算用尽后未能进入的较早消息——两者都如实标注，不静默丢。
+    """
+    kept: list[ChatMessage] = []
+    dropped: list[str] = []
+    used = 0
+    for message in reversed(chain):
+        size = len(message.model_dump_json())
+        if used + size <= message_budget:
+            kept.append(message)
+            used += size
+            continue
+        if size > message_budget:
+            dropped.append(f"history:{message.message_id}")
+            continue
+        break
+    kept_ids = {message.message_id for message in kept}
+    for message in chain:
+        if message.message_id in kept_ids:
+            continue
+        key = f"history:{message.message_id}"
+        if key not in dropped:
+            dropped.append(key)
+    kept.reverse()
+    return tuple(kept), tuple(dropped), used
 
 
 def _default_chain(session: ChatSession) -> tuple[ChatMessage, ...]:

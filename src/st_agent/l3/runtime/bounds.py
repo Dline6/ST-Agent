@@ -38,7 +38,6 @@ from st_agent.l1.registry.naming import (
     new_change_id,
 )
 from st_agent.l3.errors import AgentRuntimeValidationError
-from st_agent.l3.runtime.context import DEFAULT_WORK_CONTEXT_BUDGET
 from st_agent.l3.runtime.loop import (
     DEFAULT_LLM_MAX_ATTEMPTS,
     DEFAULT_LLM_RETRY_BACKOFF_MS,
@@ -103,8 +102,9 @@ MAX_STEPS_CEILING = 32
 MAX_LLM_CALLS_CEILING = 64
 """LLM 调用次数上界的**建议上限**（防跑飞的提示值，缺省 12 的 5×）。"""
 
-CONTEXT_BUDGET_CEILING = 32000
-"""工作上下文预算的**建议上限**（字符数；缺省 16000 的 2×）。"""
+CONTEXT_BUDGET_CEILING = 128000
+"""上下文封顶的**建议上限**（token 数；2026-11-03 起 `investigate.context_budget`
+是可选封顶，0＝按端点窗口自动派生——[`T-AGT-033.1`](../../../项目管理/tasks/T-AGT-033.1-预算信封与计量口径.md)）。"""
 
 
 def _system_now() -> datetime:
@@ -128,6 +128,8 @@ _MAX_STEPS_ENTRY = ConfigEntry(
     description_for_chat=(
         "自主查证循环一次最多执行多少步（每步＝调用一个工具）。"
         f"缺省 {DEFAULT_MAX_STEPS}；到界即终止并如实告知「达到上界」，不假装完成。"
+        "步数与上下文信封共同约束一次运行：上下文按端点窗口自动派生、按轮压缩，"
+        "不需要用户另配固定字符预算。"
         f"建议不超过 {MAX_STEPS_CEILING}；超出仍可保存"
     ),
     panel_form_spec=PanelField(
@@ -169,28 +171,28 @@ _MAX_LLM_CALLS_ENTRY = ConfigEntry(
 
 _CONTEXT_BUDGET_ENTRY = ConfigEntry(
     config_id=CONTEXT_BUDGET_CONFIG_ID,
-    display_name="自主查证上下文预算",
-    value_schema={"type": "integer", "minimum": 1},
-    default=DEFAULT_WORK_CONTEXT_BUDGET,
+    display_name="自主查证上下文封顶（token，0＝自动）",
+    value_schema={"type": "integer", "minimum": 0},
+    default=0,
     description_for_chat=(
-        "自主查证循环每一轮的上下文最多占多少字符（含任务、工具目录、已执行动作、"
-        "近端会话历史与记忆切片）。"
-        f"缺省 {DEFAULT_WORK_CONTEXT_BUDGET}；超限时先舍记忆、再舍最早的历史消息，"
+        "自主查证循环每一轮的上下文硬边界默认由**端点窗口 × 安全比例**派生；"
+        "本项可选地再封一个 token 上限，0 表示不封顶、完全按端点窗口自动派生。"
+        "超限时先舍记忆、再舍最早的历史消息、最后压缩更早步骤，"
         "并在运行报告里如实标注被舍项。"
-        f"建议不超过 {CONTEXT_BUDGET_CEILING}；超出仍可保存"
+        f"建议不超过 {CONTEXT_BUDGET_CEILING} tokens；超出仍可保存"
     ),
     panel_form_spec=PanelField(
         widget="number",
-        label="自主查证上下文预算",
+        label="自主查证上下文封顶（token）",
         help_text=(
-            f"每轮自查证上下文的最大字符数；缺省 {DEFAULT_WORK_CONTEXT_BUDGET}，"
+            "0＝按端点窗口自动派生；大于 0 时作为额外的 token 硬顶。"
             f"建议不超过 {CONTEXT_BUDGET_CEILING}（可超出）"
         ),
     ),
     scope="global",
     change_policy=ChangePolicy(requires_confirmation=True),
 )
-"""工作上下文预算条目（[05 §10](../../../docs/技术架构-v2/05-L3-对话主入口.md)，落 [01 §7](../../../docs/技术架构-v2/01-平台共享契约.md)）。"""
+"""工作上下文封顶条目（[05 §10](../../../docs/技术架构-v2/05-L3-对话主入口.md)，落 [01 §7](../../../docs/技术架构-v2/01-平台共享契约.md)）。"""
 
 _LLM_TIMEOUT_ENTRY = ConfigEntry(
     config_id=LLM_TIMEOUT_CONFIG_ID,
@@ -273,7 +275,7 @@ _ENTRIES: dict[str, ConfigEntry] = {
 _DEFAULTS: dict[str, int] = {
     MAX_STEPS_CONFIG_ID: DEFAULT_MAX_STEPS,
     MAX_LLM_CALLS_CONFIG_ID: DEFAULT_MAX_LLM_CALLS,
-    CONTEXT_BUDGET_CONFIG_ID: DEFAULT_WORK_CONTEXT_BUDGET,
+    CONTEXT_BUDGET_CONFIG_ID: 0,
     LLM_TIMEOUT_CONFIG_ID: DEFAULT_LLM_TIMEOUT_MS,
     LLM_IDLE_TIMEOUT_CONFIG_ID: DEFAULT_LLM_IDLE_TIMEOUT_MS,
     LLM_MAX_ATTEMPTS_CONFIG_ID: DEFAULT_LLM_MAX_ATTEMPTS,
@@ -281,7 +283,7 @@ _DEFAULTS: dict[str, int] = {
 }
 
 _MINIMUMS: dict[str, int] = {
-    config_id: 0 if config_id == LLM_RETRY_BACKOFF_CONFIG_ID else 1
+    config_id: 0 if config_id in (LLM_RETRY_BACKOFF_CONFIG_ID, CONTEXT_BUDGET_CONFIG_ID) else 1
     for config_id in _DEFAULTS
 }
 
@@ -316,8 +318,19 @@ class LoopBounds:
         """生效的 **LLM 调用次数**上界（未落值 → 缺省 12；损坏 / 越界 → 显式抛）。"""
         return self._read(MAX_LLM_CALLS_CONFIG_ID)
 
+    def context_budget_tokens(self) -> int:
+        """生效的**上下文封顶**（token；0 即不封顶、按端点窗口自动派生）。
+
+        未落值 → 缺省 0；损坏 / 越界 → 显式抛。
+        """
+        return self._read(CONTEXT_BUDGET_CONFIG_ID)
+
     def budget_chars(self) -> int:
-        """生效的**工作上下文预算**（未落值 → 缺省 16000；损坏 / 越界 → 显式抛）。"""
+        """兼容读面——返 0 表示「未封顶」；**不再**是字符预算。
+
+        新调用方请用 :meth:`context_budget_tokens`；本方法只为既有调用方保留一个
+        可迁移的读面，装配路径已改为按端点窗口派生信封。
+        """
         return self._read(CONTEXT_BUDGET_CONFIG_ID)
 
     def llm_timeout_ms(self) -> int:

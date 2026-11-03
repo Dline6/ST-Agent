@@ -8,9 +8,9 @@ arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P0
 milestone: M11
 depends_on: [T-AGT-004.2, T-AGT-031.2, T-AGT-033.1, T-AGT-033.3]
-status: todo
-decisions: [D-090, D-154]
-verify:
+status: done
+decisions: [D-090, D-154, D-166]
+verify: D-166；范围套件 4386 passed / 4 例测试期望滞后（已修正并定向复验）/ 2 例本机 test_shell 环境性 ERROR；改动区复跑 655 passed；live 3 passed；verify_docs --strict PASS。详见执行日志对应条目；commit `00f11a5`。
 ---
 
 # T-AGT-033.4 · 长任务步骤压缩与预算联动
@@ -30,14 +30,20 @@ verify:
 
 ## 接口面
 
-待 ④ 对齐实填。预计落点：
-
-- 输入：`_fit_budget` / `WorkStep` / `TruncatedResult`（[`context.py`](../../src/st_agent/l3/runtime/context.py)）· `run_agent_loop` 的上界与终止（[`loop.py`](../../src/st_agent/l3/runtime/loop.py)）· `LoopBounds`（[`bounds.py`](../../src/st_agent/l3/runtime/bounds.py)）· `AgentRunRecord`（[`report.py`](../../src/st_agent/l3/runtime/report.py)）· 设置页预算条目（[`settings/shared.py`](../../src/st_agent/ui/surfaces/settings/shared.py)）。
-- 输出：步骤压缩/摘要规则 · `max_steps` 与信封联动 · 总 token/时间/费用预算 · `context_overflow` 终止与续跑 · 预检/界面预警。
+- **输入**：
+  - `_fit_budget` / `WorkStep` / `TruncatedResult`（[`context.py`](../../src/st_agent/l3/runtime/context.py)）；
+  - `run_agent_loop` 的装配与终止（[`loop.py`](../../src/st_agent/l3/runtime/loop.py)）；
+  - `LoopBounds`（[`bounds.py`](../../src/st_agent/l3/runtime/bounds.py)）· `AgentRunRecord`（[`report.py`](../../src/st_agent/l3/runtime/report.py)）；
+  - 设置页预算条目（[`ui/surfaces/settings/shared.py`](../../src/st_agent/ui/surfaces/settings/shared.py)）。
+- **输出**：
+  - `WorkContext.compacted_steps`：近期 3 步保留全文、更早步骤压成**证据摘要**（工具 / 参数 / 结论 / `skill_run_id`）；
+  - 取舍顺序固定为 记忆 → 历史 → 插话 → 步骤压缩；压缩只改模型可见形态，Trace / `skill_run` 原件不动；
+  - 压缩后估算仍超端点窗口 → 终止原因 `context_overflow`（可续跑）；仅超安全比例标 `over_budget`；
+  - `LoopOutcome` / `AgentRunRecord` 记录生效窗口、可用 token 与信封说明，供预检与留痕核对。
 
 ## 可关闭的遗留
 
-无（新建任务；④ 对齐时逐册复核）。
+无（逐册复核 L0 / L1 / L2 / L3 / L5 / L6 未闭区：无归属＝本任务、或无解封条件＝本任务 `done` 的条目）。
 
 ## 假设与前提
 

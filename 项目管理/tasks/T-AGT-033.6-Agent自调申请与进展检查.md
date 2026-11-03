@@ -8,9 +8,9 @@ arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P2
 milestone:
 depends_on: [T-AGT-033.4, T-AGT-033.5]
-status: todo
-decisions: [D-090, D-154]
-verify:
+status: done
+decisions: [D-090, D-154, D-166]
+verify: D-166；范围套件 4386 passed / 4 例测试期望滞后（已修正并定向复验）/ 2 例本机 test_shell 环境性 ERROR；改动区复跑 655 passed；live 3 passed；verify_docs --strict PASS。详见执行日志对应条目；commit `00f11a5`。
 ---
 
 # T-AGT-033.6 · Agent 自调申请与进展检查
@@ -29,14 +29,20 @@ verify:
 
 ## 接口面
 
-待 ④ 对齐实填。预计落点：
-
-- 输入：`run_agent_loop` 的控制动作拦截（[`loop.py`](../../src/st_agent/l3/runtime/loop.py)）· `WorkContext` 的步骤/预算（[`context.py`](../../src/st_agent/l3/runtime/context.py)）· `sk_result_read` / `sk_tool_search`（[`results.py`](../../src/st_agent/l1/builtin/results.py) / [`tool_search.py`](../../src/st_agent/l3/runtime/tool_search.py)）· 运行事件（[`events.py`](../../src/st_agent/l3/runtime/events.py)）。
-- 输出：`sk_budget_request`（或等价控制动作）· 申请/批准事件 · 分片/展开钳制 · 进展检查与终止说明。
+- **输入**：
+  - `run_agent_loop` 的控制动作拦截（[`loop.py`](../../src/st_agent/l3/runtime/loop.py)）与信封余量；
+  - `WorkContext` 的步骤 / 预算（[`context.py`](../../src/st_agent/l3/runtime/context.py)）；
+  - `sk_result_read`（[`results.py`](../../src/st_agent/l1/builtin/results.py)）· `sk_tool_search`（[`tool_search.py`](../../src/st_agent/l3/runtime/tool_search.py)）；
+  - 运行事件（[`events.py`](../../src/st_agent/l3/runtime/events.py)）。
+- **输出**：
+  - 新内置原语 `sk_budget_request`（[`l1/builtin/budget_request.py`](../../src/st_agent/l1/builtin/budget_request.py)），出厂清单登记 `autonomous-ok`；
+  - 循环在信封内直接批准、超出显式拒绝；`BudgetRequestRecord` 进 `LoopOutcome` / `AgentRunRecord`，并新增运行事件 `budget_request`；
+  - `WorkContext.budget_note` / `progress_note` 回灌给模型；
+  - 进展检查：同一 `skill_run_id` 同一 `offset` 连续 3 次读取无新证据 → 终止原因 `no_progress`（先给「已读」提示）。
 
 ## 可关闭的遗留
 
-无（新建任务；④ 对齐时逐册复核）。
+无（逐册复核 L0 / L1 / L2 / L3 / L5 / L6 未闭区：无归属＝本任务、或无解封条件＝本任务 `done` 的条目）。
 
 ## 假设与前提
 

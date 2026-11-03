@@ -40,8 +40,9 @@ from pydantic import BaseModel, ConfigDict
 from st_agent.contracts.identifiers import TraceId
 from st_agent.contracts.result_envelope import EvidenceRef, ResultEnvelope
 from st_agent.contracts.trace import Trace
-from st_agent.l0.llm import ToolCall
+from st_agent.l0.llm import ToolCall, estimate_tokens
 from st_agent.l1.builtin.ask_user import ASK_USER, normalize_questions
+from st_agent.l1.builtin.budget_request import BUDGET_REQUEST, normalize_budget_request
 from st_agent.l1.builtin.plan_update import PLAN_UPDATE, normalize_plan
 from st_agent.l1.builtin.spawn import SPAWN_AGENT, normalize_spawn_task
 from st_agent.l1.skills.tool_catalog import split_arguments
@@ -49,8 +50,6 @@ from st_agent.l2.memory.reader import MemorySlice
 from st_agent.l3.chat.session import ChatMessage
 from st_agent.l3.errors import AgentRuntimeValidationError
 from st_agent.l3.runtime.context import (
-    DEFAULT_WORK_CONTEXT_BUDGET,
-    RESULT_TRUNCATE_CHARS,
     AskQuestion,
     PlanStep,
     WorkContext,
@@ -60,6 +59,11 @@ from st_agent.l3.runtime.context import (
     result_will_truncate,
     summarize_result,
 )
+from st_agent.l3.runtime.envelope import (
+    ContextEnvelope,
+    derive_context_envelope,
+)
+from st_agent.l3.runtime.truncation import derive_result_chars
 from st_agent.l3.runtime.protocol import (
     DEFAULT_TURN_INITIATOR,
     DEFAULT_TURN_PURPOSE,
@@ -91,6 +95,8 @@ __all__ = [
     "NestedRunRef",
     "PLAN_UPDATE_TOOL",
     "SPAWN_AGENT_TOOL",
+    "BUDGET_REQUEST_TOOL",
+    "PROGRESS_REPEAT_LIMIT",
     "SUBPROTOCOL_TOOLS",
     "GateDecision",
     "GateVerdict",
@@ -183,6 +189,15 @@ SPAWN_AGENT_TOOL = SPAWN_AGENT.base
 另起一条 Trace（[01 §4](../../../../docs/技术架构-v2/01-平台共享契约.md)）。
 """
 
+BUDGET_REQUEST_TOOL = BUDGET_REQUEST.base
+"""预算申请原语的工具名（[`T-AGT-033.6`](../../../项目管理/tasks/T-AGT-033.6-Agent自调申请与进展检查.md)）。
+
+循环按工具名识别：它在信封内直接批准、超出则显式拒绝；不产 ``skill_run`` / Trace 步。
+"""
+
+PROGRESS_REPEAT_LIMIT = 3
+"""连续重复读取同一 ``skill_run_id`` 同一 offset 的容忍次数（到界即按无进展终止）。"""
+
 GateVerdict = Literal["autonomous-ok", "needs-confirmation", "denied"]
 
 TerminationReason = Literal[
@@ -200,6 +215,8 @@ TerminationReason = Literal[
     "cancelled",
     "manual_step_done",
     "card_ready",
+    "context_overflow",
+    "no_progress",
 ]
 """循环的终止原因（**穷尽列举**——产出与留痕据此如实标注，不造未列出的原因）。
 
@@ -265,6 +282,18 @@ class SubAgentRun(BaseModel):
     llm_calls: int = 0
 
 
+class BudgetRequestRecord(BaseModel):
+    """一次预算申请的留痕（[`T-AGT-033.6`](../../../项目管理/tasks/T-AGT-033.6-Agent自调申请与进展检查.md)）。"""
+
+    model_config = ConfigDict(frozen=True)
+
+    extra_steps: int = 0
+    extra_llm_calls: int = 0
+    context_tokens: int = 0
+    approved: bool = False
+    reason: str = ""
+
+
 class LoopOutcome(BaseModel):
     """一次循环的完整产出（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md) 的四段跑完或终止）。
 
@@ -318,16 +347,23 @@ class LoopOutcome(BaseModel):
     """本次生效的步数上界（留痕用；取值可注入，故如实记录实际生效值）。"""
     max_llm_calls: int = DEFAULT_MAX_LLM_CALLS
     """本次生效的 LLM 调用次数上界（同上）。"""
-    budget_chars: int = DEFAULT_WORK_CONTEXT_BUDGET
-    """本次生效的**工作上下文预算**（[01 §7](../../../../docs/技术架构-v2/01-平台共享契约.md)
-    的 `investigate.context_budget`；记实际生效值，供留痕核对）。"""
-    max_result_chars: int = RESULT_TRUNCATE_CHARS
+    budget_chars: int = 0
+    """本次生效的**上下文字符预算**（由 :class:`ContextEnvelope` 派生；0 即未跑装配的终止）。"""
+    context_window_tokens: int = 0
+    """端点声明的上下文窗口（信封来源；0 即未派生）。"""
+    context_available_tokens: int = 0
+    """信封扣除预留 / 工具 / 系统提示词后的可用 token（0 即未派生）。"""
+    context_envelope_note: str = ""
+    """信封派生说明（端点窗口未知 / 用户封顶生效 / 可用预算触底；无即空）。"""
+    max_result_chars: int = 1
     """本次生效的单条结果截断阈值（留痕据此如实标「已截断」，与运行事件同一判定）。"""
     dropped: tuple[str, ...] = ()
     """被预算**舍弃**的上下文项（[05 §10](../../../../docs/技术架构-v2/05-L3-对话主入口.md)：
     超限如实取舍并标注；末次装配的取值）。"""
     tool_searches: tuple[ToolSearchRecord, ...] = ()
     """本次循环里的工具检索记录（**决策**，不产 Trace 步 / ``skill_run``；进 ``agent_run``）。"""
+    budget_requests: tuple[BudgetRequestRecord, ...] = ()
+    """本次循环里的**预算申请**（批准 / 拒绝均留痕；不产 Trace 步）。"""
     failure: ResultEnvelope | None = None
     """``llm_failed`` 时端点侧给的信封（[01 §5](../../../../docs/技术架构-v2/01-平台共享契约.md)）
     ——**产出装配原样透出它**，不重包、不改 status、不吞 reason（既有口径）。"""
@@ -402,11 +438,16 @@ def run_agent_loop(
     llm_max_attempts: int = DEFAULT_LLM_MAX_ATTEMPTS,
     llm_retry_backoff_ms: int = DEFAULT_LLM_RETRY_BACKOFF_MS,
     retry_sleep: Callable[[float], None] | None = None,
-    budget_chars: int = DEFAULT_WORK_CONTEXT_BUDGET,
-    max_result_chars: int = RESULT_TRUNCATE_CHARS,
+    budget_chars: int | None = None,
+    context_window_tokens: int | None = None,
+    context_budget_tokens: int = 0,
+    max_result_chars: int | None = None,
     tool_lazy_chars: int | None = None,
     trace: Trace | None = None,
     session_id: str | None = None,
+    main_task: str = "",
+    follow_up: bool = False,
+    prior_dropped: Sequence[str] = (),
     history: Sequence[ChatMessage] = (),
     memory: Sequence[MemorySlice] = (),
     prior_steps: Sequence[WorkStep] = (),
@@ -440,7 +481,10 @@ def run_agent_loop(
     :param approved_permissions: 用户已批准的权限声明（转交 L1 逐项核对）。
         可为序列（全局）、映射或可调用 ``(skill_id) -> 声明序列``——后者由组合根
         按实际执行的 Skill 取批准态（T-AGT-014.3）
-    :param max_steps: **步数**上界（可注入；到界即终止并如实标注）
+    :param budget_chars: **显式**字符预算（测试 / 既有调用方的覆盖；``None`` ⇒ 按
+        端点窗口派生 :class:`ContextEnvelope`）
+    :param context_window_tokens: 端点声明的上下文窗口；``None`` ⇒ 保守 fallback 并显式标注
+    :param context_budget_tokens: 用户封顶（0 即不封顶；`investigate.context_budget`）
     :param max_llm_calls: **LLM 调用次数**上界（可注入；同上）
     :param llm_timeout_ms: 单次 LLM 调用的**总时限**（缺省 ``None`` ⇒ 用端点缺省）
     :param llm_idle_timeout_ms: 单次 LLM 调用的**空闲时限**（缺省取总时限）
@@ -523,6 +567,45 @@ def run_agent_loop(
         raise AgentRuntimeValidationError(
             f"工具惰性阈值须为 ≥1 的整数，得到 {tool_lazy_chars!r}"
         )
+    if context_budget_tokens is not None and (
+        not isinstance(context_budget_tokens, int) or isinstance(context_budget_tokens, bool)
+        or context_budget_tokens < 0
+    ):
+        raise AgentRuntimeValidationError(
+            f"上下文档位封顶须为 ≥0 的整数，得到 {context_budget_tokens!r}"
+        )
+    if budget_chars is not None and (
+        not isinstance(budget_chars, int) or isinstance(budget_chars, bool)
+        or budget_chars < 1
+    ):
+        raise AgentRuntimeValidationError(
+            f"显式字符预算须为 ≥1 的整数或 None，得到 {budget_chars!r}"
+        )
+    try:
+        envelope: ContextEnvelope = derive_context_envelope(
+            window_tokens=context_window_tokens,
+            tools=tools,
+            system_prompt=system_prompt,
+            user_cap_tokens=context_budget_tokens or 0,
+            explicit_budget_chars=budget_chars,
+        )
+    except ValueError as exc:
+        raise AgentRuntimeValidationError(str(exc)) from exc
+    effective_budget_chars = envelope.budget_chars
+    effective_tool_lazy_chars = (
+        tool_lazy_chars if tool_lazy_chars is not None else envelope.catalog_budget_chars
+    )
+    if max_result_chars is not None and (
+        not isinstance(max_result_chars, int) or isinstance(max_result_chars, bool)
+        or max_result_chars < 1
+    ):
+        raise AgentRuntimeValidationError(
+            f"单条结果上限须为 ≥1 的整数或 None，得到 {max_result_chars!r}"
+        )
+    effective_max_result_chars = (
+        max_result_chars if max_result_chars is not None
+        else derive_result_chars(effective_budget_chars, max_steps)
+    )
     for name, value in (("parallel_safe", parallel_safe), ("allow_sub_agents", allow_sub_agents)):
         if not isinstance(value, bool):
             raise AgentRuntimeValidationError(f"{name} 须为布尔值，得到 {value!r}")
@@ -557,6 +640,11 @@ def run_agent_loop(
     """下一轮工作上下文的回灌说明（点名未知工具 + 指向本轮目录；无回灌即空）。"""
     subprotocol_note = ""
     """上一次子协议动作的回灌说明（失败原因 / 训练复述 / 无卡说明；无即空）。"""
+    budget_note = ""
+    """上一次预算申请的结果（批准 / 拒绝与原因；一次性回灌）。"""
+    progress_note = ""
+    """进展检查提示（重复读取同一 offset；无重复即空）。"""
+    budget_requests: list[BudgetRequestRecord] = []
     sub_runs: list[SubAgentRun] = list(prior_sub_agents)
     subagent_notes: list[str] = [render_subagent_note(sub) for sub in prior_sub_agents]
     parallel_notes: list[str] = []
@@ -611,12 +699,16 @@ def run_agent_loop(
             reason=reason, answer=answer, pending=pending, gate_reason=gate_reason,
             failure=failure,
             max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
-            dropped=dropped, budget_chars=budget_chars,
-            max_result_chars=max_result_chars,
+            dropped=dropped, budget_chars=effective_budget_chars,
+            context_window_tokens=envelope.window_tokens,
+            context_available_tokens=envelope.available_tokens,
+            context_envelope_note=envelope.note,
+            max_result_chars=effective_max_result_chars,
             plan=current_plan, plan_updated=plan_given, plan_error=plan_error,
             questions=tuple(questions), directions=tuple(directions), ask_note=ask_note,
             cards=tuple(cards),
             tool_searches=tuple(searches),
+            budget_requests=tuple(budget_requests),
             parent_trace_id=parent_trace_id, executed_steps=executed,
             parallel_used=parallel_used, parallel_note="；".join(parallel_notes),
             sub_agents=tuple(sub_runs),
@@ -662,6 +754,25 @@ def run_agent_loop(
                 reason=f"已达到 LLM 调用次数上界（{max_llm_calls}），终止",
             )
 
+        # ── 进展检查（确定性）：同一结果同一 offset 被反复读取即先提示、到界终止 ──
+        repeated = _repeated_read(steps)
+        if repeated is not None:
+            (run_id, offset), count = repeated
+            if count >= PROGRESS_REPEAT_LIMIT:
+                return finish(
+                    "no_progress",
+                    reason=(
+                        f"同一结果（{run_id} 的 offset {offset}）已重复读取 {count} 次，"
+                        "没有产生新证据；终止并交还，请补充新的线索或换用其他能力"
+                    ),
+                )
+            progress_note = (
+                f"同一结果（{run_id} 的 offset {offset}）已重复读取 {count} 次，"
+                "该段不会产生新证据；请改用 next_offset 续读或换用其他能力"
+            )
+        else:
+            progress_note = ""
+
         # ── 插话（步骤边界）：排空收件箱，按到达顺序并入下一轮上下文 ──
         delivered_steers = _take_steers(
             steer_inbox, delivered=True, after_steps=executed,
@@ -673,27 +784,53 @@ def run_agent_loop(
             ))
 
         # ── ① 出动作（工作上下文每轮重装：任务 + 计划 + 目录 + 已执行动作与结果） ──
+        effective_max_result_chars = (
+            max_result_chars if max_result_chars is not None
+            else derive_result_chars(
+                effective_budget_chars, max(1, max_steps - executed)
+            )
+        )
         note_for_context = subprotocol_note
         subprotocol_note = ""              # 回灌是一次性的：本轮装配后即消费
+        budget_for_context = budget_note
+        budget_note = ""
         assembled = assemble_work_context(
             task, tuple(tools), steps,
+            main_task=main_task, follow_up=follow_up,
             history=history, memory=memory,
             steer_messages=tuple(steered),
             plan=current_plan, plan_updated=plan_given, plan_error=plan_error,
             user_inputs=user_inputs,
-            budget_chars=budget_chars, max_result_chars=max_result_chars,
+            budget_chars=effective_budget_chars, max_result_chars=effective_max_result_chars,
             retrieved_tools=tuple(retrieved), tool_search_note=tool_search_note,
             subagent_note="\n".join(subagent_notes),
             unknown_tool_note=unknown_tool_note,
             subprotocol_note=note_for_context,
-            tool_lazy_chars=tool_lazy_chars,
+            budget_note=budget_for_context,
+            progress_note=progress_note,
+            tool_lazy_chars=effective_tool_lazy_chars,
             system_prompt=system_prompt,
             system_prompt_version=system_prompt_version,
         )
         if assembled.status != "ok":
             return finish("catalog_empty", reason=assembled.reason or "")
         context: WorkContext = assembled.data
-        dropped = context.dropped
+        dropped = tuple(dict.fromkeys((*prior_dropped, *context.dropped)))
+        if context.over_budget:
+            # 装配后仍超「端点窗口」才是真装不下；超「安全比例」只如实标注，不终止。
+            estimated = (
+                estimate_tokens(context.render_prompt(include_tools=True))
+                + estimate_tokens(context.system_prompt)
+            )
+            if estimated > envelope.window_tokens:
+                return finish(
+                    "context_overflow",
+                    reason=(
+                        f"上下文约 {estimated} tokens（含工具目录与系统提示词），"
+                        f"超出端点窗口 {envelope.window_tokens} tokens；"
+                        "请从已有证据继续或减少本轮上下文"
+                    ),
+                )
         turn = None
         attempts = 0
         retry_reason = ""
@@ -741,6 +878,12 @@ def run_agent_loop(
             if turn.envelope is None:
                 break
             failure = turn.failure
+            if failure is not None and failure.kind == "context_overflow":
+                return finish(
+                    "context_overflow",
+                    reason=turn.envelope.reason or "上下文超出端点窗口",
+                    failure=turn.envelope,
+                )
             if (
                 failure is not None and failure.retryable
                 and attempts < llm_max_attempts
@@ -776,7 +919,9 @@ def run_agent_loop(
                 continue
             planned.append((call, entry))
             if (
-                call.name not in (PLAN_UPDATE_TOOL, ASK_USER_TOOL, SPAWN_AGENT_TOOL)
+                call.name not in (
+                    PLAN_UPDATE_TOOL, ASK_USER_TOOL, SPAWN_AGENT_TOOL, BUDGET_REQUEST_TOOL,
+                )
                 and call.name not in SUBPROTOCOL_TOOLS
             ):
                 executable_count += 1
@@ -871,6 +1016,26 @@ def run_agent_loop(
                     pending=call, gate_reason=decision.reason,
                 )
 
+            if call.name == BUDGET_REQUEST_TOOL:
+                request, error = normalize_budget_request(dict(call.arguments))
+                if error:
+                    budget_note = error
+                    continue
+                approved, reason = _budget_decision(
+                    request,
+                    remaining_steps=max(0, max_steps - executed),
+                    remaining_llm_calls=max(0, max_llm_calls - llm_calls),
+                    available_tokens=envelope.available_tokens,
+                )
+                budget_requests.append(BudgetRequestRecord(
+                    **request, approved=approved, reason=reason,
+                ))
+                _emit("budget_request", {
+                    "request": request, "approved": approved, "reason": reason,
+                })
+                budget_note = ("已批准：" if approved else "未批准：") + reason
+                continue
+
             if call.name == PLAN_UPDATE_TOOL:
                 normalized, error = normalize_plan(dict(call.arguments).get("plan"))
                 if error:
@@ -960,9 +1125,11 @@ def run_agent_loop(
                     llm_max_attempts=llm_max_attempts,
                     llm_retry_backoff_ms=llm_retry_backoff_ms,
                     retry_sleep=retry_sleep,
-                    budget_chars=budget_chars,
+                    budget_chars=effective_budget_chars,
+                    context_window_tokens=context_window_tokens,
+                    context_budget_tokens=context_budget_tokens,
                     max_result_chars=max_result_chars,
-                    tool_lazy_chars=tool_lazy_chars,
+                    tool_lazy_chars=effective_tool_lazy_chars,
                     trace=Trace(trace_id=TraceId.generate()),
                     session_id=None,
                     history=(),
@@ -1012,7 +1179,7 @@ def run_agent_loop(
                             "status": step.envelope.status,
                             "skill_run_id": step.skill_run_id,
                             "truncated": result_will_truncate(
-                                step.envelope, max_result_chars),
+                                step.envelope, effective_max_result_chars),
                         }
                         for step in child.steps
                     ],
@@ -1103,7 +1270,7 @@ def run_agent_loop(
                     "tool": call.name, "skill_id": entry.skill_id,
                     "skill_run_id": work.skill_run_id,
                     "status": run.envelope.status,
-                    "truncated": result_will_truncate(run.envelope, max_result_chars),
+                    "truncated": result_will_truncate(run.envelope, effective_max_result_chars),
                     "summary": summarize_result(run.envelope),
                     "log_ref": work.log_ref,
                 })
@@ -1171,7 +1338,7 @@ def run_agent_loop(
                 "tool": call.name, "skill_id": entry.skill_id,
                 "skill_run_id": work.skill_run_id,
                 "status": run.envelope.status,
-                "truncated": result_will_truncate(run.envelope, max_result_chars),
+                "truncated": result_will_truncate(run.envelope, effective_max_result_chars),
                 "summary": summarize_result(run.envelope),
                 "log_ref": work.log_ref,
             })
@@ -1220,8 +1387,11 @@ def _outcome(
     session_id: str | None = None,
     context_note: str = "",
     dropped: tuple[str, ...] = (),
-    budget_chars: int = DEFAULT_WORK_CONTEXT_BUDGET,
-    max_result_chars: int = RESULT_TRUNCATE_CHARS,
+    budget_chars: int = 0,
+    context_window_tokens: int = 0,
+    context_available_tokens: int = 0,
+    context_envelope_note: str = "",
+    max_result_chars: int | None = None,
     plan: Sequence[PlanStep] = (),
     plan_updated: bool = False,
     plan_error: str = "",
@@ -1230,6 +1400,7 @@ def _outcome(
     ask_note: str = "",
     cards: Sequence[Any] = (),
     tool_searches: Sequence[ToolSearchRecord] = (),
+    budget_requests: Sequence[BudgetRequestRecord] = (),
     parent_trace_id: str = "",
     executed_steps: int = 0,
     parallel_used: bool = False,
@@ -1244,12 +1415,16 @@ def _outcome(
         pending=pending, gate_reason=gate_reason,
         max_steps=max_steps, max_llm_calls=max_llm_calls, session_id=session_id,
         context_note=context_note, dropped=dropped, budget_chars=budget_chars,
+        context_window_tokens=context_window_tokens,
+        context_available_tokens=context_available_tokens,
+        context_envelope_note=context_envelope_note,
         max_result_chars=max_result_chars,
         failure=failure,
         plan=tuple(plan), plan_updated=plan_updated, plan_error=plan_error,
         questions=tuple(questions), directions=tuple(directions), ask_note=ask_note,
         cards=tuple(cards),
         tool_searches=tuple(tool_searches),
+        budget_requests=tuple(budget_requests),
         parent_trace_id=parent_trace_id, executed_steps=executed_steps,
         parallel_used=parallel_used, parallel_note=parallel_note,
         sub_agents=tuple(sub_agents), steered=tuple(steered),
@@ -1259,6 +1434,53 @@ def _outcome(
 def _join_note(*parts: str) -> str:
     """把若干显式说明拼成一条（空串跳过；分隔与既有留痕口径一致）。"""
     return "；".join(part for part in parts if part)
+
+
+def _budget_decision(
+    request: Mapping[str, int],
+    *,
+    remaining_steps: int,
+    remaining_llm_calls: int,
+    available_tokens: int,
+) -> tuple[bool, str]:
+    """按**当前余量**判定一次预算申请（全部在信封内才批准，逐项点名超出量）。
+
+    模型只能申请，不能抬高总边界：``max_steps`` / ``max_llm_calls`` 与端点窗口派生的
+    token 可用量都是硬边界，超出即显式拒绝（[`T-AGT-033.6`](../../../项目管理/tasks/T-AGT-033.6-Agent自调申请与进展检查.md)）。
+    """
+    limits = {
+        "extra_steps": (remaining_steps, "步数"),
+        "extra_llm_calls": (remaining_llm_calls, "LLM 调用次数"),
+        "context_tokens": (available_tokens, "上下文 token"),
+    }
+    shortfalls: list[str] = []
+    for key, value in request.items():
+        available, label = limits[key]
+        if value > available:
+            shortfalls.append(f"{label}申请 {value}，余量仅 {available}")
+    if shortfalls:
+        return False, "；".join(shortfalls) + "（总边界不可由模型抬高，请交还用户决定）"
+    approved = "、".join(
+        f"{label} {request[key]}" for key, (_, label) in limits.items() if key in request
+    )
+    return True, f"在信封内直接批准（{approved}）"
+
+
+def _repeated_read(steps: Sequence[WorkStep]) -> tuple[tuple[str, int], int] | None:
+    """找出重复读取最多的 ``(skill_run_id, offset)`` 及次数（无读取即 ``None``）。"""
+    counts: dict[tuple[str, int], int] = {}
+    for step in steps:
+        if step.tool_name != "sk_result_read":
+            continue
+        run_id = str(step.arguments.get("skill_run_id") or "").strip()
+        offset = step.arguments.get("offset", 0)
+        if not run_id or not isinstance(offset, int) or isinstance(offset, bool):
+            continue
+        key = (run_id, offset)
+        counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return None
+    return max(counts.items(), key=lambda item: item[1])
 
 
 def _take_steers(

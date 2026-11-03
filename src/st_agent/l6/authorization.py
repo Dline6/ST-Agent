@@ -98,6 +98,9 @@ DEFAULT_RISK_GRADING: tuple[EvolutionRiskRule, ...] = (
     EvolutionRiskRule(prefix="skill.sk_data_status", risk_class="autonomous-ok"),
     EvolutionRiskRule(prefix="skill.sk_plan_update", risk_class="autonomous-ok"),
     EvolutionRiskRule(prefix="skill.sk_ask_user", risk_class="autonomous-ok"),
+    # 可自主——**预算申请**（T-AGT-033.6）：只发申请，批准 / 拒绝由运行时在信封内决定，
+    # 模型无法借此抬高总边界；无文件 / 网络 / 数据副作用。
+    EvolutionRiskRule(prefix="skill.sk_budget_request", risk_class="autonomous-ok"),
     # 可自主——**只读的文档取数**（T-AGT-013.3 / [D-145]）：经 L0 文档取数面读本地缓存，
     # 不直读文件、不出网；审计只报损坏 / 孤儿，不删除。
     EvolutionRiskRule(prefix="skill.sk_docs", risk_class="autonomous-ok"),

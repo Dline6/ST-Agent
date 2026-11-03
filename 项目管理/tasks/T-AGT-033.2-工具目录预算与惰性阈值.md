@@ -8,9 +8,9 @@ arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P0
 milestone: M11
 depends_on: [T-AGT-017.1, T-AGT-033.1]
-status: todo
-decisions: [D-145, D-160]
-verify:
+status: done
+decisions: [D-145, D-160, D-166]
+verify: D-166；范围套件 4386 passed / 4 例测试期望滞后（已修正并定向复验）/ 2 例本机 test_shell 环境性 ERROR；改动区复跑 655 passed；live 3 passed；verify_docs --strict PASS。详见执行日志对应条目；commit `00f11a5`。
 ---
 
 # T-AGT-033.2 · 工具目录预算与惰性阈值
@@ -29,14 +29,20 @@ verify:
 
 ## 接口面
 
-待 ④ 对齐实填。预计落点：
-
-- 输入：`ContextEnvelope`（[`T-AGT-033.1`](T-AGT-033.1-预算信封与计量口径.md)）· `_tools_section_chars` / `tool_lazy_chars`（[`context.py`](../../src/st_agent/l3/runtime/context.py)）· `search_catalog` / `tool_search_spec`（[`tool_search.py`](../../src/st_agent/l3/runtime/tool_search.py)）· `project_catalog`（[`tool_catalog.py`](../../src/st_agent/l1/skills/tool_catalog.py)）· 工具开关过滤（[`composition/agent.py`](../../src/st_agent/composition/agent.py)）。
-- 输出：目录独立配额 · 惰性阈值比例 ·（可选）任务感知预筛 · 目录增长的回归测试。
+- **输入**：
+  - `ContextEnvelope.catalog_budget_chars`（[`envelope.py`](../../src/st_agent/l3/runtime/envelope.py)）——可用预算的 45%；
+  - `_tools_section_chars` / `tool_lazy_chars`（[`context.py`](../../src/st_agent/l3/runtime/context.py)）；
+  - `search_catalog` / `tool_search_spec`（[`tool_search.py`](../../src/st_agent/l3/runtime/tool_search.py)）；
+  - 工具开关过滤（[`composition/agent.py`](../../src/st_agent/composition/agent.py) 的 `_tools_for_run`）。
+- **输出**：
+  - 目录惰性阈值改为**独立配额** `budget_chars × 0.45`（`CATALOG_BUDGET_SHARE`），不再等于整份预算；
+  - 循环把 `envelope.catalog_budget_chars` 传给装配件，调用方显式给的 `tool_lazy_chars` 仍优先；
+  - 关闭项在计算配额之前已从目录剔除（既有 `_tools_for_run`，本叶钉回归测试）；
+  - 目录增长不改变全局 `context_budget` 缺省（缺省已改为 0＝自动派生）。
 
 ## 可关闭的遗留
 
-无（新建任务；④ 对齐时逐册复核）。
+无（逐册复核 L0 / L1 / L2 / L3 / L5 / L6 未闭区：无归属＝本任务、或无解封条件＝本任务 `done` 的条目）。
 
 ## 假设与前提
 

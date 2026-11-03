@@ -45,6 +45,7 @@ FLOW_ID = "wf_m0_gate_v1.0"
 OFFICIAL_BASE_COUNT = 12
 BUILTIN_BASES = (
     "sk_data_status", "sk_local_sql", "sk_plan_update", "sk_ask_user",
+    "sk_budget_request",
     "sk_data_sync", "sk_data_fetch", "sk_docs",
     "sk_file_read", "sk_file_glob", "sk_file_grep", "sk_file_write",
     "sk_web_search", "sk_web_fetch",

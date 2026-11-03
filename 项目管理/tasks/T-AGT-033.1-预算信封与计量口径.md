@@ -8,9 +8,9 @@ arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P0
 milestone: M11
 depends_on: [T-AGT-009.3, T-L0-003]
-status: todo
-decisions: [D-090, D-142]
-verify:
+status: done
+decisions: [D-090, D-142, D-166]
+verify: D-166；范围套件 4386 passed / 4 例测试期望滞后（已修正并定向复验）/ 2 例本机 test_shell 环境性 ERROR；改动区复跑 655 passed；live 3 passed；verify_docs --strict PASS。详见执行日志对应条目；commit `00f11a5`。
 ---
 
 # T-AGT-033.1 · 预算信封与计量口径
@@ -30,14 +30,21 @@ verify:
 
 ## 接口面
 
-待 ④ 对齐实填。预计落点：
-
-- 输入：`EndpointCapability.max_context_tokens`（[`models.py`](../../src/st_agent/l0/llm/models.py)）· `estimate_tokens`（[`models.py`](../../src/st_agent/l0/llm/models.py)）· `LlmClient.invoke` 的上限检查（[`client.py`](../../src/st_agent/l0/llm/client.py)）· `assemble_context`（[`session.py`](../../src/st_agent/l3/chat/session.py)）· `assemble_work_context`（[`context.py`](../../src/st_agent/l3/runtime/context.py)）· `LoopBounds`（[`bounds.py`](../../src/st_agent/l3/runtime/bounds.py)）· `AgentRunRecord.context_dropped`（[`report.py`](../../src/st_agent/l3/runtime/report.py)）。
-- 输出：`ContextEnvelope`（新）· 统一 token 估算/端点上限检查 · 会话层 `dropped` · 动态记忆配额 · 删除漂移缺省。
+- **输入**：
+  - `EndpointCapability.max_context_tokens` / `estimate_tokens`（[`l0/llm/models.py`](../../src/st_agent/l0/llm/models.py)）——端点窗口与中文保守计量；
+  - `NativeToolCallProtocol` 新增 `context_window_tokens()`（[`l3/runtime/protocol.py`](../../src/st_agent/l3/runtime/protocol.py)）——端点未登记即 `None`，走保守 fallback；
+  - `LlmClient.invoke` 的上下文上限检查（[`l0/llm/client.py`](../../src/st_agent/l0/llm/client.py)）——把 `tools` 的 JSON 也计入；
+  - `assemble_context`（[`l3/chat/session.py`](../../src/st_agent/l3/chat/session.py)）· `assemble_work_context` / `_fit_budget`（[`l3/runtime/context.py`](../../src/st_agent/l3/runtime/context.py)）· `LoopBounds.context_budget_tokens()`（[`l3/runtime/bounds.py`](../../src/st_agent/l3/runtime/bounds.py)）· `AgentRunRecord.context_dropped`（[`l3/runtime/report.py`](../../src/st_agent/l3/runtime/report.py)）。
+- **输出**：
+  - 新 [`l3/runtime/envelope.py`](../../src/st_agent/l3/runtime/envelope.py)：`ContextEnvelope`（窗口 / 安全比例 / 输出预留 / 工具与系统提示词 token / 可用 token / 字符预算 / 目录配额 / 来源与说明）与 `derive_context_envelope()`；
+  - `SessionContext.dropped` / `main_task` / `follow_up`（会话层取舍与主任务锚点）；
+  - `LoopOutcome` / `AgentRunRecord` 新增 `context_window_tokens` / `context_available_tokens` / `context_envelope_note`；
+  - 新终止原因 `context_overflow`（可经既有 `resume` 的 `retry` 续跑）；`LlmFailure.kind` 新增 `context_overflow`；
+  - `investigate.context_budget` 改为**可选 token 封顶（0＝自动派生）**，删除 `4000` / `16000` 两个漂移缺省。
 
 ## 可关闭的遗留
 
-无（新建任务；④ 对齐时逐册复核）。
+无（逐册复核 L0 / L1 / L2 / L3 / L5 / L6 未闭区：无归属＝本任务、或无解封条件＝本任务 `done` 的条目）。
 
 ## 假设与前提
 

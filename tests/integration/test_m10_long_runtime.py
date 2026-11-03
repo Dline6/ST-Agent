@@ -28,7 +28,7 @@ from rig_m10 import (
 
 from st_agent.app import TurnResult
 from st_agent.l3.runtime import load_agent_run
-from st_agent.l3.runtime.context import RESULT_TRUNCATE_CHARS
+from st_agent.l3.runtime.truncation import RESULT_TRUNCATE_MIN
 
 LONG_TASK_STEPS: list[tuple[str, dict]] = [
     ("sk_data_status", {}),
@@ -152,10 +152,10 @@ class TestGwt1LongMultiToolTask:
         # 每条结果都在上下文里：未截断者全文可见；截断者带真实回读指针
         for step in record.steps:
             text = _payload_text(load_skill_run(rig, step.skill_run_id).envelope.data)
-            if len(text) <= RESULT_TRUNCATE_CHARS:
+            if not step.truncated:
                 assert text in final_prompt
             else:
-                assert f"skill_run_id='{step.skill_run_id}'" in final_prompt
+                assert f'{{"skill_run_id": "{step.skill_run_id}"' in final_prompt
 
         # 留痕端到端可查：每步指向真实记录，记录状态与步骤一致
         for step in record.steps:
@@ -243,18 +243,17 @@ class TestGwt2LargeResultReadBack:
         big_step = record.steps[0]
         big_run = load_skill_run(rig, big_step.skill_run_id)
         full_text = _payload_text(big_run.envelope.data)
-        assert len(full_text) > RESULT_TRUNCATE_CHARS
+        assert len(full_text) > RESULT_TRUNCATE_MIN
 
-        # 截断件确实进了上下文：带 skill_run_id / next_offset / read_tool 与回读提示
+        # 截断件确实进了上下文：紧凑形态 + 可回读指针（不暴露 log_ref 路径）
         truncation_prompt = rig.endpoint.loop_calls[1]["prompt"]
-        assert "truncated=True" in truncation_prompt
-        assert f"skill_run_id='{big_step.skill_run_id}'" in truncation_prompt
-        assert "read_tool='sk_result_read'" in truncation_prompt
-        assert "next_offset=0" in truncation_prompt
+        assert "[已截断，原 " in truncation_prompt
         assert (
-            f'sk_result_read {{"skill_run_id": "{big_step.skill_run_id}", "offset": 0'
+            f'"skill_run_id": "{big_step.skill_run_id}", "offset": 0'
             in truncation_prompt
         )
+        assert "回读：sk_result_read" in truncation_prompt
+        assert "log_ref" not in truncation_prompt.split("已执行动作与结果")[1]
 
         # 回读步：分片按顺序拼接，等于原始载荷；最后一片不再截断
         reads = [s for s in record.steps if s.tool_name == "sk_result_read"]

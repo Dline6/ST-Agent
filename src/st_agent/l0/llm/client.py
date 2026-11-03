@@ -259,16 +259,27 @@ class LlmClient:
                 prompt_tokens=estimate_tokens(prompt), duration_ms=0,
             )
             return
-        prompt_tokens = estimate_tokens(prompt) + estimate_tokens(system_prompt or "")
+        tools_tokens = sum(
+            estimate_tokens(spec.model_dump_json()) for spec in tool_specs
+        )
+        prompt_tokens = (
+            estimate_tokens(prompt) + estimate_tokens(system_prompt or "") + tools_tokens
+        )
         if prompt_tokens > endpoint.capability.max_context_tokens:
             yield self._error_event(
                 endpoint,
                 ResultEnvelope.validation_failed(
-                    f"prompt 约 {prompt_tokens} tokens，超出端点 {endpoint_id!r} "
-                    f"上下文上限 {endpoint.capability.max_context_tokens}"
+                    f"prompt 约 {prompt_tokens} tokens（含工具目录 {tools_tokens}），"
+                    f"超出端点 {endpoint_id!r} 上下文上限 "
+                    f"{endpoint.capability.max_context_tokens}"
                 ),
                 initiator=initiator, purpose=purpose,
                 prompt_tokens=prompt_tokens, duration_ms=0,
+                failure=LlmFailure(
+                    kind="context_overflow",
+                    retryable=False,
+                    elapsed_ms=0,
+                ),
             )
             return
         timeout = timeout_ms if timeout_ms is not None else endpoint.default_timeout_ms

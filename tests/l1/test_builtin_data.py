@@ -304,7 +304,7 @@ class TestDataStatus:
 def test_seed_table_contains_the_data_control_and_file_primitives():
     assert [seed.base for seed in BUILTIN_PRIMITIVES] == [
         "sk_local_sql", "sk_data_status", "sk_data_sync", "sk_data_fetch",
-        "sk_docs", "sk_plan_update", "sk_ask_user",
+        "sk_docs", "sk_plan_update", "sk_ask_user", "sk_budget_request",
         "sk_file_read", "sk_file_glob", "sk_file_grep", "sk_file_write",
         "sk_web_search", "sk_web_fetch",
         "sk_run_command", "sk_result_read",
