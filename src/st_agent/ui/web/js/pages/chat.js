@@ -483,10 +483,40 @@ function applyRunEvent(message, type, data) {
     message.planError = String(body.error || '');
     return;
   }
+  if (type === 'sub_agent_started') {
+    const runId = String(body.agent_run_id || '');
+    let sub = runId
+      ? message.subAgents.find((item) => item.runId === runId)
+      : null;
+    if (!sub) {
+      sub = {
+        task: String(body.task || ''),
+        runId,
+        traceId: String(body.trace_id || ''),
+        termination: '',
+        reason: '',
+        answer: '',
+        evidence: [],
+        steps: 0,
+        stepList: [],
+        running: true,
+        timeoutMs: Number(body.timeout_ms) || 0,
+        events: [],
+        eventsWatching: false,
+        eventsLoaded: false,
+        eventsError: '',
+      };
+      message.subAgents.push(sub);
+      watchChildEvents(sub);
+    }
+    message.note = `子 Agent 运行中：${body.task || ''}`;
+    return;
+  }
   if (type === 'sub_agent') {
-    message.subAgents.push({
+    const runId = String(body.agent_run_id || '');
+    const finished = {
       task: String(body.task || ''),
-      runId: String(body.agent_run_id || ''),
+      runId,
       traceId: String(body.trace_id || ''),
       termination: String(body.termination || ''),
       reason: String(body.reason || ''),
@@ -494,7 +524,22 @@ function applyRunEvent(message, type, data) {
       evidence: Array.isArray(body.evidence) ? body.evidence.map(String) : [],
       steps: Number(body.steps) || 0,
       stepList: Array.isArray(body.step_list) ? body.step_list : [],
-    });
+      running: false,
+    };
+    const sub = runId
+      ? message.subAgents.find((item) => item.runId === runId)
+      : null;
+    if (sub) Object.assign(sub, finished);
+    else {
+      message.subAgents.push({
+        ...finished,
+        timeoutMs: 0,
+        events: [],
+        eventsWatching: false,
+        eventsLoaded: false,
+        eventsError: '',
+      });
+    }
     message.note = `子 Agent 已返回：${body.task || ''}`;
     return;
   }
@@ -525,6 +570,12 @@ function applyRunEvent(message, type, data) {
   }
   if (type === 'run_finished') {
     message.note = `运行结束（${body.termination || ''}）`;
+    const executed = Number(body.executed_steps);
+    const visible = Number(body.steps);
+    if (Number.isFinite(executed) && Number.isFinite(visible) && executed > visible) {
+      message.stepNote = `运行消耗 ${executed} 步（含子 Agent 与派生本身），`
+        + `步骤流显示 ${visible} 步；子步骤在子 Agent 事件中查看`;
+    }
   }
 }
 
@@ -730,13 +781,64 @@ function runStepNode(step, index) {
   return item;
 }
 
+/** 跟随子运行事件流（子运行的 `agent_run_id` 由父事件 `sub_agent_started` 给出）。 */
+function watchChildEvents(sub) {
+  if (!sub || !sub.runId || sub.eventsWatching || sub.eventsLoaded) return;
+  sub.eventsWatching = true;
+  sub.eventsError = '';
+  watchRun(sub.runId, {
+    onEvent: (type, data) => {
+      const payload = data && typeof data.payload === 'object' && data.payload !== null
+        ? data.payload
+        : {};
+      sub.events.push({
+        type,
+        at: data && typeof data.at === 'string' ? data.at : '',
+        payload,
+      });
+      notify();
+    },
+    onEnd: () => {
+      sub.eventsWatching = false;
+      sub.eventsLoaded = true;
+      notify();
+    },
+    onError: (error) => {
+      sub.eventsWatching = false;
+      sub.eventsError = error.message;
+      notify();
+    },
+  });
+}
+
+/** 子运行事件的一行客观描述（只取事件类型与载荷里的状态字段）。 */
+function childEventText(event) {
+  const body = event.payload || {};
+  if (event.type === 'run_started') return '开始子运行';
+  if (event.type === 'model_turn') return `模型第 ${body.index || '?'} 轮`;
+  if (event.type === 'step_started') return `开始 ${body.tool || ''}`;
+  if (event.type === 'step_finished') {
+    return `完成 ${body.tool || ''}（${body.status || ''}）`;
+  }
+  if (event.type === 'plan_updated') return '计划更新';
+  if (event.type === 'run_finished') return `结束（${body.termination || ''}）`;
+  return event.type;
+}
+
 /** 子 Agent 的嵌套块：其步骤引用 + 结论 + 引用与留痕（不复制子步骤结果载荷）。 */
 function subAgentNode(sub) {
   const box = el('div', 'chat__run-sub');
-  const title = sub.termination
-    ? `子 Agent：${sub.task}（${sub.termination}）`
-    : `子 Agent：${sub.task}`;
-  box.append(el('p', 'chat__run-sub-title', title));
+  const status = sub.running
+    ? ' · 运行中'
+    : (sub.termination ? `（${sub.termination}）` : '');
+  box.append(el('p', 'chat__run-sub-title', `子 Agent：${sub.task}${status}`));
+  if (sub.running && sub.timeoutMs) {
+    box.append(el(
+      'p',
+      'chat__run-sub-note',
+      `单次模型调用时限 ${(sub.timeoutMs / 1000).toFixed(0)} 秒`,
+    ));
+  }
   if (Array.isArray(sub.stepList) && sub.stepList.length) {
     const list = el('ol', 'chat__run-list chat__run-list--sub');
     for (const step of sub.stepList) {
@@ -754,6 +856,29 @@ function subAgentNode(sub) {
       list.append(item);
     }
     box.append(list);
+  }
+  if (Array.isArray(sub.events) && sub.events.length) {
+    const list = el('ol', 'chat__run-list chat__run-list--sub');
+    for (const event of sub.events) {
+      const item = el('li', 'chat__run-step');
+      item.append(el('span', 'chat__run-step-tool', childEventText(event)));
+      if (event.at) item.append(el('span', 'chat__run-step-target', event.at));
+      list.append(item);
+    }
+    box.append(el('p', 'chat__run-sub-note', '子运行事件：'));
+    box.append(list);
+  }
+  if (!sub.running && sub.runId && !sub.eventsLoaded && !sub.eventsWatching) {
+    const open = el('button', 'chat__action', '查看子运行事件');
+    open.type = 'button';
+    open.addEventListener('click', () => watchChildEvents(sub));
+    box.append(open);
+  }
+  if (sub.eventsWatching) {
+    box.append(el('p', 'chat__run-sub-note', '正在读取子运行事件…'));
+  }
+  if (sub.eventsError) {
+    box.append(el('p', 'chat__run-sub-reason', `子运行事件读取失败：${sub.eventsError}`));
   }
   if (sub.answer) box.append(el('p', 'chat__run-sub-answer', `结论：${sub.answer}`));
   if (sub.reason && sub.termination !== 'finished') {
@@ -812,6 +937,9 @@ function renderMessage(message) {
         list.append(runStepNode(step, position + 1));
       });
       box.append(list);
+    }
+    if (message.stepNote) {
+      box.append(el('p', 'chat__run-note', message.stepNote));
     }
     // 子 Agent：嵌套展示其步骤与结论
     if (Array.isArray(message.subAgents) && message.subAgents.length) {

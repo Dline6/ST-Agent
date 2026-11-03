@@ -243,3 +243,15 @@ def test_gwt3_budget_change_takes_effect_on_next_assembly(store, runner, tools) 
     assert outcome.budget_chars == 10
     assert outcome.dropped == ("history:msg_" + "0" * 20,)          # 下次装配按新预算取舍
     assert [c.config_id for c in facade.changes()] == [CONTEXT_BUDGET_CONFIG_ID]
+
+
+def test_subagent_timeouts_are_registered_with_their_defaults(store) -> None:
+    """T-AGT-032.2：子 Agent 的独立时限 / 尝试次数是独立的 01 §7 条目。"""
+    bounds = LoopBounds(store)
+    assert bounds.subagent_llm_timeout_ms() == 120_000
+    assert bounds.subagent_llm_max_attempts() == 2
+    ids = {entry.config_id for entry in bounds.entries()}
+    assert {
+        "investigate.subagent_llm_timeout_ms",
+        "investigate.subagent_llm_max_attempts",
+    } <= ids

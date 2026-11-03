@@ -8,8 +8,8 @@ arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P1
 milestone:
 depends_on: [T-AGT-018.2, T-AGT-023.2]
-status: todo
-decisions: [D-090, D-154]
+status: done
+decisions: [D-090, D-154, D-167]
 verify:
 ---
 
@@ -28,20 +28,19 @@ verify:
 
 ## 接口面
 
-待 ④ 对齐实填。预计落点：
-
-- 输入：`run_agent_loop` 的 `nested_recorder` / `SPAWN_AGENT_TOOL`（[`loop.py`](../../src/st_agent/l3/runtime/loop.py)）· `RunEventLog`（[`events.py`](../../src/st_agent/l3/runtime/events.py)）· 子运行留痕（[`report.py`](../../src/st_agent/l3/runtime/report.py)）· 运行面板（[`run_events.js`](../../src/st_agent/ui/web/js/run_events.js)）。
-- 输出：子运行事件日志 · 父运行进度事件 · 子 Agent 独立超时/重试配置 · 面板口径说明。
+- **输入**：`run_agent_loop` 的派生分支与 `NestedRecorder`（[`loop.py`](../../src/st_agent/l3/runtime/loop.py)）· `RunEventLog`（[`events.py`](../../src/st_agent/l3/runtime/events.py)）· 组合根的活动表 / 事件日志（[`composition/agent.py`](../../src/st_agent/composition/agent.py)）· `LoopBounds`（[`bounds.py`](../../src/st_agent/l3/runtime/bounds.py)）· 运行面板（[`run_events.js`](../../src/st_agent/ui/web/js/run_events.js) / [`chat.js`](../../src/st_agent/ui/web/js/pages/chat.js)）。
+- **输出**：`NestedRecorder(outcome, agent_run_id)`（落痕与事件共用开跑前铸好的子运行 id）· `NestedEventFactory` / `NestedEventStream`（组合根铸号、登记活动表、写 `agent-run-events/<child_run_id>.jsonl`）· 父事件 `sub_agent_started`（子 id / task / trace / 时限 / 尝试次数）· 子循环独立 `subagent_llm_timeout_ms`（缺省 120000）与 `subagent_llm_max_attempts`（缺省 2），对应 01 §7 两条配置项 · 运行面板的子运行事件回放与 `executed_steps` / `steps` 口径说明。
 
 ## 可关闭的遗留
 
-无（新建任务；④ 对齐时逐册复核）。
+无（L0 / L1 / L3 遗留册未闭区均无归属本任务或解封于本任务 `done` 的条目）。
 
 ## 假设与前提
 
-- **A1**：子运行事件可以与父运行共用同一事件模型与 SSE 通道，不必新造类型；若错，需定义 `parent_agent_run_id` 关联。
-- **A2**：子 Agent 的独立超时属于运行预算，不要求新增用户意图参数；若错，需在设置页开放。
-- **A3**：子 Agent 目前 `session_id=None`，事件流只按 `agent_run_id` 寻址，不需要会话身份。
+- **A1**：子运行事件可以与父运行共用同一事件模型与 SSE 通道，不必新造类型族。若错的影响：需定义 `parent_agent_run_id` 关联字段。验证方式：子事件日志按 `agent_run_id` 独立回放、父流只增 `sub_agent_started`。
+- **A2**：子 Agent 的独立超时属于运行预算，可在 01 §7 登记为全局配置项，不要求新增用户意图参数。若错的影响：需在设置页开放意图级参数。验证方式：新增两条 `investigate.subagent_*` 条目并由设置页预算段呈现。
+- **A3**：子 Agent 目前 `session_id=None`，事件流只按 `agent_run_id` 寻址；活动表登记不占会话互斥。若错的影响：需为子运行定义会话身份。验证方式：集成用例断言父子活动态与事件回放互不冲突。
+- **A4**：`NestedRecorder` 的签名扩展只影响仓内调用方（组合根 / 测试）。若错的影响：外部注入方需同步改签名。验证方式：全仓 grep 与范围套件覆盖。
 
 ## 涉及契约（链接到具体小节）
 

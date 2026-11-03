@@ -84,8 +84,9 @@ class _Gate:
 def test_event_types_are_the_eleven_from_d154_plus_steer():
     assert RUN_EVENT_TYPES == (
         "run_started", "model_turn", "plan_updated", "step_started",
-        "step_finished", "tool_search", "sub_agent", "gate_pending",
-        "ask_user", "budget_request", "steer", "text_delta", "run_finished",
+        "step_finished", "tool_search", "sub_agent_started", "sub_agent",
+        "gate_pending", "ask_user", "budget_request", "steer", "text_delta",
+        "run_finished",
     )
     assert set(RUN_EVENT_TYPES) == set(get_args(RunEventType))
 

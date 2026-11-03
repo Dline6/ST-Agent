@@ -8,8 +8,8 @@ arch_link: "[02 §4](../../docs/技术架构-v2/02-L0-本地优先基座.md)"
 priority: P2
 milestone:
 depends_on: [T-L0-003]
-status: todo
-decisions: [D-090]
+status: done
+decisions: [D-090, D-167]
 verify:
 ---
 
@@ -28,20 +28,18 @@ verify:
 
 ## 接口面
 
-待 ④ 对齐实填。预计落点：
-
-- 输入：SSE 解析（[`http_transport.py`](../../src/st_agent/l0/llm/http_transport.py)）· `_stream` 的用量写入（[`client.py`](../../src/st_agent/l0/llm/client.py)）· `LlmUsageRecord`（[`models.py`](../../src/st_agent/l0/llm/models.py)）。
-- 输出：`usage` 解析与 `source` 字段 · reasoning token 统计 · 失败调用的耗时/阶段字段。
+- **输入**：SSE 解析（[`http_transport.py`](../../src/st_agent/l0/llm/http_transport.py)）· `_stream` 的用量写入（[`client.py`](../../src/st_agent/l0/llm/client.py)）· `LlmUsageRecord`（[`models.py`](../../src/st_agent/l0/llm/models.py)）。
+- **输出**：请求体新增 `stream_options.include_usage=true`；流式项新增 `ProviderUsage`（提供方流末 `usage`）与 `ReasoningDelta`（`delta.reasoning_content` / `delta.reasoning`）；`LlmUsageRecord` 新增 `usage_source`（`provider` / `estimate`）与 `reasoning_tokens`；推理增量只计活动与 token，不进答案文本；失败调用同样记录实际耗时、已产生 token 与失败阶段。
 
 ## 可关闭的遗留
 
-无（新建任务；④ 对齐时逐册复核）。
+无（L0 / L1 / L3 遗留册未闭区均无归属本任务或解封于本任务 `done` 的条目）。
 
 ## 假设与前提
 
-- **A1**：OpenAI 兼容端点的 `usage` 形态可用；若错，按提供方适配器扩展，不猜字段。
-- **A2**：`LlmUsageRecord` 新增字段保持向后兼容；若错，需迁移旧记录或分版本读取。
-- **A3**：推理内容默认不落盘、不回放，只记计数；若错，需在隐私设置增加开关。
+- **A1**：OpenAI 兼容端点的 `usage` 形态可用（`prompt_tokens` / `completion_tokens` / `completion_tokens_details.reasoning_tokens`）。若错的影响：需按提供方适配器扩展，不猜字段。验证方式：真实 SSE 行用例与 live 子集。
+- **A2**：`LlmUsageRecord` 新增字段保持向后兼容（默认 `estimate` / 0）。若错的影响：需迁移旧记录或分版本读取。验证方式：旧记录解析与既有用例全绿。
+- **A3**：推理内容默认不落盘、不回放，只记计数。若错的影响：需在隐私设置增加开关。验证方式：盘上明文扫描与用量记录字段断言。
 
 ## 涉及契约（链接到具体小节）
 

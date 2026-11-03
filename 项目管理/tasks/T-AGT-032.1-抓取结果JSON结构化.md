@@ -8,8 +8,8 @@ arch_link: "[05 §10](../../docs/技术架构-v2/05-L3-对话主入口.md)"
 priority: P1
 milestone:
 depends_on: [T-AGT-015.2, T-AGT-017.2]
-status: todo
-decisions: [D-090]
+status: done
+decisions: [D-090, D-167]
 verify:
 ---
 
@@ -28,20 +28,18 @@ verify:
 
 ## 接口面
 
-待 ④ 对齐实填。预计落点：
-
-- 输入：`extract_fetched_text` / `FetchedPayload`（[`l0/net/fetch.py`](../../src/st_agent/l0/net/fetch.py)）· `sk_web_fetch` 执行器（[`l1/builtin/web.py`](../../src/st_agent/l1/builtin/web.py)）· `_render_result` / `_json`（[`l3/runtime/context.py`](../../src/st_agent/l3/runtime/context.py)）· `sk_result_read` 的 `_payload_text`（[`l1/builtin/results.py`](../../src/st_agent/l1/builtin/results.py)）。
-- 输出：`sk_web_fetch` 的结构化输出 schema（新增 `data` / `records` 字段）· JSON 解析失败的回退口径 · 回读文本形态。
+- **输入**：`extract_fetched_text`（[`l0/net/fetch.py`](../../src/st_agent/l0/net/fetch.py)，L0 只解码、不解析 JSON）· `sk_web_fetch` 执行器（[`l1/builtin/web.py`](../../src/st_agent/l1/builtin/web.py)，L1 用标准库 `json` 解析）· 结果回读 `_payload_text`（[`l1/builtin/results.py`](../../src/st_agent/l1/builtin/results.py)）。
+- **输出**：`sk_web_fetch` 输出 schema 新增 `format`（`json` / `text`）· `data`（对象）· `records`（数组）；合法 JSON 且完整报文不超 `max_chars` 时给结构化字段、不再把原 JSON 塞进 `text`；超限时只给截断文本并显式标注；坏 JSON 回退文本并在 `note` 写明原因。`sk_result_read` 的分片来自 `_payload_text(envelope.data)`，结构化后不再出现被转义成字符串的 JSON。
 
 ## 可关闭的遗留
 
-无（新建任务；④ 对齐时逐册复核）。
+无（L0 / L1 / L3 遗留册未闭区均无归属本任务或解封于本任务 `done` 的条目）。
 
 ## 假设与前提
 
-- **A1**：`sk_web_fetch` 的公开输出 schema 可以新增字段而不破坏既有消费方；若错，需版本化或保留 `text` 兼容。
-- **A2**：JSON 解析在 L1 完成，不引第三方依赖；若错，改用 L0 已有解析器。
-- **A3**：结构化后仍要保留“网页正文是不可信数据”的提示，不能因为变成 dict 就放松注入防护。
+- **A1**：`sk_web_fetch` 的公开输出 schema 可以新增字段而不破坏既有消费方。若错的影响：需版本化或保留 `text` 兼容。验证方式：既有 `tests/l0/test_web_fetch.py` / `tests/l1/test_builtin_web.py` 全绿，新增用例只读新增字段。
+- **A2**：JSON 解析在 L1 完成，用标准库 `json`，不引第三方依赖。若错的影响：改用 L0 已有解析器并调整层间分工。验证方式：L1 用例断言对象 / 数组 / 坏 JSON 三态。
+- **A3**：结构化后仍保留「网页正文是不可信数据」的提示，不因变成 dict 放松注入防护。若错的影响：模型可能把正文当指令；验证方式：结构化成功用例断言 `note` 含该提示。
 
 ## 涉及契约（链接到具体小节）
 

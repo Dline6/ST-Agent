@@ -33,11 +33,12 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
-from st_agent.contracts.identifiers import TraceId
+from st_agent.contracts.identifiers import AgentRunId, TraceId
 from st_agent.contracts.result_envelope import EvidenceRef, ResultEnvelope
 from st_agent.contracts.trace import Trace
 from st_agent.l0.llm import ToolCall, estimate_tokens
@@ -90,7 +91,11 @@ __all__ = [
     "DEFAULT_MAX_STEPS",
     "DEFAULT_LLM_MAX_ATTEMPTS",
     "DEFAULT_LLM_RETRY_BACKOFF_MS",
+    "DEFAULT_SUBAGENT_LLM_MAX_ATTEMPTS",
+    "DEFAULT_SUBAGENT_LLM_TIMEOUT_MS",
     "GATE_VERDICTS",
+    "NestedEventFactory",
+    "NestedEventStream",
     "NestedRecorder",
     "NestedRunRef",
     "PLAN_UPDATE_TOOL",
@@ -145,6 +150,16 @@ DEFAULT_LLM_MAX_ATTEMPTS = 3
 DEFAULT_LLM_RETRY_BACKOFF_MS = 500
 """重试退避基数（毫秒）：第 n 次重试等待 ``n × 基数``；缺省与配置条目
 ``investigate.llm_retry_backoff_ms`` 同源。"""
+
+DEFAULT_SUBAGENT_LLM_TIMEOUT_MS = 120_000
+"""子 Agent 单次 LLM 调用的**独立总时限**（毫秒；[T-AGT-032.2](../../../项目管理/tasks/T-AGT-032.2-子Agent事件流与独立超时.md)）。
+
+比父运行的 300000 短：子任务应更快失败或继续，不与父运行争同一份长时限；
+缺省与配置条目 ``investigate.subagent_llm_timeout_ms`` 同源。
+"""
+
+DEFAULT_SUBAGENT_LLM_MAX_ATTEMPTS = 2
+"""子 Agent 单轮模型调用的**最多尝试次数**（含首次；同 ``investigate.subagent_llm_max_attempts``）。"""
 
 MAX_UNKNOWN_TOOL_ROUNDS = 2
 """未知工具的**连续轮次**上限（工具调用自愈，[D-154](../../../项目管理/决策日志.md) A6）。
@@ -405,8 +420,29 @@ class LoopOutcome(BaseModel):
         return self.termination == "finished"
 
 
-NestedRecorder = Callable[[LoopOutcome], NestedRunRef]
-"""子循环的落痕端口（组合根注入；缺省未注入即派生显式不可用）。"""
+NestedRecorder = Callable[[LoopOutcome, str], NestedRunRef]
+"""子循环的落痕端口（组合根注入；缺省未注入即派生显式不可用）。
+
+第二个参数是**开跑前已铸好的子运行标识**——事件日志与 ``agent_run`` 留痕因此指向
+同一个 ``agent_run_id``（[T-AGT-032.2](../../../项目管理/tasks/T-AGT-032.2-子Agent事件流与独立超时.md)）。
+"""
+
+
+@dataclass(frozen=True)
+class NestedEventStream:
+    """子运行事件流的句柄（组合根注入的工厂产出）。
+
+    ``emit`` 与父循环同签名的运行事件回调；``close`` 在子运行收口后释放活动登记
+    （缺省为空操作）。事件日志与 ``agent_run`` 留痕共用 :attr:`agent_run_id`。
+    """
+
+    agent_run_id: str
+    emit: Callable[[str, Mapping[str, Any]], None]
+    close: Callable[[], None] = lambda: None
+
+
+NestedEventFactory = Callable[[], NestedEventStream]
+"""子运行事件工厂（缺省未注入时子循环不产生事件，但派生仍可落痕）。"""
 
 
 def resolve_approved(source: ApprovedPermissions, skill_id: str) -> tuple[str, ...]:
@@ -437,6 +473,8 @@ def run_agent_loop(
     llm_idle_timeout_ms: int | None = None,
     llm_max_attempts: int = DEFAULT_LLM_MAX_ATTEMPTS,
     llm_retry_backoff_ms: int = DEFAULT_LLM_RETRY_BACKOFF_MS,
+    subagent_llm_timeout_ms: int | None = None,
+    subagent_llm_max_attempts: int | None = None,
     retry_sleep: Callable[[float], None] | None = None,
     budget_chars: int | None = None,
     context_window_tokens: int | None = None,
@@ -457,6 +495,7 @@ def run_agent_loop(
     parallel_safe: bool = False,
     allow_sub_agents: bool = True,
     nested_recorder: NestedRecorder | None = None,
+    child_events: NestedEventFactory | None = None,
     parent_trace_id: str = "",
     prior_sub_agents: Sequence[SubAgentRun] = (),
     subprotocols: Any = None,
@@ -490,6 +529,10 @@ def run_agent_loop(
     :param llm_idle_timeout_ms: 单次 LLM 调用的**空闲时限**（缺省取总时限）
     :param llm_max_attempts: 单轮模型调用的最多尝试次数（仅可重试失败退避重试）
     :param llm_retry_backoff_ms: 重试退避基数（第 n 次等待 n × 基数）
+    :param subagent_llm_timeout_ms: 子 Agent 单次 LLM 调用的**独立总时限**
+        （缺省 ``DEFAULT_SUBAGENT_LLM_TIMEOUT_MS``；父循环自身的调用不受影响）
+    :param subagent_llm_max_attempts: 子 Agent 单轮调用的最多尝试次数
+        （缺省 ``DEFAULT_SUBAGENT_LLM_MAX_ATTEMPTS``）
     :param retry_sleep: 重试等待函数（测试注入以跳过真实等待；缺省 :func:`time.sleep`）
     :param system_prompt: 每轮请求携带的确定性系统提示词（空串＝不带）
     :param system_prompt_version: 系统提示词版本（只进用量记录）
@@ -509,6 +552,8 @@ def run_agent_loop(
         **缺省 ``False``**：一轮多个调用显式退回串行并在产出标注；装配方核验后才可置 ``True``
     :param allow_sub_agents: 本循环是否允许派生子 Agent（子循环置 ``False``，只允许一层）
     :param nested_recorder: 子循环的**落痕端口**（组合根注入；缺省即派生显式不可用）
+    :param child_events: 子运行**事件流工厂**（组合根注入；缺省时子循环不产生事件，
+        但仍铸 ``agent_run_id`` 并落痕，父事件流照常给 ``sub_agent_started``）
     :param parent_trace_id: 子循环的父链 ``trace_id``（主循环留空；只进留痕，不改 Trace 结构）
     :param prior_sub_agents: 续跑承接的**子 Agent 摘要**（取自旧 ``agent_run`` 留痕；
         子步骤不重建，但结论、引用与留痕链接仍进工作上下文与本次留痕）
@@ -609,8 +654,18 @@ def run_agent_loop(
     for name, value in (("parallel_safe", parallel_safe), ("allow_sub_agents", allow_sub_agents)):
         if not isinstance(value, bool):
             raise AgentRuntimeValidationError(f"{name} 须为布尔值，得到 {value!r}")
+    for name, value in (
+        ("subagent_llm_timeout_ms", subagent_llm_timeout_ms),
+        ("subagent_llm_max_attempts", subagent_llm_max_attempts),
+    ):
+        if value is not None and (
+            not isinstance(value, int) or isinstance(value, bool) or value < 1
+        ):
+            raise AgentRuntimeValidationError(f"{name} 须为 ≥1 的整数或 None，得到 {value!r}")
     if nested_recorder is not None and not callable(nested_recorder):
         raise AgentRuntimeValidationError("子 Agent 的落痕端口须为可调用对象（或 None）")
+    if child_events is not None and not callable(child_events):
+        raise AgentRuntimeValidationError("子运行事件工厂须为可调用对象（或 None）")
     if emit is not None and not callable(emit):
         raise AgentRuntimeValidationError("运行事件回调须为可调用对象（或 None）")
     if cancel is not None and not callable(getattr(cancel, "is_set", None)):
@@ -1108,41 +1163,73 @@ def run_agent_loop(
                 if remaining_llm < 1:
                     subagent_notes.append("子 Agent 派生未执行：LLM 调用次数预算已用尽")
                     continue
-                child = run_agent_loop(
-                    task=task_text,
-                    endpoint_id=endpoint_id,
-                    protocol=protocol,
-                    runner=runner,
-                    tools=tuple(item for item in tools if item.name != SPAWN_AGENT_TOOL),
-                    gate=gate,
-                    approved_permissions=approved_permissions,
-                    initiator=initiator,
-                    purpose=purpose,
-                    max_steps=remaining_steps,
-                    max_llm_calls=remaining_llm,
-                    llm_timeout_ms=llm_timeout_ms,
-                    llm_idle_timeout_ms=llm_idle_timeout_ms,
-                    llm_max_attempts=llm_max_attempts,
-                    llm_retry_backoff_ms=llm_retry_backoff_ms,
-                    retry_sleep=retry_sleep,
-                    budget_chars=effective_budget_chars,
-                    context_window_tokens=context_window_tokens,
-                    context_budget_tokens=context_budget_tokens,
-                    max_result_chars=max_result_chars,
-                    tool_lazy_chars=effective_tool_lazy_chars,
-                    trace=Trace(trace_id=TraceId.generate()),
-                    session_id=None,
-                    history=(),
-                    memory=memory,
-                    parallel_safe=parallel_safe,
-                    allow_sub_agents=False,
-                    nested_recorder=None,
-                    parent_trace_id=chain.trace_id.value,
-                    cancel=cancel,
-                    system_prompt=system_prompt,
-                    system_prompt_version=system_prompt_version,
+                child_stream = child_events() if child_events is not None else None
+                child_run_id = (
+                    child_stream.agent_run_id if child_stream is not None
+                    else AgentRunId.generate().value
                 )
-                ref = nested_recorder(child)
+                child_trace = Trace(trace_id=TraceId.generate())
+                effective_subagent_timeout = (
+                    subagent_llm_timeout_ms
+                    if subagent_llm_timeout_ms is not None
+                    else DEFAULT_SUBAGENT_LLM_TIMEOUT_MS
+                )
+                effective_subagent_attempts = (
+                    subagent_llm_max_attempts
+                    if subagent_llm_max_attempts is not None
+                    else DEFAULT_SUBAGENT_LLM_MAX_ATTEMPTS
+                )
+                child_idle_timeout = llm_idle_timeout_ms
+                if child_idle_timeout is not None:
+                    # 空闲读超时不得超过子运行总时限（否则一次阻塞读能越过总时限）
+                    child_idle_timeout = min(child_idle_timeout, effective_subagent_timeout)
+                _emit("sub_agent_started", {
+                    "task": task_text,
+                    "agent_run_id": child_run_id,
+                    "trace_id": child_trace.trace_id.value,
+                    "timeout_ms": effective_subagent_timeout,
+                    "max_attempts": effective_subagent_attempts,
+                })
+                try:
+                    child = run_agent_loop(
+                        task=task_text,
+                        endpoint_id=endpoint_id,
+                        protocol=protocol,
+                        runner=runner,
+                        tools=tuple(item for item in tools if item.name != SPAWN_AGENT_TOOL),
+                        gate=gate,
+                        approved_permissions=approved_permissions,
+                        initiator=initiator,
+                        purpose=purpose,
+                        max_steps=remaining_steps,
+                        max_llm_calls=remaining_llm,
+                        llm_timeout_ms=effective_subagent_timeout,
+                        llm_idle_timeout_ms=child_idle_timeout,
+                        llm_max_attempts=effective_subagent_attempts,
+                        llm_retry_backoff_ms=llm_retry_backoff_ms,
+                        retry_sleep=retry_sleep,
+                        budget_chars=effective_budget_chars,
+                        context_window_tokens=context_window_tokens,
+                        context_budget_tokens=context_budget_tokens,
+                        max_result_chars=max_result_chars,
+                        tool_lazy_chars=effective_tool_lazy_chars,
+                        trace=child_trace,
+                        session_id=None,
+                        history=(),
+                        memory=memory,
+                        parallel_safe=parallel_safe,
+                        allow_sub_agents=False,
+                        nested_recorder=None,
+                        parent_trace_id=chain.trace_id.value,
+                        cancel=cancel,
+                        emit=child_stream.emit if child_stream is not None else None,
+                        system_prompt=system_prompt,
+                        system_prompt_version=system_prompt_version,
+                    )
+                    ref = nested_recorder(child, child_run_id)
+                finally:
+                    if child_stream is not None:
+                        child_stream.close()
                 evidence = tuple(
                     EvidenceRef(kind="skill_run_id", ref=step.skill_run_id)
                     for step in child.steps

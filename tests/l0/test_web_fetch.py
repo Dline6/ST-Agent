@@ -59,6 +59,16 @@ def test_plain_text_is_returned_as_is() -> None:
     assert out["title"] == ""
 
 
+def test_json_body_keeps_its_whitespace_for_l1_to_parse() -> None:
+    """T-AGT-032.1：JSON 只解码、不折叠空白（字符串内的空白有语义）。"""
+    body = '{"msg": "a  b\\nc", "n": 1}'
+    out = extract_fetched_text(FetchedPayload(
+        200, "application/json; charset=utf-8", body.encode("utf-8"),
+    ))
+    assert out["format"] == "json"
+    assert out["text"] == body
+
+
 def test_gbk_charset_is_decoded() -> None:
     out = extract_fetched_text(FetchedPayload(
         200, "text/html; charset=gbk", "<p>中文</p>".encode("gbk")

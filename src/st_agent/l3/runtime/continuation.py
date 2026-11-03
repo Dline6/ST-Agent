@@ -144,6 +144,7 @@ def resume_agent_run(
     parallel_safe: bool = False,
     allow_sub_agents: bool = True,
     nested_recorder: Any = None,
+    child_events: Any = None,
     now: datetime | None = None,
     ttl: timedelta = CONTINUATION_TTL,
     new_run_id: str | None = None,
@@ -156,6 +157,8 @@ def resume_agent_run(
     llm_idle_timeout_ms: int | None = None,
     llm_max_attempts: int = DEFAULT_LLM_MAX_ATTEMPTS,
     llm_retry_backoff_ms: int = DEFAULT_LLM_RETRY_BACKOFF_MS,
+    subagent_llm_timeout_ms: int | None = None,
+    subagent_llm_max_attempts: int | None = None,
     system_prompt: str = "",
     system_prompt_version: str = "",
 ) -> ResumeOutcome:
@@ -339,6 +342,7 @@ def resume_agent_run(
         parallel_safe=parallel_safe,
         allow_sub_agents=allow_sub_agents,
         nested_recorder=nested_recorder,
+        child_events=child_events,
         parent_trace_id=record.parent_trace_id,
         prior_sub_agents=tuple(record.sub_agents),
         subprotocols=subprotocols,
@@ -349,6 +353,8 @@ def resume_agent_run(
         llm_idle_timeout_ms=llm_idle_timeout_ms,
         llm_max_attempts=llm_max_attempts,
         llm_retry_backoff_ms=llm_retry_backoff_ms,
+        subagent_llm_timeout_ms=subagent_llm_timeout_ms,
+        subagent_llm_max_attempts=subagent_llm_max_attempts,
         system_prompt=system_prompt,
         system_prompt_version=system_prompt_version,
     )

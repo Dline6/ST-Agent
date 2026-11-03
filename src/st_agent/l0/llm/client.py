@@ -15,7 +15,8 @@
 - 统一流式协议（GWT-3）：``chunk* → (tool_call*) → done`` 或单个 ``error``；
   中断/取消/超时显式上报为 ``error`` 事件
 - 用量本地统计（GWT-4）：每次调用记一条 ``LlmUsageRecord``（仅计数）
-  入 ``execution_log`` 分区；失败调用记 ``failed`` 并给出原因
+  入 ``execution_log`` 分区；优先采用提供方流末 ``usage``（标 `usage_source="provider"`），
+  无 `usage` 时回退字符估算（`estimate`）；推理增量计入 reasoning token 统计但不进答案；失败调用记 ``failed`` 并给出原因
 - 失败一律走 ``ResultEnvelope``（GWT-5）：端点宕机 → ``unavailable``；
   超时/取消/其他执行失败 → ``failed``（带可查 ``log_ref``）；
   凭据缺失 → ``dependency_failed``；输入/档位非法 → ``validation_failed``
@@ -51,6 +52,8 @@ from st_agent.l0.llm.models import (
     LlmEndpoint,
     LlmFailure,
     LlmUsageRecord,
+    ProviderUsage,
+    ReasoningDelta,
     StreamEvent,
     ToolCall,
     ToolSpec,
@@ -72,10 +75,11 @@ LLM_USAGE_PREFIX = "llm-usage/"
 """``execution_log`` 分区内 LLM 用量记录的目录前缀。"""
 
 #: 传输 callable 协议：(endpoint, prompt, key, timeout_ms, tools) -> 流式项可迭代
-#: 流式项为文本增量（``str``）或**拼完**的工具调用（``ToolCall``）两态。
+#: 流式项为文本增量（``str``）、**拼完**的工具调用（``ToolCall``）、推理增量
+#: （``ReasoningDelta``）或提供方用量（``ProviderUsage``）四态。
 Transport = Callable[
     [LlmEndpoint, str, str | None, int, Sequence[ToolSpec] | None],
-    Iterable[str | ToolCall],
+    Iterable[str | ToolCall | ReasoningDelta | ProviderUsage],
 ]
 
 
@@ -166,6 +170,26 @@ def _completion_text(text_parts: Sequence[str], calls: Sequence[ToolCall]) -> st
     漏计会让「本地用量可见」失真。
     """
     return "".join(text_parts) + "".join(call.model_dump_json() for call in calls)
+
+
+def _usage_values(
+    prompt_estimate: int,
+    completion_estimate: int,
+    reasoning_estimate: int,
+    provider_usage: ProviderUsage | None,
+) -> tuple[int, int, int, str]:
+    """选用量与来源：有提供方 ``usage`` 用提供方值，否则回退估算（不伪装来源）。
+
+    提供方的 ``completion_tokens`` 已包含推理 token；``reasoning_tokens`` 只做细分统计。
+    """
+    if provider_usage is not None:
+        return (
+            provider_usage.prompt_tokens,
+            provider_usage.completion_tokens,
+            provider_usage.reasoning_tokens,
+            "provider",
+        )
+    return prompt_estimate, completion_estimate, reasoning_estimate, "estimate"
 
 
 class LlmClient:
@@ -468,8 +492,17 @@ class LlmClient:
             )
             return
         text_parts: list[str] = []
+        reasoning_parts: list[str] = []
         calls: list[ToolCall] = []
-        spent = lambda: estimate_tokens(_completion_text(text_parts, calls))
+        provider_usage: ProviderUsage | None = None
+
+        def spent() -> int:
+            return estimate_tokens(
+                _completion_text(text_parts, calls) + "".join(reasoning_parts)
+            )
+
+        def reasoning_spent() -> int:
+            return estimate_tokens("".join(reasoning_parts))
         try:
             kwargs: dict[str, Any] = {}
             if idle_timeout_ms is not None:
@@ -484,6 +517,7 @@ class LlmClient:
                     yield self._fail(
                         endpoint, "调用中被取消", initiator, purpose,
                         prompt_tokens, spent(), elapsed_ms(),
+                        reasoning_tokens=reasoning_spent(),
                         failure=LlmFailure(
                             kind="cancelled", elapsed_ms=elapsed_ms(),
                             timeout_ms=timeout_ms, idle_timeout_ms=idle_timeout_ms,
@@ -495,6 +529,7 @@ class LlmClient:
                     yield self._fail(
                         endpoint, f"总时限超时（>{timeout_ms}ms）", initiator, purpose,
                         prompt_tokens, spent(), elapsed_ms(),
+                        reasoning_tokens=reasoning_spent(),
                         failure=LlmFailure(
                             kind="timeout", retryable=True, stage="stream",
                             elapsed_ms=elapsed_ms(), timeout_ms=timeout_ms,
@@ -506,7 +541,12 @@ class LlmClient:
                 if isinstance(item, str):
                     text_parts.append(item)
                     yield StreamEvent(kind="chunk", text=item)
-                else:
+                elif isinstance(item, ReasoningDelta):
+                    # 推理增量只计活动与 token，不进答案文本（T-AGT-032.3 GWT-3）
+                    reasoning_parts.append(item.text)
+                elif isinstance(item, ProviderUsage):
+                    provider_usage = item
+                elif isinstance(item, ToolCall):
                     calls.append(item)
                     yield StreamEvent(kind="tool_call", tool_call=item)
         except TransportUnavailableError as exc:
@@ -540,6 +580,7 @@ class LlmClient:
                 yield self._fail(
                     endpoint, "调用中被取消", initiator, purpose,
                     prompt_tokens, spent(), elapsed_ms(),
+                    reasoning_tokens=reasoning_spent(),
                     failure=LlmFailure(
                         kind="cancelled", elapsed_ms=elapsed_ms(),
                         timeout_ms=timeout_ms, idle_timeout_ms=idle_timeout_ms,
@@ -554,12 +595,17 @@ class LlmClient:
             yield self._fail(
                 endpoint, str(exc) or "传输失败", initiator, purpose,
                 prompt_tokens, spent(), elapsed_ms(),
+                reasoning_tokens=reasoning_spent(),
                 failure=failure, **usage_meta,
             )
             return
+        prompt_used, completion_used, reasoning_used, source = _usage_values(
+            prompt_tokens, spent(), reasoning_spent(), provider_usage,
+        )
         usage, _ = self._write_usage(
             endpoint.endpoint_id, initiator=initiator, purpose=purpose,
-            prompt_tokens=prompt_tokens, completion_tokens=spent(),
+            prompt_tokens=prompt_used, completion_tokens=completion_used,
+            reasoning_tokens=reasoning_used, usage_source=source,
             duration_ms=elapsed_ms(), status="ok",
             **usage_meta,
         )
@@ -577,6 +623,8 @@ class LlmClient:
         completion_tokens: int,
         duration_ms: int,
         *,
+        reasoning_tokens: int = 0,
+        usage_source: str = "estimate",
         failure: LlmFailure | None = None,
         timeout_ms: int | None = None,
         idle_timeout_ms: int | None = None,
@@ -587,6 +635,7 @@ class LlmClient:
         _, relpath = self._write_usage(
             endpoint.endpoint_id, initiator=initiator, purpose=purpose,
             prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
+            reasoning_tokens=reasoning_tokens, usage_source=usage_source,
             duration_ms=duration_ms, status="failed", fail_reason=reason,
             failure=failure, timeout_ms=timeout_ms, idle_timeout_ms=idle_timeout_ms,
             system_prompt_version=system_prompt_version,
@@ -638,6 +687,8 @@ class LlmClient:
         status: str,
         fail_reason: str = "",
         failure: LlmFailure | None = None,
+        reasoning_tokens: int = 0,
+        usage_source: str = "estimate",
         timeout_ms: int | None = None,
         idle_timeout_ms: int | None = None,
         system_prompt_version: str = "",
@@ -653,6 +704,8 @@ class LlmClient:
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
                 total_tokens=prompt_tokens + completion_tokens,
+                reasoning_tokens=reasoning_tokens,
+                usage_source=usage_source,  # type: ignore[arg-type]
                 duration_ms=duration_ms,
                 status=status,  # type: ignore[arg-type]
                 fail_reason=fail_reason,
@@ -698,8 +751,10 @@ class LlmClient:
         """规整工具条目入参为 :class:`ToolSpec` 元组（非法 → ``LlmValidationError``）。
 
         接受模型或等价映射（同 ``_coerce_requirement`` 的宽进口径）；``None`` 与
-        **空序列一律归空**——「不带 tools」与「带空列表」等价，故单轮纯文本路径的
-        请求体逐字节不变（02 §4）。形态非法（空名 / 结构坏）在**发包之前**即拒。
+        **空序列一律归空**——「不带 tools」与「带空列表」等价。消息字段（``model`` /
+        ``messages`` / ``stream``）不因传入空列表而变形；``stream_options`` 是
+        T-AGT-032.3 为取提供方用量而恒带的标准选项，与 tools 无关。
+        形态非法（空名 / 结构坏）在**发包之前**即拒。
         """
         if tools is None:
             return ()

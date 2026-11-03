@@ -9,18 +9,22 @@ from __future__ import annotations
 import pytest
 
 from st_agent.contracts.result_envelope import ResultEnvelope
-from st_agent.l0.llm import ToolCall
+from st_agent.l0.llm import LlmFailure, ToolCall
 from st_agent.l1.builtin import install_builtins
 from st_agent.l1.builtin.spawn import SPAWN_AGENT
 from st_agent.l1.runner import SkillRunner
 from st_agent.l1.skills import SkillRegistry, ensure_official_pack
 from st_agent.l3.runtime import (
     GateDecision,
+    NestedEventStream,
     NestedRunRef,
+    RunEventLog,
     TurnResult,
     agent_log_ref_of,
     conclude_agent_run,
     load_agent_run,
+    new_agent_run_id,
+    read_run_events,
     resume_agent_run,
     run_agent_loop,
 )
@@ -61,12 +65,15 @@ class FakeProtocol:
     def __init__(self, script=()) -> None:
         self._script = list(script)
         self.contexts: list = []
+        self.turn_kwargs: list[dict] = []
 
     def tool_calls_supported(self) -> bool:
         return True
 
-    def invoke_turn(self, context, *, initiator: str, purpose: str, cancel=None) -> TurnResult:
+    def invoke_turn(self, context, *, initiator: str, purpose: str, cancel=None,
+                    **kwargs) -> TurnResult:
         self.contexts.append(context)
+        self.turn_kwargs.append(dict(kwargs))
         return self._script.pop(0) if self._script else TurnResult(text="（脚本已尽）")
 
 
@@ -98,14 +105,25 @@ def finish(text: str = "主结论") -> TurnResult:
 
 
 def recorder(store):
-    def record(outcome):
-        report = conclude_agent_run(store, outcome)
+    def record(outcome, agent_run_id):
+        report = conclude_agent_run(store, outcome, agent_run_id=agent_run_id)
         return NestedRunRef(
             agent_run_id=report.agent_run_id,
             log_ref=agent_log_ref_of(report.agent_run_id),
         )
 
     return record
+
+
+def event_factory(store):
+    """子运行事件流工厂（与组合根同形态：铸号 + 写事件日志）。"""
+
+    def open_stream() -> NestedEventStream:
+        child_id = new_agent_run_id()
+        log = RunEventLog(store, child_id)
+        return NestedEventStream(agent_run_id=child_id, emit=log.emit)
+
+    return open_stream
 
 
 def drive(runner, tools, protocol, *, gate=None, store=None, **kwargs):
@@ -322,3 +340,99 @@ def test_sub_agent_event_carries_nested_steps_and_conclusion(runner, tools, stor
         "skill_run_id": sub.evidence[0].ref,
         "truncated": False,
     }]
+
+
+# ─────────────────── T-AGT-032.2 · 子运行事件流与独立超时 ───────────────────
+
+
+def test_child_run_has_its_own_event_log_and_parent_reports_progress(runner, tools, store):
+    """GWT-1：子循环写自己的事件日志；父流有 sub_agent_started / sub_agent 进度事件。"""
+    events: list = []
+    protocol = FakeProtocol([
+        call("sk_spawn_agent", {"task": CHILD_TASK}, call_id="spawn_1"),
+        batch(SK_A),
+        finish("子 Agent 结论：无高危公告"),
+        finish("主结论"),
+    ])
+
+    outcome = drive(
+        runner, tools, protocol, store=store,
+        child_events=event_factory(store),
+        emit=lambda kind, payload: events.append((kind, dict(payload))),
+    )
+
+    sub = outcome.sub_agents[0]
+    started = [body for kind, body in events if kind == "sub_agent_started"]
+    assert len(started) == 1
+    assert started[0]["agent_run_id"] == sub.agent_run_id
+    assert started[0]["task"] == CHILD_TASK
+    assert started[0]["trace_id"] == sub.trace_id
+    assert started[0]["timeout_ms"] == 120_000
+    assert started[0]["max_attempts"] == 2
+
+    child_events = read_run_events(store, sub.agent_run_id)
+    kinds = [event.event for event in child_events]
+    assert kinds[0] == "run_started"
+    assert "step_started" in kinds and "step_finished" in kinds
+    assert kinds[-1] == "run_finished"
+
+    # 子事件不混入父事件流（各自按 agent_run_id 寻址）
+    parent_kinds = [kind for kind, _ in events]
+    assert "sub_agent_started" in parent_kinds
+    assert parent_kinds.index("sub_agent_started") < parent_kinds.index("sub_agent")
+
+
+def test_child_timeout_is_explicit_and_does_not_stop_the_parent(runner, tools, store):
+    """GWT-2 / GWT-3：子调用失败只回父事件（含 id / 原因 / 步数），父循环继续。"""
+    events: list = []
+    protocol = FakeProtocol([
+        call("sk_spawn_agent", {"task": CHILD_TASK}, call_id="spawn_1"),
+        TurnResult(
+            envelope=ResultEnvelope.failed("LLM 调用超时", log_ref="llm-usage/x.json"),
+            failure=LlmFailure(kind="timeout", retryable=False, elapsed_ms=1_200),
+        ),
+        finish("主结论：子任务超时，改由主循环继续"),
+    ])
+
+    outcome = drive(
+        runner, tools, protocol, store=store,
+        child_events=event_factory(store),
+        emit=lambda kind, payload: events.append((kind, dict(payload))),
+    )
+
+    assert outcome.termination == "finished"
+    assert outcome.answer == "主结论：子任务超时，改由主循环继续"
+    sub = outcome.sub_agents[0]
+    assert sub.termination == "llm_failed"
+    assert sub.steps == 0
+    payload = [body for kind, body in events if kind == "sub_agent"][0]
+    assert payload["agent_run_id"] == sub.agent_run_id
+    assert payload["termination"] == "llm_failed"
+    assert payload["steps"] == 0
+    assert "超时" in payload["reason"]
+    assert "超时" in protocol.contexts[-1].subagent_note
+    # 子运行事件日志仍完整收口（可回放失败过程）
+    assert read_run_events(store, sub.agent_run_id)[-1].event == "run_finished"
+
+
+def test_child_uses_its_own_llm_timeout_not_the_parent(runner, tools, store):
+    """GWT-3：子循环用独立时限（缺省 120s），父循环仍是自己的 300s。"""
+    protocol = FakeProtocol([
+        call("sk_spawn_agent", {"task": CHILD_TASK}, call_id="spawn_1"),
+        batch(SK_A),
+        finish("子 Agent 结论"),
+        finish("主结论"),
+    ])
+
+    drive(
+        runner, tools, protocol, store=store,
+        llm_timeout_ms=300_000,
+        llm_idle_timeout_ms=90_000,
+        llm_max_attempts=3,
+        child_events=event_factory(store),
+    )
+
+    assert protocol.turn_kwargs[0]["timeout_ms"] == 300_000     # 父派生的那轮
+    assert protocol.turn_kwargs[1]["timeout_ms"] == 120_000     # 子循环首轮
+    assert protocol.turn_kwargs[1]["idle_timeout_ms"] == 90_000
+    assert protocol.turn_kwargs[-1]["timeout_ms"] == 300_000    # 父收尾轮

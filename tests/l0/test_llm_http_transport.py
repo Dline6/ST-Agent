@@ -133,6 +133,7 @@ class TestGwt1RealSend:
         assert call["headers"]["Accept"] == "text/event-stream"
         body = json.loads(call["body"].decode("utf-8"))
         assert body["model"] == MODEL and body["stream"] is True
+        assert body["stream_options"] == {"include_usage": True}
         assert body["messages"] == [{"role": "user", "content": PROMPT_MARKER}]
 
         assert [e.kind for e in events] == ["chunk", "chunk", "done"]
@@ -218,6 +219,29 @@ class TestGwt2StreamAndFailure:
         events = invoke(client)
         assert events[-1].kind == "error"
         assert events[-1].error_envelope.status == "failed"
+
+    def test_reasoning_and_usage_chunks_are_parsed(self, store, gateway):
+        """T-AGT-032.3：推理增量不计入答案；流末 usage 用于记账。"""
+        lines = [
+            'data: {"choices":[{"delta":{"reasoning_content":"先想"}}]}',
+            'data: {"choices":[{"delta":{"content":"答案"}}]}',
+            'data: {"choices":[],"usage":{"prompt_tokens":9,"completion_tokens":6,'
+            '"total_tokens":15,"completion_tokens_details":{"reasoning_tokens":4}}}',
+            "data: [DONE]",
+        ]
+        client = make_client(store, gateway, Recorder(lines))
+        events = invoke(client)
+        assert "".join(e.text for e in events if e.kind == "chunk") == "答案"
+        usage = events[-1].usage
+        assert usage.usage_source == "provider"
+        assert (usage.prompt_tokens, usage.completion_tokens) == (9, 6)
+        assert usage.reasoning_tokens == 4
+        assert usage.total_tokens == 15
+
+    def test_usage_absent_falls_back_to_estimate(self, store, gateway):
+        client = make_client(store, gateway, Recorder(sse_lines("答案")))
+        events = invoke(client)
+        assert events[-1].usage.usage_source == "estimate"
 
     @pytest.mark.parametrize("exc,expected", [
         (urllib.error.HTTPError(BASE_URL, 401, "Unauthorized", {}, None), "failed"),

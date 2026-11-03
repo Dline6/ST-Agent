@@ -29,6 +29,8 @@ from st_agent.l0.llm import (
     LlmNotFoundError,
     LlmUsageRecord,
     LlmValidationError,
+    ProviderUsage,
+    ReasoningDelta,
     StreamEvent,
     ToolSpec,
     TransportTimeoutError,
@@ -235,6 +237,78 @@ class TestGwt3Streaming:
         assert len(events) == 1 and events[0].kind == "error"
         assert events[0].error_envelope.status == "failed"
         assert "超时" in events[0].error_envelope.reason
+
+
+# ───────────────────────── 提供方用量与推理增量（T-AGT-032.3） ────────────────────
+
+
+class TestProviderUsage:
+    def test_provider_usage_is_used_and_reasoning_stays_out_of_the_answer(
+        self, store, registry, vault,
+    ):
+        """GWT-1 / GWT-3：提供方 usage 优先；推理增量不进答案文本。"""
+        registry.register("e1", kind="local", provider="p", capability=LOCAL_CAP)
+
+        def transport(endpoint, prompt, key, timeout_ms, tools=None):
+            yield ReasoningDelta(text="先查行情，")
+            yield ReasoningDelta(text="再核对公告")
+            yield "最终答案"
+            yield ProviderUsage(
+                prompt_tokens=12, completion_tokens=7,
+                reasoning_tokens=5, total_tokens=19,
+            )
+
+        client = LlmClient(store, registry, vault, transport=transport)
+        events = drain(client.invoke("e1", "hi", initiator="t", purpose="p"))
+        assert [e.kind for e in events] == ["chunk", "done"]
+        assert events[0].text == "最终答案"
+        usage = events[-1].usage
+        assert usage.usage_source == "provider"
+        assert (usage.prompt_tokens, usage.completion_tokens) == (12, 7)
+        assert usage.reasoning_tokens == 5
+        assert usage.total_tokens == 19
+
+    def test_missing_usage_falls_back_to_estimate_and_says_so(self, local_client):
+        """GWT-2：无提供方 usage 时估算，但来源如实标注。"""
+        events = drain(local_client.invoke(
+            "local-main", "hi", initiator="t", purpose="p",
+        ))
+        usage = events[-1].usage
+        assert usage.usage_source == "estimate"
+        assert usage.completion_tokens > 0
+        assert usage.reasoning_tokens == 0
+
+    def test_failed_call_records_elapsed_tokens_and_stage(self, store, registry, vault):
+        """GWT-4：失败调用仍记实际耗时、已产生 token 与失败阶段。"""
+        registry.register("e1", kind="local", provider="p", capability=LOCAL_CAP)
+
+        def transport(endpoint, prompt, key, timeout_ms, tools=None):
+            yield ReasoningDelta(text="推理了一段")
+            yield "部分输出"
+            raise TransportTimeoutError("传输层超时（>100ms）", stage="stream")
+
+        client = LlmClient(store, registry, vault, transport=transport)
+        events = drain(client.invoke(
+            "e1", "hi", initiator="t", purpose="p", timeout_ms=100,
+        ))
+        assert events[-1].kind == "error"
+        (entry,) = client.query_usage("e1")
+        assert entry.status == "failed"
+        assert entry.fail_kind == "timeout"
+        assert entry.fail_stage == "stream"
+        assert entry.duration_ms >= 0
+        assert entry.completion_tokens > 0
+        assert entry.reasoning_tokens > 0
+        assert entry.usage_source == "estimate"
+
+    def test_reasoning_tokens_cannot_exceed_completion(self):
+        with pytest.raises(PydanticValidationError):
+            LlmUsageRecord(
+                endpoint_id="e1", timestamp=datetime.now().astimezone(),
+                initiator="t", purpose="p", prompt_tokens=1, completion_tokens=2,
+                total_tokens=3, reasoning_tokens=3, duration_ms=1,
+            )
+
 
 
 # ───────────────────────── GWT-4 零中转与用量 ─────────────────────────
