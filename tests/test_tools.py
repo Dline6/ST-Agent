@@ -240,6 +240,15 @@ def test_agt_layer_sits_after_ui():
     assert rl.LAYER_ORDER["INT"] == len(rl.LAYERS) - 1
 
 
+def test_mem_layer_sits_after_agt():
+    """MEM 层（跨层记忆机制）置于 AGT 之后、L4 之前；INT 仍居末。"""
+    assert rl.ID_RE.match("T-MEM-001")
+    assert rl.layer_of("T-MEM-001.2") == "MEM"
+    assert "MEM" in rl.LAYER_ORDER
+    assert rl.LAYER_ORDER["AGT"] < rl.LAYER_ORDER["MEM"] < rl.LAYER_ORDER["L4"]
+    assert rl.LAYER_ORDER["INT"] == len(rl.LAYERS) - 1
+
+
 def test_proc_layer_sits_before_int():
     """PROC 层（工程流程 / CI）置于 L6 之后、INT 之前（T-PROC-001）；INT 仍居末。"""
     assert rl.ID_RE.match("T-PROC-001")
@@ -255,9 +264,10 @@ def test_milestones_registered():
     M7 于 2026-10-16 由「打包发布」重定为「桌面形态与发布」（D-121）；2026-10-27 二次收窄为
     「桌面形态」（D-136）——打包发布两叶移出 M7、`milestone` 置空悬空，待择时单独立里程碑。
     M8–M10 由 D-137 立项：自主可跑 / 开放能力面 / 长任务运行时；M11 由 D-154 立项：Agent 主入口与运行控制面。
+    M12 由 D-164 立项：记忆机制重整（T-MEM-*）。
     """
     assert [m[0] for m in rl.MILESTONES] == [
-        "M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11",
+        "M0", "M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12",
     ]
     names = {m[0]: m[1] for m in rl.MILESTONES}
     assert names["M5"] == "受控自主"
@@ -265,6 +275,7 @@ def test_milestones_registered():
     assert [names["M8"], names["M9"], names["M10"], names["M11"]] == [
         "自主可跑", "开放能力面", "长任务运行时", "Agent 主入口",
     ]
+    assert names["M12"] == "记忆可用"
 
 
 # ───────────────────────── archive：移动后改正相对链接 ─────────────────────────
