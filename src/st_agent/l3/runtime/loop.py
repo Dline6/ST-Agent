@@ -30,6 +30,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Literal
@@ -83,6 +84,8 @@ __all__ = [
     "BOUND_REASONS",
     "DEFAULT_MAX_LLM_CALLS",
     "DEFAULT_MAX_STEPS",
+    "DEFAULT_LLM_MAX_ATTEMPTS",
+    "DEFAULT_LLM_RETRY_BACKOFF_MS",
     "GATE_VERDICTS",
     "NestedRecorder",
     "NestedRunRef",
@@ -124,6 +127,18 @@ DEFAULT_MAX_LLM_CALLS = 12
 **有意高于步数上界**：模型每执行一步要问一轮，结束还要再问一轮才拿得到收尾——两者相等会
 把「收尾那一问」剪掉，让一次本该正常完成的循环被误判为触界。
 """
+
+DEFAULT_LLM_MAX_ATTEMPTS = 3
+"""单轮模型调用的**最多尝试次数**（含首次；[D-165](../../../项目管理/决策日志.md)）。
+
+只对结构化失败里 ``retryable=True`` 的类别生效（超时 / 429 / 5xx / 连接重置）；
+每次尝试计一次 ``llm_calls``，不重放工具步、不计步。缺省与配置条目
+``investigate.llm_max_attempts`` 同源。
+"""
+
+DEFAULT_LLM_RETRY_BACKOFF_MS = 500
+"""重试退避基数（毫秒）：第 n 次重试等待 ``n × 基数``；缺省与配置条目
+``investigate.llm_retry_backoff_ms`` 同源。"""
 
 MAX_UNKNOWN_TOOL_ROUNDS = 2
 """未知工具的**连续轮次**上限（工具调用自愈，[D-154](../../../项目管理/决策日志.md) A6）。
@@ -382,6 +397,11 @@ def run_agent_loop(
     purpose: str = DEFAULT_TURN_PURPOSE,
     max_steps: int = DEFAULT_MAX_STEPS,
     max_llm_calls: int = DEFAULT_MAX_LLM_CALLS,
+    llm_timeout_ms: int | None = None,
+    llm_idle_timeout_ms: int | None = None,
+    llm_max_attempts: int = DEFAULT_LLM_MAX_ATTEMPTS,
+    llm_retry_backoff_ms: int = DEFAULT_LLM_RETRY_BACKOFF_MS,
+    retry_sleep: Callable[[float], None] | None = None,
     budget_chars: int = DEFAULT_WORK_CONTEXT_BUDGET,
     max_result_chars: int = RESULT_TRUNCATE_CHARS,
     tool_lazy_chars: int | None = None,
@@ -402,6 +422,8 @@ def run_agent_loop(
     emit: Callable[[str, Mapping[str, Any]], None] | None = None,
     cancel: threading.Event | None = None,
     steer_inbox: Any = None,
+    system_prompt: str = "",
+    system_prompt_version: str = "",
 ) -> LoopOutcome:
     """驱动自主查证循环（四段一轮，直至模型给出「结束」或触界）。
 
@@ -420,6 +442,13 @@ def run_agent_loop(
         按实际执行的 Skill 取批准态（T-AGT-014.3）
     :param max_steps: **步数**上界（可注入；到界即终止并如实标注）
     :param max_llm_calls: **LLM 调用次数**上界（可注入；同上）
+    :param llm_timeout_ms: 单次 LLM 调用的**总时限**（缺省 ``None`` ⇒ 用端点缺省）
+    :param llm_idle_timeout_ms: 单次 LLM 调用的**空闲时限**（缺省取总时限）
+    :param llm_max_attempts: 单轮模型调用的最多尝试次数（仅可重试失败退避重试）
+    :param llm_retry_backoff_ms: 重试退避基数（第 n 次等待 n × 基数）
+    :param retry_sleep: 重试等待函数（测试注入以跳过真实等待；缺省 :func:`time.sleep`）
+    :param system_prompt: 每轮请求携带的确定性系统提示词（空串＝不带）
+    :param system_prompt_version: 系统提示词版本（只进用量记录）
     :param trace: 调用方传入的推理链（``None`` 即新建一条）
     :param session_id: 本次循环所属会话（[05 §4](../../../../docs/技术架构-v2/05-L3-对话主入口.md)）；
         ``None`` ⇒ 无历史的单次查证（本叶只透传与留痕，取历史归 `.2`）
@@ -466,6 +495,25 @@ def run_agent_loop(
             raise AgentRuntimeValidationError(
                 f"{name} 须为 ≥1 的整数（上界是预算；到界即终止），得到 {value!r}"
             )
+    if not isinstance(llm_max_attempts, int) or isinstance(llm_max_attempts, bool) \
+            or llm_max_attempts < 1:
+        raise AgentRuntimeValidationError(
+            f"llm_max_attempts 须为 ≥1 的整数，得到 {llm_max_attempts!r}"
+        )
+    if not isinstance(llm_retry_backoff_ms, int) or isinstance(llm_retry_backoff_ms, bool) \
+            or llm_retry_backoff_ms < 0:
+        raise AgentRuntimeValidationError(
+            f"llm_retry_backoff_ms 须为 ≥0 的整数，得到 {llm_retry_backoff_ms!r}"
+        )
+    for name, value in (
+        ("llm_timeout_ms", llm_timeout_ms), ("llm_idle_timeout_ms", llm_idle_timeout_ms),
+    ):
+        if value is not None and (
+            not isinstance(value, int) or isinstance(value, bool) or value < 1
+        ):
+            raise AgentRuntimeValidationError(f"{name} 须为 ≥1 的整数或 None，得到 {value!r}")
+    if retry_sleep is not None and not callable(retry_sleep):
+        raise AgentRuntimeValidationError("重试等待函数须为可调用对象（或 None）")
     if runner is None:
         raise AgentRuntimeValidationError("循环需要执行面（L1 SkillRunner；组合根注入）")
     if tool_lazy_chars is not None and (
@@ -639,25 +687,69 @@ def run_agent_loop(
             unknown_tool_note=unknown_tool_note,
             subprotocol_note=note_for_context,
             tool_lazy_chars=tool_lazy_chars,
+            system_prompt=system_prompt,
+            system_prompt_version=system_prompt_version,
         )
         if assembled.status != "ok":
             return finish("catalog_empty", reason=assembled.reason or "")
         context: WorkContext = assembled.data
         dropped = context.dropped
-        turn = protocol.invoke_turn(
-            context, initiator=initiator, purpose=purpose, cancel=cancel,
-        )
-        llm_calls += 1
-        _emit("model_turn", {
-            "index": llm_calls,
-            "tool_calls": len(turn.tool_calls),
-            "final": not turn.tool_calls,
-            "failed": turn.envelope is not None,
-        })
-        # ── 取消（LLM 调用后）：在途调用已按事件中断，不再使用本轮产出 ──
-        if _cancelled():
-            return finish("cancelled", reason=_stop_reason())
-        if turn.envelope is not None:
+        turn = None
+        attempts = 0
+        retry_reason = ""
+        sleep_fn = retry_sleep if retry_sleep is not None else time.sleep
+        while True:
+            if _cancelled():
+                return finish("cancelled", reason=_stop_reason())
+            if llm_calls >= max_llm_calls:
+                if turn is not None and turn.envelope is not None:
+                    # 重试尚未用尽但调用次数上界先到：如实以 llm_failed 收口并保留续跑卡
+                    return finish(
+                        "llm_failed",
+                        reason=(
+                            f"{turn.envelope.reason or 'LLM 调用失败'}"
+                            f"（重试受 LLM 调用次数上界 {max_llm_calls} 限制）"
+                        ),
+                        failure=turn.envelope,
+                    )
+                return finish(
+                    "llm_call_limit",
+                    reason=f"已达到 LLM 调用次数上界（{max_llm_calls}），终止",
+                )
+            turn_kwargs: dict[str, Any] = {
+                "initiator": initiator, "purpose": purpose, "cancel": cancel,
+            }
+            if llm_timeout_ms is not None:
+                turn_kwargs["timeout_ms"] = llm_timeout_ms
+            if llm_idle_timeout_ms is not None:
+                turn_kwargs["idle_timeout_ms"] = llm_idle_timeout_ms
+            turn = protocol.invoke_turn(context, **turn_kwargs)
+            llm_calls += 1
+            attempts += 1
+            _emit("model_turn", {
+                "index": llm_calls,
+                "tool_calls": len(turn.tool_calls),
+                "final": not turn.tool_calls,
+                "failed": turn.envelope is not None,
+                "attempt": attempts,
+                "max_attempts": llm_max_attempts,
+                "retry_reason": retry_reason,
+            })
+            # ── 取消（LLM 调用后）：在途调用已按事件中断，不再使用本轮产出 ──
+            if _cancelled():
+                return finish("cancelled", reason=_stop_reason())
+            if turn.envelope is None:
+                break
+            failure = turn.failure
+            if (
+                failure is not None and failure.retryable
+                and attempts < llm_max_attempts
+            ):
+                retry_reason = turn.envelope.reason or "LLM 调用失败"
+                delay_ms = llm_retry_backoff_ms * attempts
+                if delay_ms > 0:
+                    sleep_fn(delay_ms / 1000)
+                continue
             return finish(
                 "llm_failed",
                 reason=turn.envelope.reason or "LLM 调用失败",
@@ -863,6 +955,11 @@ def run_agent_loop(
                     purpose=purpose,
                     max_steps=remaining_steps,
                     max_llm_calls=remaining_llm,
+                    llm_timeout_ms=llm_timeout_ms,
+                    llm_idle_timeout_ms=llm_idle_timeout_ms,
+                    llm_max_attempts=llm_max_attempts,
+                    llm_retry_backoff_ms=llm_retry_backoff_ms,
+                    retry_sleep=retry_sleep,
                     budget_chars=budget_chars,
                     max_result_chars=max_result_chars,
                     tool_lazy_chars=tool_lazy_chars,
@@ -875,6 +972,8 @@ def run_agent_loop(
                     nested_recorder=None,
                     parent_trace_id=chain.trace_id.value,
                     cancel=cancel,
+                    system_prompt=system_prompt,
+                    system_prompt_version=system_prompt_version,
                 )
                 ref = nested_recorder(child)
                 evidence = tuple(

@@ -31,6 +31,8 @@ def _chat_reply_text(payload: dict[str, Any]) -> str:
         if continuation.get("kind") == "user_input":
             count = len(continuation.get("questions") or [])
             return f"查证待用户输入（{count} 问）"
+        if continuation.get("kind") == "retry":
+            return "查证调用失败（可从已有证据继续）"
         return "查证待确认（可一键续跑）"
     clarification = payload.get("clarification")
     if isinstance(clarification, dict):

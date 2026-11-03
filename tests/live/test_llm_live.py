@@ -149,3 +149,44 @@ def test_open_runtime_bootstraps_from_dotenv(tmp_path: Path) -> None:
     )
     key = _config("LLM_API_KEY")
     assert PROMPT not in blob and key not in blob, "明文出现在落盘文件里"
+
+
+def test_real_endpoint_accepts_a_system_prompt(tmp_path: Path) -> None:
+    """T-AGT-031.1 A1：真实端点接受 ``system`` 角色（请求体两条消息）。
+
+    这是「缺省假定支持 system」的**真链路**证据；若该端点拒绝，线上会显式失败，
+    届时把端点能力档的 ``supports_system_role`` 改为 ``False`` 走前缀降级。
+    """
+    key = _config("LLM_API_KEY")
+    base_url = _config("LLM_BASE_URL")
+    model = _config("LLM_MODEL")
+    if not (key and base_url and model):
+        pytest.skip("需 LLM_API_KEY / LLM_BASE_URL / LLM_MODEL（环境变量或仓库根 .env）")
+
+    store = Store.create(tmp_path / "root", THROWAWAY_PASS)
+    gateway = EgressGateway(store, audit=True)
+    vault = CredentialVault(store)
+    vault.add("live-key", "llm_api_key", key)
+    registry = EndpointRegistry(store)
+    registry.register("live", kind="cloud", provider="openai-compatible",
+                      capability={"max_context_tokens": 32_000},
+                      credential_id="live-key")
+    routes = {"openai-compatible": OpenAiRoute(base_url=base_url, model=model)}
+    transport = gateway.llm_transport(
+        provider_hosts_of(routes),
+        sender_factory=openai_compat_sender_factory(routes),
+    )
+    client = LlmClient(store, registry, vault, transport)
+
+    events = list(client.invoke(
+        "live", PROMPT, initiator="live-system-prompt", purpose="真实端点系统提示词冒烟",
+        system_prompt="保持中性，不拟人化，不给出投资建议。", system_prompt_version="1",
+    ))
+    if events[0].kind == "error":
+        pytest.fail(f"真实调用失败（system 角色可能不被接受）："
+                    f"{events[0].error_envelope.status} · {events[0].error_envelope.reason}")
+    assert events[-1].kind == "done"
+    assert "".join(e.text for e in events if e.kind == "chunk").strip()
+    (usage,) = client.query_usage("live")
+    assert usage.system_prompt_version == "1"
+    assert usage.system_prompt_chars > 0

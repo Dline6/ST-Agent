@@ -49,6 +49,7 @@ from st_agent.l0.llm.errors import LlmNotFoundError, LlmValidationError
 from st_agent.l0.llm.models import (
     CapabilityRequirement,
     LlmEndpoint,
+    LlmFailure,
     LlmUsageRecord,
     StreamEvent,
     ToolCall,
@@ -79,7 +80,23 @@ Transport = Callable[
 
 
 class TransportError(Exception):
-    """传输层执行失败基类（映射为 ``failed`` 信封）。"""
+    """传输层执行失败基类（映射为 ``failed`` 信封）。
+
+    ``stage`` / ``status_code`` / ``retryable`` 为可选的结构化附件，供失败分类使用。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        stage: str = "",
+        status_code: int | None = None,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.stage = stage
+        self.status_code = status_code
+        self.retryable = retryable
 
 
 class TransportUnavailableError(TransportError):
@@ -87,11 +104,54 @@ class TransportUnavailableError(TransportError):
 
 
 class TransportTimeoutError(TransportError):
-    """传输层超时（映射为 ``failed`` 信封，原因注明超时）。"""
+    """传输层超时（映射为 ``failed`` 信封，原因注明超时与阶段）。"""
 
 
 class TransportCancelledError(TransportError):
     """传输层被取消（映射为 ``failed`` 信封，原因注明取消）。"""
+
+
+def _transport_failure(
+    exc: TransportError,
+    *,
+    elapsed: int,
+    timeout_ms: int | None,
+    idle_timeout_ms: int | None,
+) -> LlmFailure:
+    """把传输异常归成结构化失败（**不靠解析原因文本**判可重试）。
+
+    可重试：超时、429、5xx、连接重置；不可重试：其余 4xx / 认证 / 协商 / 校验。
+    """
+    stage = getattr(exc, "stage", "") or ""
+    status = getattr(exc, "status_code", None)
+    if isinstance(exc, TransportCancelledError):
+        kind, retryable = "cancelled", False
+    elif isinstance(exc, TransportTimeoutError):
+        kind, retryable = "timeout", True
+    elif isinstance(exc, TransportUnavailableError):
+        kind = "connection" if getattr(exc, "retryable", False) else "unavailable"
+        retryable = kind == "connection"
+    else:
+        retryable = bool(getattr(exc, "retryable", False))
+        if status == 429:
+            kind, retryable = "rate_limited", True
+        elif status is not None and 500 <= status < 600:
+            kind, retryable = "server_error", True
+        elif status is not None and 400 <= status < 500:
+            kind, retryable = "auth", False
+        elif retryable:
+            kind = "connection"
+        else:
+            kind = "unknown"
+    return LlmFailure(
+        kind=kind,  # type: ignore[arg-type]
+        retryable=retryable,
+        stage=stage,  # type: ignore[arg-type]
+        status_code=status,
+        elapsed_ms=max(0, elapsed),
+        timeout_ms=timeout_ms,
+        idle_timeout_ms=idle_timeout_ms,
+    )
 
 
 def _now() -> datetime:
@@ -142,8 +202,11 @@ class LlmClient:
         purpose: str = "",
         requirement: CapabilityRequirement | dict | None = None,
         timeout_ms: int | None = None,
+        idle_timeout_ms: int | None = None,
         cancel: threading.Event | None = None,
         tools: Sequence[ToolSpec | Mapping[str, Any]] | None = None,
+        system_prompt: str | None = None,
+        system_prompt_version: str = "",
     ) -> Iterator[StreamEvent]:
         """发起一次 LLM 调用，返回统一流式事件迭代器。
 
@@ -155,6 +218,9 @@ class LlmClient:
         :param tools: 工具条目序列（02 §4）——工具名 / 描述 / 参数 schema。非空即
             **自动附** ``needs_function_calling=True``：端点未声明支持工具调用时
             **显式拒绝**，不静默发包（缺省不得假定为真）。空序列 ≡ 不带。
+        :param idle_timeout_ms: **空闲时限**（连续无活动；缺省取总时限）。
+        :param system_prompt: 确定性系统提示词（可为空；空时请求体与既有形态一致）。
+        :param system_prompt_version: 系统提示词版本（只进用量记录，不落明文）。
         """
         check_endpoint_id(endpoint_id)
         endpoint = self._registry.get(endpoint_id)
@@ -193,7 +259,7 @@ class LlmClient:
                 prompt_tokens=estimate_tokens(prompt), duration_ms=0,
             )
             return
-        prompt_tokens = estimate_tokens(prompt)
+        prompt_tokens = estimate_tokens(prompt) + estimate_tokens(system_prompt or "")
         if prompt_tokens > endpoint.capability.max_context_tokens:
             yield self._error_event(
                 endpoint,
@@ -209,6 +275,13 @@ class LlmClient:
         if timeout <= 0:
             yield self._error_event(
                 endpoint, ResultEnvelope.validation_failed("timeout_ms 须为正数"),
+                initiator=initiator, purpose=purpose,
+                prompt_tokens=prompt_tokens, duration_ms=0,
+            )
+            return
+        if idle_timeout_ms is not None and idle_timeout_ms <= 0:
+            yield self._error_event(
+                endpoint, ResultEnvelope.validation_failed("idle_timeout_ms 须为正数"),
                 initiator=initiator, purpose=purpose,
                 prompt_tokens=prompt_tokens, duration_ms=0,
             )
@@ -238,6 +311,9 @@ class LlmClient:
             yield from self._stream(
                 endpoint, prompt, key, timeout, cancel, tool_specs or None,
                 initiator=initiator, purpose=purpose, prompt_tokens=prompt_tokens,
+                idle_timeout_ms=idle_timeout_ms,
+                system_prompt=system_prompt,
+                system_prompt_version=system_prompt_version,
             )
         finally:
             key = None  # 内存引用即时释放（GWT-4 零留存）
@@ -345,9 +421,18 @@ class LlmClient:
         initiator: str,
         purpose: str,
         prompt_tokens: int,
+        idle_timeout_ms: int | None = None,
+        system_prompt: str | None = None,
+        system_prompt_version: str = "",
     ) -> Iterator[StreamEvent]:
         started = time.monotonic()
         elapsed_ms = lambda: int((time.monotonic() - started) * 1000)
+        usage_meta = {
+            "timeout_ms": timeout_ms,
+            "idle_timeout_ms": idle_timeout_ms,
+            "system_prompt_version": system_prompt_version,
+            "system_prompt_chars": len(system_prompt or ""),
+        }
         if self._transport is None:
             now = _now()
             yield self._error_event(
@@ -359,30 +444,52 @@ class LlmClient:
                 ),
                 initiator=initiator, purpose=purpose,
                 prompt_tokens=prompt_tokens, duration_ms=elapsed_ms(),
+                failure=LlmFailure(kind="unavailable", elapsed_ms=elapsed_ms()),
+                **usage_meta,
             )
             return
         if cancel is not None and cancel.is_set():
             yield self._fail(
                 endpoint, "调用开始前已取消", initiator, purpose,
                 prompt_tokens, 0, elapsed_ms(),
+                failure=LlmFailure(kind="cancelled", elapsed_ms=elapsed_ms()),
+                **usage_meta,
             )
             return
         text_parts: list[str] = []
         calls: list[ToolCall] = []
         spent = lambda: estimate_tokens(_completion_text(text_parts, calls))
         try:
-            stream = self._transport(endpoint, prompt, key, timeout_ms, tools)
+            kwargs: dict[str, Any] = {}
+            if idle_timeout_ms is not None:
+                kwargs["idle_timeout_ms"] = idle_timeout_ms
+            if system_prompt:
+                kwargs["system_prompt"] = system_prompt
+            stream = self._transport(
+                endpoint, prompt, key, timeout_ms, tools, **kwargs,
+            )
             for item in stream:
                 if cancel is not None and cancel.is_set():
                     yield self._fail(
                         endpoint, "调用中被取消", initiator, purpose,
                         prompt_tokens, spent(), elapsed_ms(),
+                        failure=LlmFailure(
+                            kind="cancelled", elapsed_ms=elapsed_ms(),
+                            timeout_ms=timeout_ms, idle_timeout_ms=idle_timeout_ms,
+                        ),
+                        **usage_meta,
                     )
                     return
                 if elapsed_ms() > timeout_ms:
                     yield self._fail(
-                        endpoint, f"调用超时（>{timeout_ms}ms）", initiator, purpose,
+                        endpoint, f"总时限超时（>{timeout_ms}ms）", initiator, purpose,
                         prompt_tokens, spent(), elapsed_ms(),
+                        failure=LlmFailure(
+                            kind="timeout", retryable=True, stage="stream",
+                            elapsed_ms=elapsed_ms(), timeout_ms=timeout_ms,
+                            idle_timeout_ms=idle_timeout_ms,
+                        ),
+                        **usage_meta,
                     )
                     return
                 if isinstance(item, str):
@@ -392,24 +499,58 @@ class LlmClient:
                     calls.append(item)
                     yield StreamEvent(kind="tool_call", tool_call=item)
         except TransportUnavailableError as exc:
+            if cancel is not None and cancel.is_set():
+                yield self._fail(
+                    endpoint, "调用中被取消", initiator, purpose,
+                    prompt_tokens, 0, elapsed_ms(),
+                    failure=LlmFailure(
+                        kind="cancelled", elapsed_ms=elapsed_ms(),
+                        timeout_ms=timeout_ms, idle_timeout_ms=idle_timeout_ms,
+                    ),
+                    **usage_meta,
+                )
+                return
             now = _now()
+            failure = _transport_failure(
+                exc, elapsed=elapsed_ms(), timeout_ms=timeout_ms,
+                idle_timeout_ms=idle_timeout_ms,
+            )
             yield self._error_event(
                 endpoint,
                 ResultEnvelope.unavailable(str(exc), last_updated_at=now, as_of=now),
                 initiator=initiator, purpose=purpose,
                 prompt_tokens=prompt_tokens, duration_ms=elapsed_ms(),
+                failure=failure, **usage_meta,
             )
             return
         except (TransportTimeoutError, TransportCancelledError, TransportError) as exc:
+            # 取消与超时同时发生：取消优先（D-154 B6；GWT-4）
+            if cancel is not None and cancel.is_set():
+                yield self._fail(
+                    endpoint, "调用中被取消", initiator, purpose,
+                    prompt_tokens, spent(), elapsed_ms(),
+                    failure=LlmFailure(
+                        kind="cancelled", elapsed_ms=elapsed_ms(),
+                        timeout_ms=timeout_ms, idle_timeout_ms=idle_timeout_ms,
+                    ),
+                    **usage_meta,
+                )
+                return
+            failure = _transport_failure(
+                exc, elapsed=elapsed_ms(), timeout_ms=timeout_ms,
+                idle_timeout_ms=idle_timeout_ms,
+            )
             yield self._fail(
                 endpoint, str(exc) or "传输失败", initiator, purpose,
                 prompt_tokens, spent(), elapsed_ms(),
+                failure=failure, **usage_meta,
             )
             return
         usage, _ = self._write_usage(
             endpoint.endpoint_id, initiator=initiator, purpose=purpose,
             prompt_tokens=prompt_tokens, completion_tokens=spent(),
             duration_ms=elapsed_ms(), status="ok",
+            **usage_meta,
         )
         yield StreamEvent(kind="done", usage=usage)
 
@@ -424,16 +565,26 @@ class LlmClient:
         prompt_tokens: int,
         completion_tokens: int,
         duration_ms: int,
+        *,
+        failure: LlmFailure | None = None,
+        timeout_ms: int | None = None,
+        idle_timeout_ms: int | None = None,
+        system_prompt_version: str = "",
+        system_prompt_chars: int = 0,
     ) -> StreamEvent:
         """构造 ``failed`` 错误事件（先记用量拿到 ``log_ref``，再包信封）。"""
         _, relpath = self._write_usage(
             endpoint.endpoint_id, initiator=initiator, purpose=purpose,
             prompt_tokens=prompt_tokens, completion_tokens=completion_tokens,
             duration_ms=duration_ms, status="failed", fail_reason=reason,
+            failure=failure, timeout_ms=timeout_ms, idle_timeout_ms=idle_timeout_ms,
+            system_prompt_version=system_prompt_version,
+            system_prompt_chars=system_prompt_chars,
         )
         return StreamEvent(
             kind="error",
             error_envelope=ResultEnvelope.failed(reason, log_ref=relpath),
+            failure=failure,
         )
 
     def _error_event(
@@ -445,6 +596,11 @@ class LlmClient:
         purpose: str,
         prompt_tokens: int,
         duration_ms: int,
+        failure: LlmFailure | None = None,
+        timeout_ms: int | None = None,
+        idle_timeout_ms: int | None = None,
+        system_prompt_version: str = "",
+        system_prompt_chars: int = 0,
     ) -> StreamEvent:
         """构造非 ``failed`` 的错误事件（同步记一条 ``failed`` 用量供自查）。"""
         self._write_usage(
@@ -452,7 +608,11 @@ class LlmClient:
             prompt_tokens=prompt_tokens, completion_tokens=0,
             duration_ms=duration_ms, status="failed",
             fail_reason=envelope.reason or envelope.status,
+            failure=failure, timeout_ms=timeout_ms, idle_timeout_ms=idle_timeout_ms,
+            system_prompt_version=system_prompt_version,
+            system_prompt_chars=system_prompt_chars,
         )
+        return StreamEvent(kind="error", error_envelope=envelope, failure=failure)
         return StreamEvent(kind="error", error_envelope=envelope)
 
     def _write_usage(
@@ -466,6 +626,11 @@ class LlmClient:
         duration_ms: int,
         status: str,
         fail_reason: str = "",
+        failure: LlmFailure | None = None,
+        timeout_ms: int | None = None,
+        idle_timeout_ms: int | None = None,
+        system_prompt_version: str = "",
+        system_prompt_chars: int = 0,
     ) -> tuple[LlmUsageRecord, str]:
         """写一条用量记录（只含计数；返回记录与分区内相对路径）。"""
         try:
@@ -480,6 +645,12 @@ class LlmClient:
                 duration_ms=duration_ms,
                 status=status,  # type: ignore[arg-type]
                 fail_reason=fail_reason,
+                fail_kind=failure.kind if failure is not None else "",
+                fail_stage=failure.stage if failure is not None else "",
+                timeout_ms=timeout_ms,
+                idle_timeout_ms=idle_timeout_ms,
+                system_prompt_version=system_prompt_version,
+                system_prompt_chars=system_prompt_chars,
             )
         except ValidationError as exc:
             raise LlmValidationError(f"用量记录非法：{exc}") from exc

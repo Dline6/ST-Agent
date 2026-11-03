@@ -30,7 +30,9 @@ from st_agent.l3.runtime import (
     RunAlreadyActiveError,
     RunEventLog,
     ResumeOutcome,
+    SYSTEM_PROMPT_VERSION,
     agent_log_ref_of,
+    build_system_prompt,
     conclude_agent_run,
     investigate_family,
     load_agent_run,
@@ -253,6 +255,7 @@ class _AgentInvestigator:
                     context_note=note,
                 )
             budget_chars = self._bounds.budget_chars()
+            system_prompt = build_system_prompt(now=_moment(now))
             outcome = run_agent_loop(
                 task=task,
                 endpoint_id=self._endpoint_id,
@@ -263,6 +266,10 @@ class _AgentInvestigator:
                 approved_permissions=self._permissions or (),
                 max_steps=self._bounds.steps(),
                 max_llm_calls=self._bounds.llm_calls(),
+                llm_timeout_ms=self._bounds.llm_timeout_ms(),
+                llm_idle_timeout_ms=self._bounds.llm_idle_timeout_ms(),
+                llm_max_attempts=self._bounds.llm_max_attempts(),
+                llm_retry_backoff_ms=self._bounds.llm_retry_backoff_ms(),
                 budget_chars=budget_chars,
                 session_id=session,
                 history=history,
@@ -273,6 +280,8 @@ class _AgentInvestigator:
                 emit=events.emit,
                 cancel=run.cancel_event,
                 steer_inbox=run.steer_inbox,
+                system_prompt=system_prompt,
+                system_prompt_version=SYSTEM_PROMPT_VERSION,
             )
             outcome = outcome.model_copy(update={"context_note": note})
             report = conclude_agent_run(
@@ -335,6 +344,10 @@ class _AgentInvestigator:
                 approved_permissions=self._permissions or (),
                 max_steps=self._bounds.steps(),
                 max_llm_calls=self._bounds.llm_calls(),
+                llm_timeout_ms=self._bounds.llm_timeout_ms(),
+                llm_idle_timeout_ms=self._bounds.llm_idle_timeout_ms(),
+                llm_max_attempts=self._bounds.llm_max_attempts(),
+                llm_retry_backoff_ms=self._bounds.llm_retry_backoff_ms(),
                 budget_chars=self._bounds.budget_chars(),
                 session_id=session,
                 history=history,
@@ -348,6 +361,8 @@ class _AgentInvestigator:
                 emit=events.emit,
                 cancel=run.cancel_event,
                 steer_inbox=run.steer_inbox,
+                system_prompt=build_system_prompt(now=_moment(now)),
+                system_prompt_version=SYSTEM_PROMPT_VERSION,
             )
         except AgentRuntimeValidationError as exc:
             return ResumeOutcome(envelope=ResultEnvelope.validation_failed(str(exc)))
@@ -466,3 +481,10 @@ class _AgentInvestigator:
 
 def _join(*parts: str) -> str:
     return "；".join(part for part in parts if part)
+
+
+def _moment(now: Any) -> datetime:
+    """系统提示词的时钟：调用方给的时刻（无时区按本机补充），缺省本机当前时刻。"""
+    if isinstance(now, datetime):
+        return now if now.tzinfo is not None else now.astimezone()
+    return datetime.now().astimezone()

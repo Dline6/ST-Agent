@@ -35,6 +35,7 @@ HTTP 发送口可注入（``post`` 参数，与 [MCP 的 ``HttpSseTransport``](.
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Iterable, Mapping, Sequence
@@ -131,15 +132,18 @@ def openai_compat_sender_factory(
     routes: Mapping[str, OpenAiRoute],
     *,
     post: Post | None = None,
-) -> Callable[[object, str, str | None, int, Sequence[ToolSpec] | None], Sender]:
+    monotonic: Callable[[], float] | None = None,
+) -> Callable[..., Sender]:
     """产出 ``llm_transport(..., sender_factory=...)`` 要的按次 sender 工厂。
 
     :param routes: ``provider → OpenAiRoute``；端点 ``provider`` 未登记即
         ``EgressUnavailableError``（fail-closed，不猜 URL）。
     :param post: HTTP 发送口（缺省 ``urllib`` 实现）；测试注入替身以离线覆盖。
+    :param monotonic: 单调时钟（缺省 :func:`time.monotonic`；测试注入以覆盖总时限）。
     """
     routes = dict(routes)
     do_post: Post = post if post is not None else _urllib_post
+    clock: Callable[[], float] = monotonic if monotonic is not None else time.monotonic
 
     def _factory(
         endpoint,
@@ -147,6 +151,9 @@ def openai_compat_sender_factory(
         key: str | None,
         timeout_ms: int,
         tools: Sequence[ToolSpec] | None = None,
+        *,
+        idle_timeout_ms: int | None = None,
+        system_prompt: str | None = None,
     ) -> Sender:
         provider = getattr(endpoint, "provider", None)
         route = routes.get(provider)
@@ -154,9 +161,24 @@ def openai_compat_sender_factory(
             raise EgressUnavailableError(
                 f"提供方 {provider!r} 未登记请求面（base_url / model）"
             )
+        system_text = (system_prompt or "").strip()
+        supports_system = bool(getattr(
+            getattr(endpoint, "capability", None), "supports_system_role", True,
+        ))
+        if system_text and not supports_system:
+            # 端点不接受 system 角色：同一份文本以确定性前缀并入 user 消息并标注
+            prompt = (
+                "系统提示词（端点不支持 system 角色，已并入用户消息）：\n"
+                f"{system_text}\n\n"
+                f"{prompt}"
+            )
+        messages: list[dict] = []
+        if system_text and supports_system:
+            messages.append({"role": "system", "content": system_text})
+        messages.append({"role": "user", "content": prompt})
         payload: dict = {
             "model": route.model,
-            "messages": [{"role": "user", "content": prompt}],
+            "messages": messages,
             "stream": True,
         }
         wire_tools = tools_payload(tools)
@@ -170,6 +192,7 @@ def openai_compat_sender_factory(
         }
         if key:
             headers["Authorization"] = f"Bearer {key}"
+        idle_ms = idle_timeout_ms if idle_timeout_ms is not None else timeout_ms
 
         def _sender(kind: str, target_host: str, t_ms: int) -> tuple:
             # 审计主机与实际目标必须同源，否则「网络活动透明化」失真
@@ -178,8 +201,10 @@ def openai_compat_sender_factory(
                     f"目标主机不一致：审计记 {target_host!r}，请求面为 {route.host!r}"
                     "（provider_hosts 须经 provider_hosts_of 由 routes 派生）"
                 )
-            return (len(body), 0, _stream_items(do_post(route.url, headers, body,
-                                                        max(t_ms, 1) / 1000)))
+            lines = do_post(route.url, headers, body, max(idle_ms, 1) / 1000)
+            return (len(body), 0, _stream_items(
+                lines, total_timeout_ms=timeout_ms, monotonic=clock,
+            ))
 
         return _sender
 
@@ -189,29 +214,74 @@ def openai_compat_sender_factory(
 def _urllib_post(
     url: str, headers: Mapping[str, str], body: bytes, timeout_s: float
 ) -> Iterable[str]:
-    """缺省 HTTP 发送口（``urllib``，无第三方依赖）；产出响应行。"""
+    """缺省 HTTP 发送口（``urllib``，无第三方依赖）；产出响应行。
+
+    ``timeout_s`` 是**空闲时限**（urllib 的每次读超时）：连续 ``timeout_s`` 秒无任何
+    行到达即超时；总时限由 :func:`_stream_items` 逐行检查。超时按「连接 / 首字节 /
+    流中」标注阶段，HTTP 错误带状态码与是否可重试。
+    """
     request = urllib.request.Request(  # noqa: S310 - URL 由 OpenAiRoute 限定 http/https
         url, data=body, headers=dict(headers), method="POST"
     )
+    seen = False
     try:
-        with urllib.request.urlopen(request, timeout=timeout_s) as response:  # noqa: S310
-            for raw in response:
-                yield raw.decode("utf-8", errors="replace")
+        response = urllib.request.urlopen(request, timeout=timeout_s)  # noqa: S310
     except urllib.error.HTTPError as exc:  # URLError 的子类，须先捕
+        retryable = exc.code == 429 or 500 <= exc.code < 600
         raise EgressError(
-            f"提供方返回 HTTP {exc.code}（{exc.reason}）"
+            f"提供方返回 HTTP {exc.code}（{exc.reason}）",
+            status_code=exc.code, retryable=retryable,
         ) from exc
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, TimeoutError):
-            raise EgressTimeoutError(f"请求超时（>{timeout_s}s）") from exc
-        raise EgressUnavailableError(f"目标不可达：{exc.reason}") from exc
+            raise EgressTimeoutError(
+                f"空闲超时（>{timeout_s}s 无活动，阶段：连接）", stage="connect",
+            ) from exc
+        raise EgressUnavailableError(
+            f"目标不可达：{exc.reason}",
+            retryable=_looks_like_reset(str(exc.reason)),
+        ) from exc
     except TimeoutError as exc:
-        raise EgressTimeoutError(f"请求超时（>{timeout_s}s）") from exc
+        raise EgressTimeoutError(
+            f"空闲超时（>{timeout_s}s 无活动，阶段：连接）", stage="connect",
+        ) from exc
     except OSError as exc:
-        raise EgressUnavailableError(f"出网失败：{exc}") from exc
+        raise EgressUnavailableError(
+            f"出网失败：{exc}", retryable=_looks_like_reset(str(exc)),
+        ) from exc
+    try:
+        for raw in response:
+            seen = True
+            yield raw.decode("utf-8", errors="replace")
+    except TimeoutError as exc:
+        stage = "stream" if seen else "first_byte"
+        raise EgressTimeoutError(
+            f"空闲超时（>{timeout_s}s 无活动，阶段：{'流中' if seen else '首字节'}）",
+            stage=stage,
+        ) from exc
+    except OSError as exc:
+        raise EgressError(
+            f"出网中断：{exc}", stage="stream",
+            retryable=_looks_like_reset(str(exc)),
+        ) from exc
+    finally:
+        response.close()
 
 
-def _stream_items(lines: Iterable[str]) -> Iterable[StreamItem]:
+def _looks_like_reset(message: str) -> bool:
+    """连接重置类错误是否可重试（不同平台措辞不同，统一按关键词判）。"""
+    lowered = message.lower()
+    return any(token in lowered for token in (
+        "reset", "10054", "aborted", "connection closed", "broken pipe",
+    ))
+
+
+def _stream_items(
+    lines: Iterable[str],
+    *,
+    total_timeout_ms: int | None = None,
+    monotonic: Callable[[], float] | None = None,
+) -> Iterable[StreamItem]:
     """SSE 行 → 流式项（文本增量 :class:`str` ∪ **拼完**的工具调用）。
 
     ``data:`` 行取 ``delta.content`` 作文本增量、按 ``index`` 累积
@@ -219,13 +289,18 @@ def _stream_items(lines: Iterable[str]) -> Iterable[StreamItem]:
     增量串，在流收束（``[DONE]`` 或行尽）时**按 index 升序**产出完整的
     :class:`ToolCall`——**增量片段不外泄为文本**。
 
-    非 JSON 的 ``data:`` 行（心跳 / 注释 / 提供方自定格式）忽略；而**携带
-    ``error`` 的载荷**一律抛 ``EgressError``——「提供方报错」不得呈现为
-    「空回复的成功」。拼装期的不一致同样抛 ``EgressError``（缺名称 / 缺标识 /
-    参数不是合法 JSON 对象）：**不伪造**一个空调用糊过去。
+    非 JSON 的 ``data:`` 行（心跳 / 注释 / 提供方自定格式）忽略，但**仍算活动**：
+    总时限在每一行到达时检查，故长思考只要有增量就不会被总时限外的“无输出”误判；
+    超过总时限则抛 ``EgressTimeoutError``（阶段：流中）。
     """
+    clock = monotonic if monotonic is not None else time.monotonic
+    started = clock()
     acc: dict[int, _ToolCallAccumulator] = {}
     for raw in lines:
+        if total_timeout_ms is not None and clock() - started > total_timeout_ms / 1000:
+            raise EgressTimeoutError(
+                f"总时限超时（>{total_timeout_ms}ms，阶段：流中）", stage="stream",
+            )
         line = raw.strip()
         if not line or line.startswith(":"):
             continue

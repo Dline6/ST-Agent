@@ -46,6 +46,18 @@ class _Bounds:
     def budget_chars(self) -> int:
         return 4000
 
+    def llm_timeout_ms(self) -> int:
+        return 300_000
+
+    def llm_idle_timeout_ms(self) -> int:
+        return 90_000
+
+    def llm_max_attempts(self) -> int:
+        return 3
+
+    def llm_retry_backoff_ms(self) -> int:
+        return 500
+
 
 class _Card:
     """最小确认卡（`investigate` 只读 `values` 与 `target`）。"""
@@ -79,7 +91,7 @@ class _ProbeProtocol:
     def tool_calls_supported(self) -> bool:
         return True
 
-    def invoke_turn(self, context, *, initiator: str, purpose: str, cancel=None) -> TurnResult:
+    def invoke_turn(self, context, *, initiator: str, purpose: str, cancel=None, **kwargs) -> TurnResult:
         self._seen.append(
             tuple(
                 (run.agent_run_id, run.session_id, run.started_at, run.cancel_requested)
@@ -96,7 +108,7 @@ class _ExplodingProtocol:
     def tool_calls_supported(self) -> bool:
         return True
 
-    def invoke_turn(self, context, *, initiator: str, purpose: str, cancel=None) -> TurnResult:
+    def invoke_turn(self, context, *, initiator: str, purpose: str, cancel=None, **kwargs) -> TurnResult:
         raise AssertionError("同会话冲突时不应进入循环")
 
 
@@ -109,7 +121,7 @@ class _CancellingProtocol:
     def tool_calls_supported(self) -> bool:
         return True
 
-    def invoke_turn(self, context, *, initiator: str, purpose: str, cancel=None) -> TurnResult:
+    def invoke_turn(self, context, *, initiator: str, purpose: str, cancel=None, **kwargs) -> TurnResult:
         handle = self._runs.get(self._runs.active_ids()[0])
         assert cancel is handle.cancel_event          # 组合根把句柄的事件原样交给循环
         handle.request_cancel()
